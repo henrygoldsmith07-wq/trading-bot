@@ -52,6 +52,11 @@ def walk_forward_at(
     candidates: list | None = None,
     fee: float = 0.001,
     periods_per_year: int = 365,
+    spread_bps: float = 0.0,
+    slippage_bps: float = 0.0,
+    latency_days: int = 0,
+    execution: str = "close",
+    risk_free_annual: float = 0.0,
 ) -> dict:
     """Walk-forward using absolute fold boundaries.
 
@@ -78,7 +83,17 @@ def walk_forward_at(
         best_sharpe = float("-inf")
         for cand in candidates:
             try:
-                tr = run_strategy(train_slice, cand.weight_at, fee=fee, periods_per_year=periods_per_year)
+                tr = run_strategy(
+                    train_slice,
+                    cand.weight_at,
+                    fee=fee,
+                    periods_per_year=periods_per_year,
+                    spread_bps=spread_bps,
+                    slippage_bps=slippage_bps,
+                    latency_days=latency_days,
+                    execution=execution,
+                    risk_free_annual=risk_free_annual,
+                )
             except (ValueError, ZeroDivisionError):
                 continue
             s = tr["sharpe"]
@@ -89,7 +104,17 @@ def walk_forward_at(
             continue
         picks.append({"strategy": repr(best), "train_sharpe": best_sharpe})
 
-        te = run_strategy(test_slice, best.weight_at, fee=fee, periods_per_year=periods_per_year)
+        te = run_strategy(
+            test_slice,
+            best.weight_at,
+            fee=fee,
+            periods_per_year=periods_per_year,
+            spread_bps=spread_bps,
+            slippage_bps=slippage_bps,
+            latency_days=latency_days,
+            execution=execution,
+            risk_free_annual=risk_free_annual,
+        )
         for t, r in te["return_days"]:
             daily[t] = r
 
@@ -105,7 +130,7 @@ def walk_forward_at(
         "equity": equity[-1],
         "cagr": cagr(equity, span_days),
         "vol": volatility(returns, periods_per_year),
-        "sharpe": sharpe(returns, periods_per_year),
+        "sharpe": sharpe(returns, periods_per_year, risk_free_annual),
         "max_drawdown": max_drawdown(equity),
         "folds": picks,
         "n_folds": len(picks),
@@ -114,6 +139,24 @@ def walk_forward_at(
         "last_day": days_sorted[-1],
     }
     return result
+
+
+def combine_portfolio(asset_dailies: dict[str, dict[int, float]], timeline: list[int], n_assets: int) -> list[float]:
+    """Equal-weight portfolio returns on the shared timeline.
+
+    The denominator is the *selected* asset count, not the count with data on
+    a given day: an asset that is late-listed, stale, or delisted simply sits
+    in cash for its missing days. This is a survivorship-bias control — a
+    vanished asset can not silently hand its capital to the survivors.
+    """
+    dailies = list(asset_dailies.values())
+    out = []
+    for t in timeline:
+        total = 0.0
+        for daily in dailies:
+            total += daily.get(t, 0.0)
+        out.append(total / n_assets)
+    return out
 
 
 def walk_forward(

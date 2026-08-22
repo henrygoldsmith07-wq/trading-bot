@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 import urllib.request
 
 
 BINANCE_KLINES = "https://api.binance.com/api/v3/klines"
+YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval=1d"
+DAY_MS = 86_400_000
 
 
 def _get(url: str, timeout: int = 15, attempts: int = 3) -> str:
@@ -40,7 +43,7 @@ def _parse_klines(raw: str) -> list[dict]:
 def fetch_candles(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 200) -> list[dict]:
     """Fetch the most recent OHLCV candles from Binance's public REST API."""
     url = f"{BINANCE_KLINES}?symbol={symbol}&interval={interval}&limit={limit}"
-    return _parse_klines(_get(url))
+    return clean_candles(_parse_klines(_get(url)))
 
 
 def fetch_daily_history(symbol: str = "BTCUSDT", since_ms: int | None = None, max_candles: int = 4000) -> list[dict]:
@@ -66,4 +69,46 @@ def fetch_daily_history(symbol: str = "BTCUSDT", since_ms: int | None = None, ma
         start = out[-1]["open_time"] + 86_400_000
         if len(batch) < 1000:
             break
-    return out[:max_candles]
+    return clean_candles(out[:max_candles])
+
+
+def clean_candles(candles: list[dict]) -> list[dict]:
+    """Missing/invalid-data handling: drop non-finite and non-positive closes,
+    deduplicate timestamps (keeping the higher-volume print), and sort by time."""
+    best: dict[int, dict] = {}
+    for c in candles:
+        close = c.get("close")
+        if close is None or not math.isfinite(close) or close <= 0:
+            continue
+        t = c["open_time"]
+        existing = best.get(t)
+        if existing is None or c.get("volume", 0.0) >= existing.get("volume", 0.0):
+            best[t] = c
+    return [best[t] for t in sorted(best)]
+
+
+def is_stale(candles: list[dict], now_ms: int | None = None, max_age_days: float = 45.0) -> bool:
+    """Delisted-asset detection: history that stopped updating weeks ago."""
+    if not candles:
+        return True
+    if now_ms is None:
+        now_ms = time.time() * 1000
+    return (now_ms - candles[-1]["open_time"]) > max_age_days * DAY_MS
+
+
+def fetch_yahoo_daily(symbol: str, range_: str = "10y") -> list[dict]:
+    """Daily OHLC candles for ETFs/equities from Yahoo Finance's chart API."""
+    url = YAHOO_CHART.format(symbol=symbol, range_=range_)
+    payload = json.loads(_get(url))
+    result = payload["chart"]["result"][0]
+    ts = result.get("timestamp", [])
+    quote = result["indicators"]["quote"][0]
+    candles = []
+    for t, o, c in zip(ts, quote.get("open", []), quote.get("close", [])):
+        if c is None or not math.isfinite(c) or c <= 0:
+            continue
+        candle = {"open_time": int(t) * 1000, "close": float(c)}
+        if o is not None and math.isfinite(o) and o > 0:
+            candle["open"] = float(o)
+        candles.append(candle)
+    return clean_candles(candles)

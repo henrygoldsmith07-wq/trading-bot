@@ -5,6 +5,8 @@ All functions take simple sequences so they work for any asset/strategy:
 - returns: list of simple period returns (e.g. daily)
 - days: calendar days elapsed (CAGR uses actual calendar time so assets with
   different trading calendars, e.g. crypto 365d vs equities 252d, compare fairly)
+
+Sharpe ratios are excess-return: (mean return - risk-free accrual) / stdev.
 """
 from __future__ import annotations
 
@@ -24,13 +26,14 @@ def volatility(returns: list[float], periods_per_year: int) -> float:
     return stdev(returns) * math.sqrt(periods_per_year)
 
 
-def sharpe(returns: list[float], periods_per_year: int) -> float:
+def sharpe(returns: list[float], periods_per_year: int, risk_free_annual: float = 0.0) -> float:
     if len(returns) < 2:
         return 0.0
     sd = stdev(returns)
     if sd == 0:
         return 0.0
-    return mean(returns) / sd * math.sqrt(periods_per_year)
+    excess = mean(returns) - risk_free_annual / periods_per_year
+    return excess / sd * math.sqrt(periods_per_year)
 
 
 def max_drawdown(equity: list[float]) -> float:
@@ -43,11 +46,11 @@ def max_drawdown(equity: list[float]) -> float:
     return mdd
 
 
-def summarize(equity: list[float], returns: list[float], days: float, periods_per_year: int) -> dict:
+def summarize(equity: list[float], returns: list[float], days: float, periods_per_year: int, risk_free_annual: float = 0.0) -> dict:
     return {
         "final": equity[-1],
         "cagr": cagr(equity, days),
         "vol": volatility(returns, periods_per_year),
-        "sharpe": sharpe(returns, periods_per_year),
+        "sharpe": sharpe(returns, periods_per_year, risk_free_annual),
         "max_drawdown": max_drawdown(equity),
     }

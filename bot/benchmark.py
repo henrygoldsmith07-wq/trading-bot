@@ -63,7 +63,7 @@ def slice_window(rows: list[dict], start_date, end_date) -> list[dict]:
     return [r for r in rows if start_date <= r["date"] <= end_date]
 
 
-def equity_metrics(rows: list[dict]) -> dict:
+def equity_metrics(rows: list[dict], risk_free_annual: float = 0.0) -> dict:
     """Metrics for a buy-and-hold equity curve over the given daily closes."""
     from .metrics import cagr, max_drawdown, sharpe, volatility
 
@@ -79,7 +79,7 @@ def equity_metrics(rows: list[dict]) -> dict:
     return {
         "cagr": cagr(equity, days),
         "vol": volatility(returns, periods),
-        "sharpe": sharpe(returns, periods),
+        "sharpe": sharpe(returns, periods, risk_free_annual),
         "max_drawdown": max_drawdown(equity),
         "final": equity[-1],
     }

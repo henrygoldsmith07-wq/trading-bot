@@ -1,4 +1,12 @@
-"""Tradeable universe: top Binance USDT spot pairs by quote volume."""
+"""Tradeable universe: top Binance USDT pairs by quote volume plus ETFs from
+other asset classes (equities, gold, bonds) via Yahoo Finance.
+
+Universe selection uses *today's* volume ranking, which embeds survivorship
+bias — today's top pairs are partly today's winners. Free public APIs do not
+offer point-in-time constituents, so this cannot be fully corrected; the
+portfolio combiner's fixed denominator and the printed disclosure are the
+controls we apply. Treat absolute numbers as slightly optimistic.
+"""
 from __future__ import annotations
 
 import json
@@ -14,6 +22,13 @@ STABLE_OR_NONVANILLA = {
     "PAXG", "XUSD", "USDE", "BFUSD",
 }
 LEVERAGED_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR")
+
+# Non-crypto asset classes the data supports (Yahoo Finance, daily bars).
+ETF_UNIVERSE = [
+    {"symbol": "SPY", "asset_class": "US equity ETF", "periods_per_year": 252},
+    {"symbol": "GLD", "asset_class": "Gold ETF", "periods_per_year": 252},
+    {"symbol": "TLT", "asset_class": "20y Treasury ETF", "periods_per_year": 252},
+]
 
 
 def parse_symbols(ticker_json: str, quote: str = "USDT", n: int = 10) -> list[str]:

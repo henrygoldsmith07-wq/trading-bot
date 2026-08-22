@@ -1,69 +1,71 @@
 # Trading Bot (Paper Trading)
 
-A Python trading bot that trades **on paper only** — no real orders are ever placed. It pulls free public market data (Binance, FRED — no API keys) and runs a serious research pipeline: a 74-strategy candidate pool, multi-asset portfolio construction, and **walk-forward out-of-sample validation** against the S&P 500.
+A Python trading bot that trades **on paper only** — no real orders are ever placed. It pulls free public market data (Binance, Yahoo Finance, FRED — no API keys) and runs a research-grade validation pipeline: a 74-strategy candidate pool, a multi-asset-class portfolio, walk-forward out-of-sample selection, realistic execution frictions, and regime/stress/sensitivity diagnostics against the S&P 500.
 
 > ⚠️ Educational software. Not financial advice. Past out-of-sample performance does not guarantee future results — do not wire real money to anything based on this repo.
 
-## The 10× upgrade (v2 vs v1)
+## Headline result (real data, out-of-sample, realistic frictions)
 
-| Dimension | v1 | v2 | Multiplier |
-|---|---|---|---|
-| Assets traded | 1 (BTC) | 10 by volume (7 with full history) | 10× |
-| Strategy candidates | 1 (SMA crossover) | 74 (trend/vol-targeting grid, RSI, MACD, ensembles) | 74× |
-| Unit tests | 5 | 1382, all passing in CI | 276× |
-| Compare speed (same job) | 93 s | 3.3 s (prefix-sum indicators + disk cache) | 28× |
-| OOS CAGR vs S&P 500 | 21.0% | **36.6%** | 1.7× |
-| OOS Sharpe | 1.13 | **1.53** | 1.4× |
-| Growth of $1 (OOS) | 3.13 | **6.49** | 2.1× |
-
-## Headline result (real data, out-of-sample)
-
-`python -m bot compare` builds a universe of top-volume Binance pairs, walks each forward over its full daily history (re-picking the best of 74 strategies **every year using only prior data**), combines them into an equal-weight portfolio, applies a trailing-volatility risk overlay (25% target, no lookahead), and compares against the actual S&P 500 over the same window (2020-08 → 2026-08):
+`python -m bot compare` trades a universe of top-volume crypto pairs **plus SPY, GLD, and TLT** (equity/gold/bonds), re-picks the best of 74 strategies per asset **every year using only prior data**, equal-weights the result with a fixed denominator, applies a trailing-volatility risk overlay (25% target, no lookahead), and compares against the actual S&P 500 over the same window (2020-08 → 2026-08). Defaults include **next-open execution, 10bp fee + 5bp spread + 5bp slippage per unit turnover, 3% cash yield on idle capital, excess-of-cash Sharpe everywhere**:
 
 ```
                     Bot (risk-mgd)    Bot (raw)     S&P 500    BTC b&h
-CAGR                         36.6%        55.6%       14.9%      32.1%
-Volatility                   21.9%        29.2%       16.7%      57.3%
-Sharpe                        1.53         1.66        0.92       0.77
-Max drawdown                -25.4%       -32.0%      -25.4%     -76.6%
-Growth of $1                  6.49        14.21        2.30       5.32
+CAGR                         27.7%        38.2%       14.9%      32.1%
+Volatility                   19.5%        24.0%       16.7%      57.3%
+Sharpe (excess)               1.20         1.34        0.74       0.72
+Max drawdown                -20.0%       -23.6%      -25.4%     -76.6%
+Growth of $1                  4.33         6.96        2.30       5.32
 ```
 
-The risk-managed portfolio beats the S&P 500 on CAGR, Sharpe, and max drawdown simultaneously. Per-asset Sharpe ratios range 0.79–1.19 with different strategies winning on different assets — the diversification is doing real work, not one lucky bet.
+Beats the S&P 500 on CAGR, excess Sharpe, and max drawdown simultaneously — with the frictions of real trading priced in.
 
-**Why this is (reasonably) honest:** strategies are never scored on data used to pick them. Each yearly fold trains on all prior history, then trades the next 12 months unseen; the stitched out-of-sample record is what the table shows. Fees (0.1% per unit turnover) are charged throughout, plus 0.15% on risk-overlay adjustments. All positions are long-only and capped at 1x (no leverage). Caveats that remain: the asset universe is today's top-volume list (survivorship bias favors it), daily-close fills with no slippage, and one historical path is not a guarantee.
+## Backtesting-quality checklist
 
-## Features
+How the pipeline addresses each dimension:
 
-- **74-strategy candidate pool** — systematic grid over trend lookbacks × volatility targets, RSI dip-buy settings, MACD parameter sets, and ensembles
-- **Multi-asset portfolio** — top Binance USDT pairs by quote volume, aligned on a shared fold calendar, equal-weighted
-- **Risk overlay** — trailing 20-day vol targeting to equity-like 25% annualized volatility
-- **Metrics engine** — CAGR, annualized volatility, Sharpe, max drawdown, exposure, turnover (calendar-day based so crypto's 365d year and equities' 252d year compare fairly)
-- **No-lookahead engine** — weights see only past candles; prefix-sum indicator caching makes a 74-candidate × 7-asset walk-forward run in ~20 s
-- **Disk cache** — daily history cached 12 h; warm runs skip all fetching
-- **Benchmark comparison** — S&P 500 daily closes from FRED (Yahoo Finance fallback)
-- **Live paper trading** — polls prices and simulates fills; state persists across restarts
-- **CI** — GitHub Actions runs the full 1382-test suite on every push
-- Stdlib only (Python 3.10+); pytest for tests
+| Dimension | Implementation |
+|---|---|
+| More assets | 20 crypto pairs by volume (+3 ETFs); assets with <3y history or stale/delisted data are skipped with reasons |
+| More asset classes | Crypto (Binance) + SPY/GLD/TLT (Yahoo), each with its own trading calendar (365 vs 252 periods/yr) |
+| Market regimes | `compare` prints a bull/bear/sideways table (BTC-proxy trailing 180d labels) with bot vs S&P per segment |
+| Stress periods | 30d-crash / top-decile-vol stress windows with bot vs S&P drawdowns over the stressed span |
+| Parameter sensitivity | `sensitivity` sweeps a TrendVol grid: OOS Sharpe by lookback × vol-target |
+| Rolling sensitivity | Consecutive 2-year OOS blocks — profitability must hold in every block, not one lucky window |
+| Transaction costs | Combined fee+spread+slippage sweep (5/10/20/50/100bp) |
+| Spread & slippage | Charged per unit turnover alongside fees in the engine |
+| Latency | Signal delay sweep (0/1/2 days) — weight uses only data ≥ latency days old |
+| Execution realism | `next_open` mode: overnight gap accrues to yesterday's position, intraday to the new one |
+| Stale prices | Assets whose history stopped >45d ago are flagged and excluded |
+| Missing data | Non-finite/non-positive closes dropped, timestamps deduped, history sorted on ingest |
+| Delisting | Missing days hold cash — a dead asset strands its sleeve, it never redistributes to survivors |
+| Survivorship bias | Fixed-denominator portfolio combine + explicit disclosure (point-in-time constituents aren't freely available) |
+| Cash returns | Idle cash accrues a configurable risk-free rate (default 3%/yr); all Sharpe ratios are excess-of-cash |
+| Benchmark consistency | Same window, calendar-day CAGR, same risk-free rate; the index carries no costs and is labeled as such |
+
+## What the sensitivity analysis says (BTC, honest read)
+
+- **Rolling blocks**: positive OOS Sharpe in every 2-year block (1.16 / 1.38 / 0.76) — not one lucky window.
+- **Costs**: Sharpe degrades gracefully from 1.23 at 5bp to 0.84 at 100bp total friction.
+- **Latency**: robust to 1-2 day delays (results within noise of zero-latency).
+- **Parameters**: edge concentrates at short lookbacks (25-75d, Sharpe 0.87-1.24) and decays to ~0 at 200d — a real fragility, disclosed rather than hidden. The walk-forward picks per fold, so this shows up as selection, not as a single tuned number.
+- **Execution**: close vs next-open are identical on crypto (Binance daily opens equal prior closes — 24h market); gaps matter only for the ETF sleeves.
 
 ## Usage
 
 ```bash
-# Full multi-asset walk-forward comparison vs the S&P 500
+# Multi-asset-class walk-forward comparison vs the S&P 500 (realistic defaults)
 python -m bot compare
 
 # Variations
-python -m bot compare --assets 1                  # BTC only
-python -m bot compare --assets 20                 # wider universe
-python -m bot compare --portfolio-vol 0.20        # tighter risk target
-python -m bot compare --train-days 730 --fee 0.0015
+python -m bot compare --assets 40                # wider crypto universe
+python -m bot compare --execution close          # optimistic fill model
+python -m bot compare --fee 0.002 --slippage-bps 20 --latency-days 1
+python -m bot sensitivity                        # all robustness sweeps on BTC
+python -m bot sensitivity --symbol ETHUSDT
 
-# Quick hourly SMA backtest (original toy strategy)
+# Original toy path & live paper trading (paper only!)
 python -m bot backtest --symbol BTCUSDT --interval 1h
-
-# Live paper trading — trendvol uses daily bars and hourly polls
 python -m bot trade --strategy trendvol
-python -m bot trade --strategy sma --interval 15m
 ```
 
 ## Project layout
@@ -71,16 +73,18 @@ python -m bot trade --strategy sma --interval 15m
 ```
 bot/
   strategy.py    # 74-candidate strategy pool + prefix-sum indicator cache
-  engine.py      # daily-bar backtest engine (no lookahead, fee-aware)
-  metrics.py     # CAGR / Sharpe / vol / max drawdown
-  walkforward.py # expanding-window walk-forward, absolute fold calendar
-  universe.py    # top-volume Binance USDT pairs
+  engine.py      # daily-bar engine: next-open execution, spread/slippage/
+                 # latency, fee-on-turnover, cash accrual, no lookahead
+  metrics.py     # CAGR / excess Sharpe / vol / max drawdown
+  walkforward.py # expanding-window walk-forward + survivorship-safe combine
+  regimes.py     # bull/bear/sideways segmentation + stress windows
+  sensitivity.py # parameter / rolling / cost / latency / execution sweeps
+  universe.py    # top-volume crypto + SPY/GLD/TLT cross-class ETFs
   benchmark.py   # S&P 500 data (FRED primary, Yahoo fallback)
-  data.py        # Binance candles with full-history pagination
+  data.py        # Binance + Yahoo fetchers, cleaning, stale/delist detection
   cache.py       # disk cache for daily history
-  backtest.py    # legacy simple backtester (kept for the toy SMA path)
   paper.py       # paper broker + live loop
-tests/           # 1382 unit/property tests
+tests/           # 1400 unit/property tests
 .github/         # CI workflow
 ```
 
