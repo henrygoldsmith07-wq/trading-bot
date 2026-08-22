@@ -20,7 +20,7 @@ YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?range=10y
 def _get(url: str, attempts: int = 3) -> str:
     for attempt in range(attempts):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (trading-bot research)"})
             with urllib.request.urlopen(req, timeout=15) as resp:
                 return resp.read().decode()
         except Exception:

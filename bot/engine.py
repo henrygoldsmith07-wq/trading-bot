@@ -1,10 +1,13 @@
 """Daily-bar backtest engine.
 
 The engine is deliberately simple and honest:
-- A weight function sees candles up to and including day t's close and decides
-  the position held during day t+1 (no lookahead).
+- A weight function sees candles up to and including day i-1's close and
+  decides the position held during day i (no lookahead).
 - Changing position costs `fee` times the turnover.
 - Weights are clamped to [0, 1]: long-only, unlevered.
+
+weight_fn has signature (candles, i) -> float so strategies can use cached
+prefix-sum arrays over the shared candle list instead of re-slicing windows.
 """
 from __future__ import annotations
 
@@ -28,8 +31,8 @@ def run_strategy(
 ) -> dict:
     """Backtest `weight_fn` over `candles`.
 
-    weight_fn(candles[:i]) -> float in [0, 1] is the target exposure for day i.
-    Returns equity curve, daily returns, and summary stats.
+    weight_fn(candles, i) -> target exposure for day i, using data through
+    day i-1 only. Returns equity curve, daily returns, and summary stats.
     """
     n = len(candles)
     if n < 2:
@@ -38,11 +41,10 @@ def run_strategy(
     returns = []
     weights = []
     prev_w = 0.0
+    closes = [c["close"] for c in candles]
     for i in range(start_index, n):
-        w = min(1.0, max(0.0, weight_fn(candles[:i])))
-        asset_ret = candles[i]["close"] / candles[i - 1]["close"] - 1.0
-        cost = fee * abs(w - prev_w)
-        r = w * asset_ret - cost
+        w = min(1.0, max(0.0, weight_fn(candles, i)))
+        r = w * (closes[i] / closes[i - 1] - 1.0) - fee * abs(w - prev_w)
         equity.append(equity[-1] * (1.0 + r))
         returns.append(r)
         weights.append(w)
@@ -55,8 +57,5 @@ def run_strategy(
     stats["equity"] = equity
     stats["returns"] = returns
     stats["weights"] = weights
+    stats["return_days"] = [(candles[i]["open_time"], returns[k]) for k, i in enumerate(range(start_index, n))]
     return stats
-
-
-def buy_hold_weight(candles: list[dict]) -> float:
-    return 1.0
