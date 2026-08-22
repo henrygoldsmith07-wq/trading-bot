@@ -79,7 +79,7 @@ def run_compare(args) -> int:
     from .cache import load_or_fetch
     from .data import DAY_MS as _D, fetch_daily_history, fetch_yahoo_daily, is_stale
     from .universe import ETF_UNIVERSE, top_symbols
-    from .walkforward import absolute_folds, combine_portfolio, walk_forward_at
+    from .walkforward import absolute_folds, combine_portfolio, combine_portfolio_invvol, walk_forward_at
 
     t_start = _time.perf_counter()
     engine_kwargs = dict(
@@ -143,10 +143,12 @@ def run_compare(args) -> int:
             picks_counter[p["strategy"]] = picks_counter.get(p["strategy"], 0) + 1
         asset_dailies[symbol] = {t: r for t, r in wf["daily"].items() if oos_start_ms <= t < oos_end_ms}
     port_returns = combine_portfolio(asset_dailies, timeline, n_selected)
+    iv_returns = combine_portfolio_invvol(asset_dailies, timeline, n_selected)
     t_compute = _time.perf_counter()
 
     port = _equity_metrics(port_returns, risk_free_annual=args.risk_free)
     port_rm = _equity_metrics(_vol_overlay(port_returns, target=args.portfolio_vol), risk_free_annual=args.risk_free)
+    iv_rm = _equity_metrics(_vol_overlay(iv_returns, target=args.portfolio_vol), risk_free_annual=args.risk_free)
 
     print("\nFetching S&P 500 daily history (FRED)...")
     sp = fetch_sp500()
@@ -165,17 +167,17 @@ def run_compare(args) -> int:
     for name, count in sorted(picks_counter.items(), key=lambda kv: -kv[1])[:5]:
         print(f"  {name} x{count}")
     print()
-    header = f"{'':18}{'Bot (risk-mgd)':>16}{'Bot (raw)':>13}{'S&P 500':>12}{'BTC b&h':>11}"
+    header = f"{'':18}{'Bot inv-vol':>14}{'Bot equal':>13}{'Bot raw eq':>12}{'S&P 500':>12}{'BTC b&h':>11}"
     print(header)
     print("-" * len(header))
-    print(f"{'CAGR':18}{_fmt_pct(port_rm['cagr']):>16}{_fmt_pct(port['cagr']):>13}{_fmt_pct(spx['cagr']):>12}{_fmt_pct(bh['cagr']):>11}")
-    print(f"{'Volatility':18}{_fmt_pct(port_rm['vol']):>16}{_fmt_pct(port['vol']):>13}{_fmt_pct(spx['vol']):>12}{_fmt_pct(bh['vol']):>11}")
-    print(f"{'Sharpe (excess)':18}{port_rm['sharpe']:>16.2f}{port['sharpe']:>13.2f}{spx['sharpe']:>12.2f}{bh['sharpe']:>11.2f}")
-    print(f"{'Max drawdown':18}{_fmt_pct(port_rm['max_drawdown']):>16}{_fmt_pct(port['max_drawdown']):>13}{_fmt_pct(spx['max_drawdown']):>12}{_fmt_pct(bh['max_drawdown']):>11}")
-    print(f"{'Sortino':18}{port_rm['sortino']:>16.2f}{port['sortino']:>13.2f}{spx['sortino']:>12.2f}{bh['sortino']:>11.2f}")
-    print(f"{'Calmar':18}{port_rm['calmar']:>16.2f}{port['calmar']:>13.2f}{spx['calmar']:>12.2f}{bh['calmar']:>11.2f}")
-    print(f"{'ES 95% (1d)':18}{_fmt_pct(port_rm['es95']):>16}{_fmt_pct(port['es95']):>13}{_fmt_pct(spx['es95']):>12}{_fmt_pct(bh['es95']):>11}")
-    print(f"{'Growth of $1':18}{port_rm['final']:>16.2f}{port['final']:>13.2f}{spx['final']:>12.2f}{bh['final']:>11.2f}")
+    print(f"{'CAGR':18}{_fmt_pct(iv_rm['cagr']):>14}{_fmt_pct(port_rm['cagr']):>13}{_fmt_pct(port['cagr']):>12}{_fmt_pct(spx['cagr']):>12}{_fmt_pct(bh['cagr']):>11}")
+    print(f"{'Volatility':18}{_fmt_pct(iv_rm['vol']):>14}{_fmt_pct(port_rm['vol']):>13}{_fmt_pct(port['vol']):>12}{_fmt_pct(spx['vol']):>12}{_fmt_pct(bh['vol']):>11}")
+    print(f"{'Sharpe (excess)':18}{iv_rm['sharpe']:>14.2f}{port_rm['sharpe']:>13.2f}{port['sharpe']:>12.2f}{spx['sharpe']:>12.2f}{bh['sharpe']:>11.2f}")
+    print(f"{'Max drawdown':18}{_fmt_pct(iv_rm['max_drawdown']):>14}{_fmt_pct(port_rm['max_drawdown']):>13}{_fmt_pct(port['max_drawdown']):>12}{_fmt_pct(spx['max_drawdown']):>12}{_fmt_pct(bh['max_drawdown']):>11}")
+    print(f"{'Sortino':18}{iv_rm['sortino']:>14.2f}{port_rm['sortino']:>13.2f}{port['sortino']:>12.2f}{spx['sortino']:>12.2f}{bh['sortino']:>11.2f}")
+    print(f"{'Calmar':18}{iv_rm['calmar']:>14.2f}{port_rm['calmar']:>13.2f}{port['calmar']:>12.2f}{spx['calmar']:>12.2f}{bh['calmar']:>11.2f}")
+    print(f"{'ES 95% (1d)':18}{_fmt_pct(iv_rm['es95']):>14}{_fmt_pct(port_rm['es95']):>13}{_fmt_pct(port['es95']):>12}{_fmt_pct(spx['es95']):>12}{_fmt_pct(bh['es95']):>11}")
+    print(f"{'Growth of $1':18}{iv_rm['final']:>14.2f}{port_rm['final']:>13.2f}{port['final']:>12.2f}{spx['final']:>12.2f}{bh['final']:>11.2f}")
     print(f"\nFrictions: execution={args.execution}, fee={args.fee:.2%}, spread={args.spread_bps:.0f}bp, "
           f"slippage={args.slippage_bps:.0f}bp, latency={args.latency_days}d, cash yield={args.risk_free:.0%}/yr")
     print("Benchmark consistency: same window/calendar-day CAGR; Sharpe in excess of the same risk-free rate; index is untradeable so carries no costs.")
@@ -373,6 +375,19 @@ def run_validate(args) -> int:
     stab = parameter_stability(grid)
     print(f"  TrendVol grid Sharpe: min {stab['min']:.2f} / median {stab['median']:.2f} / max {stab['max']:.2f}; "
           f"{stab['share_above_half_max']:.0%} of cells >= half-max; mean neighbor delta {stab['mean_neighbor_delta']:.2f}")
+
+    print("\n[8] A-priori fixed rule (no selection, N=1 trials)...")
+    from .strategy import risk_ensemble
+
+    fixed = walk_forward_at(candles, folds, candidates=[risk_ensemble()], **engine_kwargs)
+    fdays = sorted(fixed["daily"])
+    foos = [fixed["daily"][t] for t in fdays]
+    fpsr = psr(foos)
+    fdsr = dsr(foos, [fixed["sharpe"]], 1)
+    print(f"  RiskEnsemble OOS: CAGR {_fmt_pct(fixed['cagr'])}, Sharpe {fixed['sharpe']:.2f}, maxDD {_fmt_pct(fixed['max_drawdown'])}")
+    print(f"  PSR {fpsr:.3f}, DSR {fdsr:.3f} (trial count = 1: nothing was selected, so nothing to deflate)")
+    print(f"  vs selected stream: PSR {p:.3f}, DSR {d:.3f} at {trials} trials")
+    print("  if the fixed rule's DSR beats the selected stream's, the honest edge is the rule — not the search")
     return 0
 
 

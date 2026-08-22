@@ -254,6 +254,63 @@ def combine_portfolio(asset_dailies: dict[str, dict[int, float]], timeline: list
     return out
 
 
+def combine_portfolio_invvol(
+    asset_dailies: dict[str, dict[int, float]],
+    timeline: list[int],
+    n_assets: int,
+    window: int = 20,
+    max_multiple_of_equal: float = 2.0,
+) -> list[float]:
+    """Inverse-volatility-weighted portfolio returns.
+
+    Same survivorship control as the equal-weight combiner: the day's total
+    exposure is (assets with data) / (selected assets) — a missing asset's
+    sleeve sits in cash rather than being redistributed. Within the assets
+    that do trade, weights are proportional to 1/trailing-vol (computed from
+    strictly past returns), capped at `max_multiple_of_equal` x the equal
+    weight so a single low-vol asset (e.g. a bond ETF) cannot dominate.
+    """
+    import math
+
+    syms = list(asset_dailies)
+    hist: dict[str, list[float]] = {s: [] for s in syms}
+    out = []
+    for t in timeline:
+        present = [s for s in syms if t in asset_dailies[s]]
+        if not present:
+            out.append(0.0)
+            continue
+        if any(len(hist[s]) >= window for s in present):
+            raw = {}
+            for s in present:
+                h = hist[s][-window:]
+                if len(h) < 2:
+                    raw[s] = 1.0  # no usable history yet: neutral weight
+                    continue
+                m = sum(h) / len(h)
+                var = sum((x - m) ** 2 for x in h) / (len(h) - 1)
+                vol = math.sqrt(max(var, 0.0) * 365)
+                raw[s] = 1.0 / max(vol, 1e-6)
+            cap = max_multiple_of_equal / len(present)
+            total_raw = sum(raw.values())
+            weights = {s: min(cap, raw[s] / total_raw) for s in present}
+            # renormalize once after capping (capped assets give back the excess)
+            free = [s for s in present if weights[s] < cap]
+            slack = 1.0 - sum(weights.values())
+            free_total = sum(raw[s] for s in free)
+            if free and free_total > 0 and slack > 0:
+                for s in free:
+                    weights[s] += slack * raw[s] / free_total
+        else:
+            eq = 1.0 / len(present)
+            weights = {s: eq for s in present}
+        gross = sum(weights[s] * asset_dailies[s][t] for s in present)
+        out.append(gross * len(present) / n_assets)
+        for s in present:
+            hist[s].append(asset_dailies[s][t])
+    return out
+
+
 def walk_forward(
     candles: list[dict],
     candidates: list | None = None,

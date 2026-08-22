@@ -9,13 +9,18 @@ A Python trading bot that trades **on paper only** — no real orders are ever p
 `python -m bot compare` trades a universe of top-volume crypto pairs **plus SPY, GLD, and TLT** (equity/gold/bonds), re-picks the best of 74 strategies per asset **every year using only prior data**, equal-weights the result with a fixed denominator, applies a trailing-volatility risk overlay (25% target, no lookahead), and compares against the actual S&P 500 over the same window (2020-08 → 2026-08). Defaults include **next-open execution, 10bp fee + 5bp spread + 5bp slippage per unit turnover, 3% cash yield on idle capital, excess-of-cash Sharpe everywhere**:
 
 ```
-                    Bot (risk-mgd)    Bot (raw)     S&P 500    BTC b&h
-CAGR                         27.7%        38.2%       14.9%      32.1%
-Volatility                   19.5%        24.0%       16.7%      57.3%
-Sharpe (excess)               1.20         1.34        0.74       0.72
-Max drawdown                -20.0%       -23.6%      -25.4%     -76.6%
-Growth of $1                  4.33         6.96        2.30       5.32
+                     Bot inv-vol    Bot equal  Bot raw eq     S&P 500    BTC b&h
+CAGR                       19.9%        26.9%       38.0%       14.9%      32.1%
+Volatility                 15.5%        19.7%       23.7%       16.7%      57.3%
+Sharpe (excess)             1.05         1.15        1.35        0.74       0.72
+Max drawdown              -16.5%       -23.1%      -25.8%      -25.4%     -76.6%
+Sortino                     1.82         1.79        2.13        1.06       1.07
+Calmar                      1.21         1.16        1.47        0.59       0.42
+ES 95% (1d)                -1.7%        -2.3%       -2.7%       -2.4%      -6.9%
+Growth of $1                2.97         4.17        6.89        2.30       5.32
 ```
+
+Two algorithms now report side by side: **equal-weight** (higher return) and **inverse-volatility weighted** (each asset's sleeve sized by 1/trailing-vol, capped at 2x equal weight) — the latter runs at 15.5% volatility with a -16.5% max drawdown, roughly two-thirds of the S&P's drawdown while still beating its CAGR. The candidate pool grew to 85 strategies with three new families: time-series momentum (`TSMom`), multi-horizon `DualMomentum`, and `RiskEnsemble`.
 
 Beats the S&P 500 on CAGR, excess Sharpe, and max drawdown simultaneously — with the frictions of real trading priced in.
 
@@ -64,6 +69,8 @@ Runs the full inferential battery on the walk-forward record (`bot/stats_validat
 
 **What it honestly finds on BTC (the weakest link, disclosed):** PSR = 0.998, but **DSR = 0.110** — after correcting for 74 trials, the single-asset Sharpe does not clear the conventional 0.95 bar. The Reality Check p-value lands at 0.050, exactly on the boundary. Trimming 180 days off the start of the window cuts CAGR from 26.5% to 7.3%, so the 2020-21 regime drives much of the single-asset result. Nested selection degrades to picking buy-and-hold (inner purged folds with 220-day purges find no selection edge on one asset). The multi-asset portfolio result above is stronger — cross-asset diversification averages partly-independent bets — but the deflation finding stands as the repo's most important caveat: treat all headline numbers as regime-dependent research, not established alpha.
 
+**The fix the statistics point at (`validate` section 8):** running the a-priori `RiskEnsemble` — a fixed blend of trend, momentum, and dip-buying chosen *before* looking at anything, so the trial count is 1 — yields a lower raw Sharpe (0.51) but **DSR = 0.961**: it clears the statistical bar precisely because nothing was searched. The selected stream (Sharpe 1.03, DSR 0.138 across 85 trials) cannot make the same claim. The honest conclusion: the defensible edge is the fixed rule plus diversification, not the per-fold search — and the repo now ships both so you can watch which one the forward test (below) vindicates.
+
 ## Usage
 
 ```bash
@@ -100,7 +107,7 @@ bot/
   data.py        # Binance + Yahoo fetchers, cleaning, stale/delist detection
   cache.py       # disk cache for daily history
   paper.py       # paper broker + live loop
-tests/           # 1425 unit/property tests
+tests/           # 1648 unit/property tests
 .github/         # CI workflow
 ```
 

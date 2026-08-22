@@ -65,7 +65,7 @@ def slice_window(rows: list[dict], start_date, end_date) -> list[dict]:
 
 def equity_metrics(rows: list[dict], risk_free_annual: float = 0.0) -> dict:
     """Metrics for a buy-and-hold equity curve over the given daily closes."""
-    from .metrics import cagr, max_drawdown, sharpe, volatility
+    from .metrics import calmar, cagr, expected_shortfall, max_drawdown, sharpe, sortino, var_hist, volatility
 
     closes = [r["close"] for r in rows]
     if len(closes) < 3:
@@ -76,10 +76,16 @@ def equity_metrics(rows: list[dict], risk_free_annual: float = 0.0) -> dict:
     returns = [equity[i] / equity[i - 1] - 1.0 for i in range(1, len(equity))]
     days = (rows[-1]["date"] - rows[0]["date"]).days
     periods = 252  # S&P trading days per year
+    mdd = max_drawdown(equity)
+    cagr_v = cagr(equity, days)
     return {
-        "cagr": cagr(equity, days),
+        "cagr": cagr_v,
         "vol": volatility(returns, periods),
         "sharpe": sharpe(returns, periods, risk_free_annual),
-        "max_drawdown": max_drawdown(equity),
+        "sortino": sortino(returns, periods, risk_free_annual),
+        "calmar": calmar(cagr_v, mdd),
+        "max_drawdown": mdd,
+        "var95": var_hist(returns, 0.95),
+        "es95": expected_shortfall(returns, 0.95),
         "final": equity[-1],
     }

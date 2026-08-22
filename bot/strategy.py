@@ -267,6 +267,57 @@ class MacdTrend(WeightStrategy):
         return f"MacdTrend({self.fast},{self.slow},{self.signal})"
 
 
+class TSMom(WeightStrategy):
+    """Time-series momentum: long while the cumulative return over the last
+    `horizon` days is positive, sized by inverse realized volatility."""
+
+    def __init__(self, horizon: int = 63, vol_window: int = 20, target_vol: float = 0.35):
+        self.horizon = horizon
+        self.vol_window = vol_window
+        self.target_vol = target_vol
+
+    def weight_at(self, candles, i):
+        if i < self.horizon + self.vol_window + 1:
+            return 0.0
+        s = self._series(candles)
+        if s.pr[i] - s.pr[i - self.horizon] <= 0:
+            return 0.0
+        rv = s.ann_vol(i, self.vol_window)
+        if rv <= 0:
+            return 1.0
+        return min(1.0, self.target_vol / rv)
+
+    def __repr__(self):
+        return f"TSMom({self.horizon},{self.target_vol:.2f})"
+
+
+class DualMomentum(WeightStrategy):
+    """Multi-horizon time-series momentum: weight scales with the fraction of
+    horizons whose trailing return is positive, then by inverse volatility."""
+
+    def __init__(self, horizons=(63, 126, 252), vol_window: int = 20, target_vol: float = 0.30):
+        self.horizons = tuple(horizons)
+        self.vol_window = vol_window
+        self.target_vol = target_vol
+
+    def weight_at(self, candles, i):
+        need = max(self.horizons) + self.vol_window + 1
+        if i < need:
+            return 0.0
+        s = self._series(candles)
+        up = sum(1 for h in self.horizons if s.pr[i] - s.pr[i - h] > 0)
+        base = up / len(self.horizons)
+        if base == 0:
+            return 0.0
+        rv = s.ann_vol(i, self.vol_window)
+        scale = min(1.0, self.target_vol / rv) if rv > 0 else 1.0
+        return base * scale
+
+    def __repr__(self):
+        hs = "/".join(str(h) for h in self.horizons)
+        return f"DualMom({hs},{self.target_vol:.2f})"
+
+
 class Ensemble(WeightStrategy):
     """Average of member strategies' weights — diversifies regime bets."""
 
@@ -284,11 +335,27 @@ class Ensemble(WeightStrategy):
         return "Ensemble(" + ",".join(repr(m) for m in self.members) + ")"
 
 
+def risk_ensemble() -> Ensemble:
+    """The a-priori, no-selection strategy: a fixed blend of trend, momentum,
+    and dip-buying across horizons. Using it directly makes the multiple-
+    testing trial count 1 instead of 74, which is exactly what the deflated
+    Sharpe ratio punishes."""
+    return Ensemble(
+        [
+            TrendVol(50, 20, 0.30),
+            TrendVol(100, 20, 0.30),
+            TSMom(63, 20, 0.30),
+            DualMomentum((63, 126, 252), 20, 0.30),
+            RsiDipBuy(2, 65, 200),
+        ]
+    )
+
+
 def build_candidates() -> list:
-    """Systematic candidate pool for walk-forward selection (~70 strategies).
+    """Systematic candidate pool for walk-forward selection (~85 strategies).
 
     A grid over trend lookbacks, volatility targets, RSI dip-buy settings,
-    MACD parameter sets, and blends of the above.
+    MACD parameter sets, momentum horizons, and blends of the above.
     """
     candidates = [BuyHold()]
     candidates += [
@@ -304,6 +371,13 @@ def build_candidates() -> list:
                 candidates.append(RsiDipBuy(period, exit_above, trend_filter))
     for f, s, g in [(12, 26, 9), (8, 21, 5), (16, 32, 9)]:
         candidates.append(MacdTrend(f, s, g))
+    for horizon, target in [(63, 0.30), (63, 0.45), (126, 0.30), (126, 0.45), (189, 0.35)]:
+        candidates.append(TSMom(horizon, 20, target))
+    candidates += [
+        DualMomentum((63, 126, 252), 20, 0.30),
+        DualMomentum((42, 84, 168), 20, 0.35),
+        DualMomentum((63, 126), 20, 0.30),
+    ]
     candidates += [
         Ensemble([TrendVol(50, 20, 0.30), TrendVol(100, 20, 0.30), TrendVol(200, 20, 0.30)]),
         Ensemble([TrendVol(50, 20, 0.40), TrendVol(100, 20, 0.25), RsiDipBuy(2, 65, 200)]),
@@ -313,6 +387,9 @@ def build_candidates() -> list:
         Ensemble([TrendVol(75, 20, 0.30), TrendVol(150, 20, 0.30)]),
         Ensemble([RsiDipBuy(2, 65, 200), RsiDipBuy(3, 60, 150), MacdTrend()]),
         Ensemble([TrendVol(25, 20, 0.40), TrendVol(50, 20, 0.40), TrendVol(100, 20, 0.40)]),
+        Ensemble([TrendVol(50, 20, 0.30), TSMom(63, 20, 0.30), RsiDipBuy(2, 65, 200)]),
+        Ensemble([TSMom(63, 20, 0.35), TSMom(126, 20, 0.35), DualMomentum((63, 126, 252), 20, 0.30)]),
+        risk_ensemble(),
     ]
     return candidates
 
@@ -328,6 +405,9 @@ _STRATEGY_TYPES = {
     "TrendVol": TrendVol,
     "RsiDipBuy": RsiDipBuy,
     "MacdTrend": MacdTrend,
+    "TSMom": TSMom,
+    "DualMomentum": DualMomentum,
+    "Ensemble": Ensemble,
 }
 
 
@@ -336,6 +416,8 @@ def strategy_to_spec(strategy) -> dict:
     name = type(strategy).__name__
     if name not in _STRATEGY_TYPES:
         raise ValueError(f"strategy {name!r} cannot be frozen")
+    if isinstance(strategy, Ensemble):
+        return {"type": "Ensemble", "members": [strategy_to_spec(m) for m in strategy.members]}
     params = {
         k: v
         for k, v in vars(strategy).items()
@@ -350,4 +432,6 @@ def strategy_from_spec(spec: dict):
     t = _STRATEGY_TYPES.get(spec.get("type"))
     if t is None:
         raise ValueError(f"unknown frozen strategy {spec!r}")
+    if spec.get("type") == "Ensemble":
+        return Ensemble([strategy_from_spec(m) for m in spec.get("members", [])])
     return t(**spec.get("params", {}))
