@@ -46,6 +46,72 @@ def max_drawdown(equity: list[float]) -> float:
     return mdd
 
 
+def downside_deviation(returns: list[float], periods_per_year: int, risk_free_annual: float = 0.0) -> float:
+    """Annualized downside deviation: RMS of returns below the cash rate."""
+    if not returns:
+        return 0.0
+    rf_daily = risk_free_annual / periods_per_year
+    shortfall = [min(r - rf_daily, 0.0) for r in returns]
+    return math.sqrt(sum(x * x for x in shortfall) / len(shortfall)) * math.sqrt(periods_per_year)
+
+
+def sortino(returns: list[float], periods_per_year: int, risk_free_annual: float = 0.0) -> float:
+    if len(returns) < 2:
+        return 0.0
+    dd = downside_deviation(returns, periods_per_year, risk_free_annual)
+    if dd == 0:
+        return 0.0
+    excess_annual = (mean(returns) - risk_free_annual / periods_per_year) * periods_per_year
+    return excess_annual / dd
+
+
+def calmar(cagr_value: float, max_drawdown_value: float) -> float:
+    if max_drawdown_value >= 0:
+        return 0.0
+    return cagr_value / abs(max_drawdown_value)
+
+
+def var_hist(returns: list[float], alpha: float = 0.95) -> float:
+    """Historical Value-at-Risk (descriptive only, not a risk limit)."""
+    if not returns:
+        return 0.0
+    ordered = sorted(returns)
+    idx = max(0, min(len(ordered) - 1, int((1 - alpha) * len(ordered))))
+    return ordered[idx]
+
+
+def expected_shortfall(returns: list[float], alpha: float = 0.95) -> float:
+    """Average loss in the worst (1-alpha) fraction of days."""
+    if not returns:
+        return 0.0
+    ordered = sorted(returns)
+    k = max(1, int((1 - alpha) * len(ordered)))
+    return mean(ordered[:k])
+
+
+def skewness(returns: list[float]) -> float:
+    if len(returns) < 3:
+        return 0.0
+    m = mean(returns)
+    m2 = sum((x - m) ** 2 for x in returns) / len(returns)
+    if m2 == 0:
+        return 0.0
+    m3 = sum((x - m) ** 3 for x in returns) / len(returns)
+    return m3 / m2 ** 1.5
+
+
+def kurtosis(returns: list[float]) -> float:
+    """Raw kurtosis (normal = 3), not excess."""
+    if len(returns) < 4:
+        return 3.0
+    m = mean(returns)
+    m2 = sum((x - m) ** 2 for x in returns) / len(returns)
+    if m2 == 0:
+        return 3.0
+    m4 = sum((x - m) ** 4 for x in returns) / len(returns)
+    return m4 / m2 ** 2
+
+
 def summarize(equity: list[float], returns: list[float], days: float, periods_per_year: int, risk_free_annual: float = 0.0) -> dict:
     return {
         "final": equity[-1],

@@ -47,8 +47,22 @@ How the pipeline addresses each dimension:
 - **Rolling blocks**: positive OOS Sharpe in every 2-year block (1.16 / 1.38 / 0.76) — not one lucky window.
 - **Costs**: Sharpe degrades gracefully from 1.23 at 5bp to 0.84 at 100bp total friction.
 - **Latency**: robust to 1-2 day delays (results within noise of zero-latency).
-- **Parameters**: edge concentrates at short lookbacks (25-75d, Sharpe 0.87-1.24) and decays to ~0 at 200d — a real fragility, disclosed rather than hidden. The walk-forward picks per fold, so this shows up as selection, not as a single tuned number.
+- **Parameters**: edge concentrates at short lookbacks (25-75d) and decays to ~0 at 200d — a real fragility, disclosed rather than hidden.
 - **Execution**: close vs next-open are identical on crypto (Binance daily opens equal prior closes — 24h market); gaps matter only for the ETF sleeves.
+
+## Statistical validation (`python -m bot validate`)
+
+Runs the full inferential battery on the walk-forward record (`bot/stats_validation.py`, stdlib only):
+
+- **Nested walk-forward selection** — an inner purged CV inside each training window picks the strategy, separating selection overfitting from trading edge
+- **Purged cross-validation + embargo** — inner folds are purged by 220 days (max indicator lookback) and every training window is embargoed 30 days before its test
+- **Probabilistic Sharpe (PSR)** and **Deflated Sharpe (DSR)** — deflated using the true trial count (74) and the observed variance of trial Sharpes recorded during selection
+- **White's Reality Check** — block-bootstrap max-across-all-74-strategies null test on aligned OOS streams
+- **Stationary block bootstrap** — 90% CIs for CAGR/Sharpe plus the max-drawdown distribution (median / p95 / worst)
+- **Monte Carlo trade-order resampling** — drawdown of the actual return sequence vs shuffled orderings
+- **Start/end-date sensitivity**, **parameter-stability scoring**, and the distribution/tail panel: skew, kurtosis, VaR (descriptive), expected shortfall, Sortino, Calmar, exposure, turnover
+
+**What it honestly finds on BTC (the weakest link, disclosed):** PSR = 0.998, but **DSR = 0.110** — after correcting for 74 trials, the single-asset Sharpe does not clear the conventional 0.95 bar. The Reality Check p-value lands at 0.050, exactly on the boundary. Trimming 180 days off the start of the window cuts CAGR from 26.5% to 7.3%, so the 2020-21 regime drives much of the single-asset result. Nested selection degrades to picking buy-and-hold (inner purged folds with 220-day purges find no selection edge on one asset). The multi-asset portfolio result above is stronger — cross-asset diversification averages partly-independent bets — but the deflation finding stands as the repo's most important caveat: treat all headline numbers as regime-dependent research, not established alpha.
 
 ## Usage
 
@@ -61,7 +75,8 @@ python -m bot compare --assets 40                # wider crypto universe
 python -m bot compare --execution close          # optimistic fill model
 python -m bot compare --fee 0.002 --slippage-bps 20 --latency-days 1
 python -m bot sensitivity                        # all robustness sweeps on BTC
-python -m bot sensitivity --symbol ETHUSDT
+python -m bot validate                           # full statistical battery on BTC
+python -m bot validate --symbol ETHUSDT --rc-boots 250
 
 # Original toy path & live paper trading (paper only!)
 python -m bot backtest --symbol BTCUSDT --interval 1h
@@ -77,14 +92,15 @@ bot/
                  # latency, fee-on-turnover, cash accrual, no lookahead
   metrics.py     # CAGR / excess Sharpe / vol / max drawdown
   walkforward.py # expanding-window walk-forward + survivorship-safe combine
-  regimes.py     # bull/bear/sideways segmentation + stress windows
+  regime.py     # bull/bear/sideways segmentation + stress windows
   sensitivity.py # parameter / rolling / cost / latency / execution sweeps
+  stats_validation.py # PSR, DSR, block bootstrap, Reality Check, shuffle MC
   universe.py    # top-volume crypto + SPY/GLD/TLT cross-class ETFs
   benchmark.py   # S&P 500 data (FRED primary, Yahoo fallback)
   data.py        # Binance + Yahoo fetchers, cleaning, stale/delist detection
   cache.py       # disk cache for daily history
   paper.py       # paper broker + live loop
-tests/           # 1400 unit/property tests
+tests/           # 1425 unit/property tests
 .github/         # CI workflow
 ```
 

@@ -57,8 +57,17 @@ def walk_forward_at(
     latency_days: int = 0,
     execution: str = "close",
     risk_free_annual: float = 0.0,
+    embargo_days: int = 0,
+    selection_fn=None,
 ) -> dict:
     """Walk-forward using absolute fold boundaries.
+
+    `embargo_days` trims the tail of each training window used for strategy
+    selection, so no information within `embargo_days` of the test window can
+    influence the pick. `selection_fn(candidates, train_slice, engine_kwargs)`
+    may override the default pick-by-train-Sharpe rule (used for nested
+    walk-forward). Trial Sharpes of every candidate are recorded for
+    multiple-testing corrections (DSR / Reality Check).
 
     Returns per-day out-of-sample returns keyed by the day's open_time, the
     per-fold strategy picks, and summary statistics.
@@ -69,54 +78,59 @@ def walk_forward_at(
     if not abs_folds:
         raise ValueError("no folds supplied")
 
+    engine_kwargs = dict(
+        fee=fee,
+        periods_per_year=periods_per_year,
+        spread_bps=spread_bps,
+        slippage_bps=slippage_bps,
+        latency_days=latency_days,
+        execution=execution,
+        risk_free_annual=risk_free_annual,
+    )
+
+    def _run(slice_, cand):
+        return run_strategy(slice_, cand.weight_at, **engine_kwargs)
+
     daily: dict[int, float] = {}
     picks = []
+    trial_sharpes: list[float] = []
+    exposures = []
+    turnovers = []
+    day_weights = []
     for train_end_time, test_end_time in abs_folds:
         train_end = bisect_left(times, train_end_time)
         test_end = bisect_left(times, test_end_time)
         if train_end >= n or train_end < 2 or test_end <= train_end:
             continue
-        train_slice = candles[:train_end]
+        selection_slice = candles[: max(2, train_end - embargo_days)]
         test_slice = candles[train_end:test_end + 1]
 
-        best = None
-        best_sharpe = float("-inf")
-        for cand in candidates:
-            try:
-                tr = run_strategy(
-                    train_slice,
-                    cand.weight_at,
-                    fee=fee,
-                    periods_per_year=periods_per_year,
-                    spread_bps=spread_bps,
-                    slippage_bps=slippage_bps,
-                    latency_days=latency_days,
-                    execution=execution,
-                    risk_free_annual=risk_free_annual,
-                )
-            except (ValueError, ZeroDivisionError):
-                continue
-            s = tr["sharpe"]
-            if s > best_sharpe:
-                best_sharpe = s
-                best = cand
+        if selection_fn is not None:
+            best = selection_fn(candidates, selection_slice, engine_kwargs)
+            best_sharpe = float("nan")
+        else:
+            best = None
+            best_sharpe = float("-inf")
+            for cand in candidates:
+                try:
+                    tr = _run(selection_slice, cand)
+                except (ValueError, ZeroDivisionError):
+                    continue
+                s = tr["sharpe"]
+                trial_sharpes.append(s)
+                if s > best_sharpe:
+                    best_sharpe = s
+                    best = cand
         if best is None:
             continue
         picks.append({"strategy": repr(best), "train_sharpe": best_sharpe})
 
-        te = run_strategy(
-            test_slice,
-            best.weight_at,
-            fee=fee,
-            periods_per_year=periods_per_year,
-            spread_bps=spread_bps,
-            slippage_bps=slippage_bps,
-            latency_days=latency_days,
-            execution=execution,
-            risk_free_annual=risk_free_annual,
-        )
+        te = _run(test_slice, best)
         for t, r in te["return_days"]:
             daily[t] = r
+        exposures.append(te["exposure"])
+        turnovers.append(te["turnover"])
+        day_weights.append(len(te["returns"]))
 
     if not daily:
         raise ValueError("no out-of-sample days produced (insufficient history)")
@@ -126,6 +140,7 @@ def walk_forward_at(
     for r in returns:
         equity.append(equity[-1] * (1.0 + r))
     span_days = (days_sorted[-1] - days_sorted[0]) / DAY_MS + 1
+    total_days = sum(day_weights) or 1
     result = {
         "equity": equity[-1],
         "cagr": cagr(equity, span_days),
@@ -137,8 +152,88 @@ def walk_forward_at(
         "daily": daily,
         "first_day": days_sorted[0],
         "last_day": days_sorted[-1],
+        "trial_sharpes": trial_sharpes,
+        "exposure": sum(e * w for e, w in zip(exposures, day_weights)) / total_days,
+        "turnover": sum(t * w for t, w in zip(turnovers, day_weights)) / total_days,
     }
     return result
+
+
+def _purged_inner_folds(candles: list[dict], train_days: int, test_days: int, purge_days: int) -> list[tuple[int, int, int]]:
+    """Inner (selection) folds with a purge gap of `purge_days` between the
+    end of training and the start of testing, so indicators computed on
+    training data cannot reach into the evaluation window."""
+    times = [c["open_time"] for c in candles]
+    n = len(candles)
+    folds = []
+    epoch = times[0]
+    while True:
+        train_end = bisect_left(times, epoch + train_days * DAY_MS)
+        if train_end >= n:
+            break
+        test_start = bisect_left(times, times[train_end] + purge_days * DAY_MS)
+        if test_start >= n:
+            break
+        test_end = bisect_left(times, times[test_start] + test_days * DAY_MS)
+        if test_end - test_start < 30:
+            break
+        folds.append((0, train_end, test_start, test_end))
+        epoch += test_days * DAY_MS
+    return folds
+
+
+def nested_selection_fn(inner_train_days: int = 365, inner_test_days: int = 182, purge_days: int = 220, embargo_days: int = 30):
+    """Build a selection function that picks candidates by *inner* walk-forward
+    performance on the training window (nested walk-forward selection)."""
+
+    def select(candidates, train_slice, engine_kwargs):
+        inner_folds = _purged_inner_folds(train_slice, inner_train_days, inner_test_days, purge_days)
+        best = None
+        best_score = float("-inf")
+        for cand in candidates:
+            scores = []
+            for _, train_end, test_start, test_end in inner_folds:
+                sel = train_slice[: max(2, train_end - embargo_days)]
+                test = train_slice[test_start:test_end + 1]
+                if len(test) < 30:
+                    continue
+                try:
+                    tr = run_strategy(test, cand.weight_at, **engine_kwargs)
+                except (ValueError, ZeroDivisionError):
+                    continue
+                scores.append(tr["sharpe"])
+            if not scores:
+                continue
+            score = sum(scores) / len(scores)
+            if score > best_score:
+                best_score = score
+                best = cand
+        return best
+
+    return select
+
+
+def fixed_candidate_streams(candles: list[dict], abs_folds: list[tuple[int, int]], candidates: list, **engine_kwargs) -> dict[str, dict[int, float]]:
+    """OOS daily return streams for every candidate trading ALL folds with no
+    selection — the raw material for White's Reality Check."""
+    times = [c["open_time"] for c in candles]
+    n = len(candles)
+    streams: dict[str, dict[int, float]] = {}
+    for train_end_time, test_end_time in abs_folds:
+        train_end = bisect_left(times, train_end_time)
+        test_end = bisect_left(times, test_end_time)
+        if train_end >= n or test_end <= train_end:
+            continue
+        test_slice = candles[train_end:test_end + 1]
+        for cand in candidates:
+            try:
+                te = run_strategy(test_slice, cand.weight_at, **engine_kwargs)
+            except (ValueError, ZeroDivisionError):
+                continue
+            stream = streams.setdefault(repr(cand), {})
+            for t, r in te["return_days"]:
+                stream[t] = r
+    return streams
 
 
 def combine_portfolio(asset_dailies: dict[str, dict[int, float]], timeline: list[int], n_assets: int) -> list[float]:
@@ -166,6 +261,7 @@ def walk_forward(
     test_days: int = 365,
     fee: float = 0.001,
     periods_per_year: int = 365,
+    **kwargs,
 ) -> dict:
     folds = _fold_boundaries(candles, train_days, test_days)
     if not folds:
@@ -176,4 +272,5 @@ def walk_forward(
         candidates=candidates,
         fee=fee,
         periods_per_year=periods_per_year,
+        **kwargs,
     )
