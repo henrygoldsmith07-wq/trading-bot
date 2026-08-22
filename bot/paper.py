@@ -47,24 +47,30 @@ class PaperBroker:
         )
 
 
-def run(symbol: str = "BTCUSDT", interval: str = "1h", poll_seconds: int = 60, fast: int = 20, slow: int = 50):
+def run(symbol: str = "BTCUSDT", interval: str = "1h", poll_seconds: int = 60, fast: int = 20, slow: int = 50, strategy_name: str = "sma"):
     """Live paper-trading loop. Ctrl+C to stop; state persists in paper_state.json."""
-    from .strategy import SmaCrossover
+    from .strategy import SmaCrossover, TrendVol
 
     broker = PaperBroker()
-    strategy = SmaCrossover(fast, slow)
-    print(f"Paper trading {symbol} ({interval}) | SMA {fast}/{slow} | Ctrl+C to stop")
+    if strategy_name == "trendvol":
+        strategy = TrendVol(50, 20, 0.25)  # the walk-forward out-of-sample winner
+        label = "TrendVol(50,0.25)"
+    else:
+        strategy = SmaCrossover(fast, slow)
+        label = f"SMA {fast}/{slow}"
+    print(f"Paper trading {symbol} ({interval}) | {label} | Ctrl+C to stop")
     try:
         while True:
             candles = fetch_candles(symbol, interval)
             price = candles[-1]["close"]
-            sig = strategy.signal(candles)
-            if sig is Signal.BUY:
+            w = strategy.weight(candles)
+            sig = strategy.signal(candles) if hasattr(strategy, "signal") else None
+            if sig is Signal.BUY or (strategy_name == "trendvol" and w > 0 and broker.position == 0):
                 msg = broker.buy(price)
-            elif sig is Signal.SELL:
+            elif sig is Signal.SELL or (strategy_name == "trendvol" and w == 0 and broker.position > 0):
                 msg = broker.sell(price)
             else:
-                msg = "hold"
+                msg = f"hold (target weight {w:.2f})" if strategy_name == "trendvol" else "hold"
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {symbol} {price:.2f} -> {msg} | equity {broker.equity(price):.2f}")
             time.sleep(poll_seconds)
     except KeyboardInterrupt:
