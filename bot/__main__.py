@@ -376,6 +376,152 @@ def run_validate(args) -> int:
     return 0
 
 
+def run_freeze(args) -> int:
+    import subprocess
+
+    from .cache import load_or_fetch
+    from .data import DAY_MS, fetch_daily_history, fetch_yahoo_daily, is_stale
+    from .prospective import create_freeze
+    from .universe import ETF_UNIVERSE, top_symbols
+    from .walkforward import absolute_folds, walk_forward_at
+
+    btc = load_or_fetch("BTCUSDT", lambda s: fetch_daily_history(s))[0]
+    folds = absolute_folds(btc, args.train_days, args.test_days)
+    engine_kwargs = dict(
+        fee=args.fee,
+        spread_bps=args.spread_bps,
+        slippage_bps=args.slippage_bps,
+        execution=args.execution,
+        risk_free_annual=args.risk_free,
+        embargo_days=args.embargo_days,
+    )
+    universe = ["BTCUSDT"] + [s for s in top_symbols(args.assets) if s != "BTCUSDT"]
+    universe = universe[: args.assets]
+    specs = [(s, "binance", 365) for s in universe] + [(e["symbol"], "yahoo", e["periods_per_year"]) for e in ETF_UNIVERSE]
+    min_history = args.train_days + args.test_days + 180
+    assets = []
+    print("Selecting per-asset strategies on data up to the freeze (never forward):")
+    for symbol, source, ppy in specs:
+        try:
+            candles = load_or_fetch(symbol, fetch_yahoo_daily if source == "yahoo" else fetch_daily_history)[0]
+        except Exception as e:
+            print(f"  {symbol:10} fetch failed ({e}), skipped")
+            continue
+        if len(candles) < min_history or is_stale(candles):
+            print(f"  {symbol:10} skipped (history/stale)")
+            continue
+        wf = walk_forward_at(candles, folds, periods_per_year=ppy, **engine_kwargs)
+        pick = wf["folds"][-1]["strategy"]
+        from .strategy import build_candidates
+
+        chosen = next(c for c in build_candidates() if repr(c) == pick)
+        print(f"  {symbol:10} -> {pick}")
+        assets.append(
+            {
+                "symbol": symbol,
+                "source": source,
+                "periods_per_year": ppy,
+                "strategy": chosen,
+                "oos_sharpe_at_freeze": wf["sharpe"],
+            }
+        )
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip() or None
+    except Exception:
+        commit = None
+    manifest = create_freeze(
+        assets,
+        frictions={
+            "fee": args.fee,
+            "spread_bps": args.spread_bps,
+            "slippage_bps": args.slippage_bps,
+            "execution": args.execution,
+            "risk_free_annual": args.risk_free,
+        },
+        overlay={"target_vol": args.portfolio_vol},
+        path=args.freeze_file,
+        git_commit=commit,
+    )
+    print(f"\nFroze {len(assets)} assets at {manifest['frozen_at']}")
+    print(f"config sha256: {manifest['config_sha256']}")
+    print(f"manifest: {args.freeze_file} — COMMIT IT NOW: the git timestamp is the tamper-evident freeze date")
+    return 0
+
+
+def _forward_fetch(symbol: str, source: str):
+    from .data import fetch_daily_history, fetch_yahoo_daily
+
+    try:
+        candles = fetch_yahoo_daily(symbol) if source == "yahoo" else fetch_daily_history(symbol, max_candles=400)
+        if not candles:
+            return [], "empty history"
+        return candles, None
+    except Exception as e:
+        return [], f"fetch failed: {e}"
+
+
+def run_forward(args) -> int:
+    from datetime import date as _date
+
+    from .benchmark import equity_metrics, fetch_sp500, slice_window
+    from .prospective import checkpoints_due, load_freeze, load_log, monthly_returns, outage_stats, run_step, slippage_stats
+
+    manifest = load_freeze(args.freeze_file)
+    freeze_date = _date.fromisoformat(manifest["frozen_at_date"])
+
+    if args.step:
+        result = run_step(manifest, _forward_fetch, log_path=args.log_file)
+        e = result["entry"]
+        print(f"[{e['date']}] {result['status']}: port_ret {e['port_ret']:+.4%}, overlay {e['overlay_weight']:.2f}, "
+              f"assets {len(e['assets'])}, outages {len(e['outages'])}, missed_fills {len(e['missed_fills'])}")
+
+    entries = load_log(args.log_file)
+    if not entries:
+        print("No forward entries yet — run `python -m bot forward --step` daily")
+        return 0
+
+    eq = 1.0
+    for e in entries:
+        eq *= 1.0 + e["port_ret"]
+    rets = [e["port_ret"] for e in entries]
+    as_of = _date.fromisoformat(entries[-1]["date"])
+    from .metrics import max_drawdown as _mdd
+    from .metrics import sharpe as _sharpe
+
+    print(f"\nProspective validation: frozen {freeze_date} -> last step {as_of} ({len(entries)} forward days)")
+    print(f"  bot forward: {eq:.3f}x ({(eq - 1):+.1%}), Sharpe {_sharpe(rets, 365):.2f}, maxDD {_mdd([1.0] + [x for x in _cum(rets)]):.1%}")
+
+    cps = checkpoints_due(freeze_date, as_of)
+    sp = fetch_sp500()
+    sp_window = slice_window(sp, freeze_date, as_of)
+    spx = equity_metrics(sp_window) if len(sp_window) > 3 else None
+    print("\nCheckpoints (bot vs S&P 500 over the same span):")
+    for cp in cps:
+        if not cp["due"]:
+            print(f"  {cp['label']:>10}: pending ({cp['elapsed']}/{cp['days']} days)")
+        elif spx:
+            print(f"  {cp['label']:>10}: bot {(eq - 1):+.1%} vs S&P {(spx['final'] - 1):+.1%}  [elapsed {cp['elapsed']}d]")
+
+    slip = slippage_stats(entries)
+    out = outage_stats(entries)
+    print(f"\nIncidents: mean |decision->execution| {slip['mean_abs_bps'] or 0:.0f}bp over {slip['count']} turnover events; "
+          f"{out['outage_days']} outage days ({out['outage_events']} events); {out['missed_fills']} missed fills")
+
+    months = monthly_returns(entries)
+    print("\nMonthly returns (negative periods published):")
+    for m, r in months.items():
+        marker = "  <- negative" if r < 0 else ""
+        print(f"  {m}: {r:+.2%}{marker}")
+    return 0
+
+
+def _cum(rets):
+    eq = 1.0
+    for r in rets:
+        eq *= 1.0 + r
+        yield eq
+
+
 def main():
     parser = argparse.ArgumentParser(description="Paper trading bot")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -431,6 +577,25 @@ def main():
     val.add_argument("--rc-boots", type=int, default=100)
     val.add_argument("--seed", type=int, default=42)
 
+    frz = sub.add_parser("freeze", help="Freeze strategies/params/universe into a tamper-evident manifest")
+    frz.add_argument("--assets", type=int, default=20)
+    frz.add_argument("--train-days", type=int, default=1095)
+    frz.add_argument("--test-days", type=int, default=365)
+    frz.add_argument("--fee", type=float, default=0.001)
+    frz.add_argument("--spread-bps", type=float, default=5.0)
+    frz.add_argument("--slippage-bps", type=float, default=5.0)
+    frz.add_argument("--execution", choices=["close", "next_open"], default="next_open")
+    frz.add_argument("--risk-free", type=float, default=0.03)
+    frz.add_argument("--portfolio-vol", type=float, default=0.25)
+    frz.add_argument("--embargo-days", type=int, default=30)
+    frz.add_argument("--freeze-file", default="freeze.json")
+
+    fwd = sub.add_parser("forward", help="Prospective paper trading: --step one day, --report checkpoints")
+    fwd.add_argument("--step", action="store_true", help="execute one forward day from the freeze")
+    fwd.add_argument("--report", action="store_true", help="print the checkpoint report")
+    fwd.add_argument("--freeze-file", default="freeze.json")
+    fwd.add_argument("--log-file", default="forward_log.jsonl")
+
     args = parser.parse_args()
 
     if args.command == "backtest":
@@ -452,6 +617,12 @@ def main():
         raise SystemExit(run_sensitivity(args))
     elif args.command == "validate":
         raise SystemExit(run_validate(args))
+    elif args.command == "freeze":
+        raise SystemExit(run_freeze(args))
+    elif args.command == "forward":
+        if not (args.step or args.report):
+            print("use --step and/or --report")
+        raise SystemExit(run_forward(args))
 
 
 if __name__ == "__main__":

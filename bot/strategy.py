@@ -320,3 +320,34 @@ def build_candidates() -> list:
 # Backwards-compatible alias
 def default_candidates() -> list:
     return build_candidates()
+
+
+_STRATEGY_TYPES = {
+    "BuyHold": BuyHold,
+    "SmaCrossover": SmaCrossover,
+    "TrendVol": TrendVol,
+    "RsiDipBuy": RsiDipBuy,
+    "MacdTrend": MacdTrend,
+}
+
+
+def strategy_to_spec(strategy) -> dict:
+    """Serializable spec for freezing a strategy exactly as-is."""
+    name = type(strategy).__name__
+    if name not in _STRATEGY_TYPES:
+        raise ValueError(f"strategy {name!r} cannot be frozen")
+    params = {
+        k: v
+        for k, v in vars(strategy).items()
+        if not k.startswith("_") and isinstance(v, (int, float, str, bool))
+    }
+    return {"type": name, "params": params}
+
+
+def strategy_from_spec(spec: dict):
+    """Rebuild a frozen strategy. Raises on anything unknown — the forward
+    runner never falls back to re-selection."""
+    t = _STRATEGY_TYPES.get(spec.get("type"))
+    if t is None:
+        raise ValueError(f"unknown frozen strategy {spec!r}")
+    return t(**spec.get("params", {}))
