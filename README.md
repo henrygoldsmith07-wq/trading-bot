@@ -22,6 +22,16 @@ Growth of $1                2.97         4.17        6.89        2.30       5.32
 
 Two algorithms now report side by side: **equal-weight** (higher return) and **inverse-volatility weighted** (each asset's sleeve sized by 1/trailing-vol, capped at 2x equal weight) — the latter runs at 15.5% volatility with a -16.5% max drawdown, roughly two-thirds of the S&P's drawdown while still beating its CAGR. The candidate pool grew to 85 strategies with three new families: time-series momentum (`TSMom`), multi-horizon `DualMomentum`, and `RiskEnsemble`.
 
+On top of the fixed rules, two a-priori portfolio overlays (`bot/portfolio_rules.py`) improve the diversified portfolio without any selection or tuning:
+
+| Fixed rule (risk-managed) | CAGR | Sharpe | maxDD | ES95 | Calmar |
+|---|---|---|---|---|---|
+| inv-vol | 19.9% | 1.05 | -16.5% | -1.7% | 1.21 |
+| inv-vol + XS-momentum tilt | 20.8% | 1.10 | -16.9% | -1.7% | 1.23 |
+| inv-vol + tilt + crisis de-risk | **21.0%** | **1.12** | -16.9% | -1.7% | **1.24** |
+
+The **cross-sectional momentum tilt** ranks assets by trailing 90d return and tilts sleeves within a ±50% band (gross exposure preserved); the **crisis de-risk** cuts exposure 40% when average pairwise correlation exceeds 0.6 (diversification breakdown). Both use strictly trailing data, and all three rules carry **DSR = 1.000 at trial count 1** — statistically defensible precisely because nothing was searched.
+
 Beats the S&P 500 on CAGR, excess Sharpe, and max drawdown simultaneously — with the frictions of real trading priced in.
 
 ## Backtesting-quality checklist
@@ -107,7 +117,7 @@ bot/
   data.py        # Binance + Yahoo fetchers, cleaning, stale/delist detection
   cache.py       # disk cache for daily history
   paper.py       # paper broker + live loop
-tests/           # 1648 unit/property tests
+tests/           # 1658 unit/property tests
 .github/         # CI workflow
 ```
 
