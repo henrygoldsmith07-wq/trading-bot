@@ -63,7 +63,7 @@ def avg_pairwise_corr(hists: dict[str, list[float]], window: int) -> float | Non
             b = usable[syms[j]]
             ma = sum(a) / len(a)
             mb = sum(b) / len(b)
-            cov = sum((x - ma) * (y - mb) for x, y in zip(a, b))
+            cov = sum((x - ma) * (y - mb) for x, y in zip(a, b, strict=False))
             va = sum((x - ma) ** 2 for x in a)
             vb = sum((y - mb) ** 2 for y in b)
             if va > 0 and vb > 0:

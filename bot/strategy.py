@@ -82,12 +82,12 @@ class _Series:
 
     def rsi(self, end: int, period: int) -> float:
         g = self.gains[end] - self.gains[end - period]
-        l = self.losses[end] - self.losses[end - period]
-        if l <= 0:
+        losses = self.losses[end] - self.losses[end - period]
+        if losses <= 0:
             return 100.0
         if g <= 0:
             return 0.0
-        return 100.0 - 100.0 / (1.0 + g / l)
+        return 100.0 - 100.0 / (1.0 + g / losses)
 
     def ann_vol(self, end: int, window: int, periods_per_year: int = 365) -> float:
         m = window
@@ -158,6 +158,11 @@ class SmaCrossover(WeightStrategy):
         prev_closes = closes[:-1]
         fast_prev = sma(prev_closes, self.fast)
         slow_prev = sma(prev_closes, self.slow)
+
+        if None in (fast_now, slow_now, fast_prev, slow_prev):
+            return Signal.HOLD
+        assert fast_now is not None and slow_now is not None
+        assert fast_prev is not None and slow_prev is not None
 
         if fast_prev <= slow_prev and fast_now > slow_now:
             return Signal.BUY
@@ -249,7 +254,7 @@ class MacdTrend(WeightStrategy):
             for v in close[1:]:
                 ema_f.append(v * k_f + ema_f[-1] * (1.0 - k_f))
                 ema_s.append(v * k_s + ema_s[-1] * (1.0 - k_s))
-            macd = [f - s for f, s in zip(ema_f, ema_s)]
+            macd = [f - s for f, s in zip(ema_f, ema_s, strict=True)]
             sig = [macd[0]]
             for v in macd[1:]:
                 sig.append(v * k_g + sig[-1] * (1.0 - k_g))
@@ -357,7 +362,7 @@ def build_candidates() -> list:
     A grid over trend lookbacks, volatility targets, RSI dip-buy settings,
     MACD parameter sets, momentum horizons, and blends of the above.
     """
-    candidates = [BuyHold()]
+    candidates: list = [BuyHold()]
     candidates += [
         SmaCrossover(f, s)
         for f, s in [(10, 50), (20, 100), (50, 150)]
@@ -418,20 +423,31 @@ def strategy_to_spec(strategy) -> dict:
         raise ValueError(f"strategy {name!r} cannot be frozen")
     if isinstance(strategy, Ensemble):
         return {"type": "Ensemble", "members": [strategy_to_spec(m) for m in strategy.members]}
-    params = {
-        k: v
-        for k, v in vars(strategy).items()
-        if not k.startswith("_") and isinstance(v, (int, float, str, bool))
-    }
+    params: dict = {}
+    for k, v in vars(strategy).items():
+        if k.startswith("_"):
+            continue
+        if isinstance(v, (int, float, str, bool)):
+            params[k] = v
+        elif isinstance(v, (tuple, list)):
+            # sequences (e.g. DualMomentum horizons) must survive the freeze:
+            # dropping them would silently resurrect defaults on rebuild
+            params[k] = list(v)
     return {"type": name, "params": params}
 
 
 def strategy_from_spec(spec: dict):
     """Rebuild a frozen strategy. Raises on anything unknown — the forward
     runner never falls back to re-selection."""
-    t = _STRATEGY_TYPES.get(spec.get("type"))
+    type_name = spec.get("type")
+    t = _STRATEGY_TYPES.get(type_name) if isinstance(type_name, str) else None
     if t is None:
         raise ValueError(f"unknown frozen strategy {spec!r}")
-    if spec.get("type") == "Ensemble":
+    if type_name == "Ensemble":
         return Ensemble([strategy_from_spec(m) for m in spec.get("members", [])])
-    return t(**spec.get("params", {}))
+    params: dict = dict(spec.get("params", {}))
+    # sequences were frozen as lists; restore the tuple form constructors expect
+    for k, v in params.items():
+        if isinstance(v, list):
+            params[k] = tuple(v)
+    return t(**params)

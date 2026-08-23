@@ -104,6 +104,49 @@ Runs the full inferential battery on the walk-forward record (`bot/stats_validat
 
 **The fix the statistics point at (`validate` section 8):** running the a-priori `RiskEnsemble` — a fixed blend of trend, momentum, and dip-buying chosen *before* looking at anything, so the trial count is 1 — yields a lower raw Sharpe (0.51) but **DSR = 0.961**: it clears the statistical bar precisely because nothing was searched. The selected stream (Sharpe 1.03, DSR 0.138 across 85 trials) cannot make the same claim. The honest conclusion: the defensible edge is the fixed rule plus diversification, not the per-fold search — and the repo now ships both so you can watch which one the forward test (below) vindicates.
 
+## Research-methodology battery (`python -m bot research`)
+
+A second, deeper battery (`bot/research.py`, `bot/clustering.py`, `bot/ablation.py`) that interrogates the *research process itself*:
+
+- **Hansen's SPA test** — studentized Reality Check; less sensitive to one wild candidate dominating the pool
+- **Strategy-family structure** — correlation clustering of all OOS streams, near-duplicate detection (|rho| >= 0.995), effective-trial-count estimate. On BTCUSDT the "85 candidates" collapse to ~22 families with 21 near-duplicate pairs
+- **Portfolio-level DSR** — deflation applied to portfolio/overlay variants, not just single-asset picks
+- **Strategy-family ablation** — omit one family at a time and re-run selection: negative delta = that family carries edge, positive = noise fit. On BTCUSDT removing TrendVol costs ~0.18 OOS Sharpe; nothing else matters much
+- **Overlay ablation** — every fixed rule (inv-vol / tilt / crisis de-risk / vol targeting / throttle) toggled on/off so each headline claim is attributable to a mechanism
+- **Bayesian Sharpe** — posterior over annualized Sharpe (Normal model, Jeffreys prior): credible intervals and P(Sharpe > 0)
+- **Drawdown confidence intervals** — bootstrap bands for max drawdown plus time-under-water distributions
+- **Sequence-risk testing** — rolling-window P(loss) for real entry dates vs shuffled orderings; forward block-bootstrap Monte Carlo preserving volatility clustering
+- **Probability of underperformance** — paired-bootstrap probability the bot trails buy&hold on CAGR and Sharpe over the same window
+- **Expanded bootstrap battery** — stationary, circular, and moving-block schemes reported side by side
+
+## Execution-realism extensions
+
+- **Cost models** (`bot/costs.py`): flat bps (default), volatility-dependent spread/slippage ((realized vol / reference)^0.5, clamped), square-root market impact `k * daily_vol * sqrt(participation)`, tiered maker/taker fees, and a dollar-volume liquidity filter — engine-integrated behind `CostParams`, off by default so existing results are unchanged
+- **Calendar & data handling** (`bot/data.py`): exchange-calendar-aware portfolio alignment (an ETF held over a weekend is invested-flat, not cash; late-listed and delisted spans stay in cash), gap reports, tolerance-bounded forward-fill of small outages (filled bars flagged), delisting simulation with terminal liquidation cost
+
+## Paper-trading reliability (`python -m bot trade`)
+
+Rewritten around a persistent multi-asset paper portfolio:
+
+- **Atomic state persistence** — temp-file + rename writes with a sha256 checksum; a crash mid-write can never corrupt balances
+- **Append-only order ledger** — every fill records idempotency key, deltas, post-trade balances, fees, and the decision explanation
+- **Crash recovery** — corrupt state files are rebuilt by replaying ledger deltas from start cash
+- **Duplicate-order prevention** — decisions carry `(date|symbol|action|target)` keys; re-running a cycle can never double-fill
+- **Data-staleness alerts** — symbols with frozen feeds get trading blocked for the cycle and land in the audit trail (also raised by `forward --step`)
+- **Decision explanations & daily audit reports** — markdown under `reports/` with positions, fills, alerts, and why every decision was taken (holds included)
+
+## Engineering quality
+
+| Gate | Tool | Notes |
+|---|---|---|
+| Lint | ruff | config in `pyproject.toml` |
+| Types | mypy | clean across all source modules |
+| Tests + coverage | pytest + pytest-cov | 88% floor on library code |
+| Property-style tests | seeded randomized invariants | `tests/test_properties.py` |
+| Reproducible snapshots | `bot/snapshot.py` | pin data hashes + seed + metrics; verify drift |
+| Environment | `Dockerfile` | quality gate by default; override for paper runs |
+| Scheduled paper runs | `.github/workflows/scheduled-paper.yml` | daily forward step + committed log |
+
 ## Usage
 
 ```bash
@@ -117,10 +160,12 @@ python -m bot compare --fee 0.002 --slippage-bps 20 --latency-days 1
 python -m bot sensitivity                        # all robustness sweeps on BTC
 python -m bot validate                           # full statistical battery on BTC
 python -m bot validate --symbol ETHUSDT --rc-boots 250
+python -m bot research                           # SPA, clustering/effective trials, ablation, Bayesian Sharpe
 
 # Original toy path & live paper trading (paper only!)
 python -m bot backtest --symbol BTCUSDT --interval 1h
-python -m bot trade --strategy trendvol
+python -m bot trade --strategy trendvol                 # persistent multi-asset paper loop
+python -m bot trade --symbol BTCUSDT,ETHUSDT --once     # one cycle + daily audit report
 ```
 
 ## Project layout
@@ -129,28 +174,41 @@ python -m bot trade --strategy trendvol
 bot/
   strategy.py    # 85-candidate strategy pool + prefix-sum indicator cache
   engine.py      # daily-bar engine: next-open execution, spread/slippage/
-                 # latency, fee-on-turnover, cash accrual, rebalance banding
+                 # latency, fee-on-turnover, cash accrual, rebalance banding,
+                 # optional vol-dependent costs & square-root impact
   metrics.py     # CAGR / excess Sharpe / Sortino / Calmar / VaR / ES
   walkforward.py # expanding-window walk-forward + survivorship-safe combiners
   portfolio_rules.py # XS-momentum tilt, crisis de-risk, drawdown throttle
-  regimes.py     # bull/bear/sideways segmentation + stress windows
+  regimes.py     # bull/bear/sideways segmentation + regime-conditioned stats
   sensitivity.py # parameter / rolling / cost / latency / execution sweeps
   stats_validation.py # PSR, DSR, block bootstrap, Reality Check, shuffle MC
+  research.py    # SPA test, expanded bootstraps, drawdown CIs, Bayesian
+                 # Sharpe, sequence risk, forward Monte Carlo
+  clustering.py  # strategy-family clusters, near-duplicates, effective trials
+  ablation.py    # strategy-family and portfolio-overlay ablations
+  costs.py       # vol-dependent spread/slippage, market impact, fee tiers,
+                 # liquidity filter
+  data.py        # Binance + Yahoo fetchers, cleaning, gap handling, calendar
+                 # alignment, delisting simulation
   prospective.py # freeze manifest, forward paper-trading log, checkpoints
+  snapshot.py    # reproducible benchmark snapshots (data hashes + metrics)
   universe.py    # top-volume crypto + SPY/GLD/TLT cross-class ETFs
   benchmark.py   # S&P 500 data (FRED primary, Yahoo fallback)
-  data.py        # Binance + Yahoo fetchers, cleaning, stale/delist detection
   cache.py       # disk cache for daily history
-  paper.py       # paper broker + live loop
+  paper.py       # persistent multi-asset paper broker: ledger, idempotency,
+                 # crash recovery, staleness alerts, audit reports
 api/             # Vercel serverless endpoint (stdlib ASGI)
 public/          # static dashboard served by Vercel
-tests/           # 1667 unit/property tests
-.github/         # CI workflow
+tests/           # ~1900 unit/property/integration tests
+.github/         # CI quality gates + scheduled paper-run workflow
+Dockerfile       # containerized environment; default CMD runs the full gate
 ```
 
 ## Running tests
 
 ```bash
-pip install pytest
-pytest
+pip install pytest ruff mypy pytest-cov
+ruff check .        # lint
+mypy                # type check
+pytest --cov=bot    # tests + coverage gate (88% floor on library code)
 ```

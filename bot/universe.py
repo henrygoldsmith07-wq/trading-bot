@@ -10,6 +10,7 @@ controls we apply. Treat absolute numbers as slightly optimistic.
 from __future__ import annotations
 
 import json
+from typing import TypedDict
 
 from .data import _get
 
@@ -23,8 +24,17 @@ STABLE_OR_NONVANILLA = {
 }
 LEVERAGED_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR")
 
+
+class EtfSpec(TypedDict):
+    """Cross-asset-class sleeve traded via Yahoo Finance daily bars."""
+
+    symbol: str
+    asset_class: str
+    periods_per_year: int
+
+
 # Non-crypto asset classes the data supports (Yahoo Finance, daily bars).
-ETF_UNIVERSE = [
+ETF_UNIVERSE: list[EtfSpec] = [
     {"symbol": "SPY", "asset_class": "US equity ETF", "periods_per_year": 252},
     {"symbol": "GLD", "asset_class": "Gold ETF", "periods_per_year": 252},
     {"symbol": "TLT", "asset_class": "20y Treasury ETF", "periods_per_year": 252},

@@ -1,0 +1,15 @@
+.git
+.github
+__pycache__
+*.pyc
+.cache
+reports
+paper_state.json
+paper_ledger.jsonl
+forward_log.jsonl
+freeze.json
+.pytest_cache
+.mypy_cache
+.ruff_cache
+htmlcov
+.coverage

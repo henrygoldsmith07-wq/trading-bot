@@ -39,16 +39,18 @@ def label_regimes(btc_candles: list[dict], timeline: list[int], lookback_days: i
 
 def segment(labels: dict[int, str], timeline: list[int], min_days: int = 30) -> list[dict]:
     """Group consecutive same-label days into segments (min length in days)."""
-    segments = []
-    cur_label, start, last = None, None, None
+    segments: list[dict] = []
+    cur_label: str | None = None
+    start: int | None = None
+    last: int | None = None
     for t in timeline:
         lbl = labels.get(t, "sideways")
         if lbl != cur_label:
-            if cur_label is not None and (last - start) / DAY_MS + 1 >= min_days:
+            if cur_label is not None and start is not None and last is not None and (last - start) / DAY_MS + 1 >= min_days:
                 segments.append({"label": cur_label, "start": start, "end": last})
             cur_label, start = lbl, t
         last = t
-    if cur_label is not None and (last - start) / DAY_MS + 1 >= min_days:
+    if cur_label is not None and start is not None and last is not None and (last - start) / DAY_MS + 1 >= min_days:
         segments.append({"label": cur_label, "start": start, "end": last})
     return segments
 
@@ -61,8 +63,8 @@ def stress_mask(btc_candles: list[dict], timeline: list[int], window: int = 30, 
 
     times = [c["open_time"] for c in btc_candles]
     closes = [c["close"] for c in btc_candles]
-    vols = {}
-    trailing = {}
+    vols: dict[int, float | None] = {}
+    trailing: dict[int, float | None] = {}
     for t in timeline:
         i = bl(times, t)
         j = bl(times, t - window * DAY_MS)
@@ -79,10 +81,12 @@ def stress_mask(btc_candles: list[dict], timeline: list[int], window: int = 30, 
     if not observed:
         return {t: False for t in timeline}
     threshold = observed[int(len(observed) * vol_pct / 100.0) - 1]
-    return {
-        t: (trailing[t] is not None and trailing[t] <= drop) or (vols[t] is not None and vols[t] >= threshold)
-        for t in timeline
-    }
+    result: dict[int, bool] = {}
+    for t in timeline:
+        tr = trailing[t]
+        vol = vols[t]
+        result[t] = (tr is not None and tr <= drop) or (vol is not None and vol >= threshold)
+    return result
 
 
 def segment_metrics(returns_by_day: dict[int, float], timeline: list[int], start: int, end: int) -> dict:
@@ -98,3 +102,44 @@ def segment_metrics(returns_by_day: dict[int, float], timeline: list[int], start
         "max_drawdown": max_drawdown(equity),
         "final": equity[-1],
     }
+
+
+def regime_conditioned_performance(
+    returns_by_day: dict[int, float],
+    timeline: list[int],
+    labels: dict[int, str],
+    periods_per_year: int = 365,
+    risk_free_annual: float = 0.0,
+) -> dict[str, dict]:
+    """Performance of a return stream CONDITIONED on each regime label.
+
+    Answers 'where does the edge live?' — e.g. trend rules that only earn in
+    bull segments have a regime-dependent edge, not an unconditional one.
+    Per label: days, CAGR (annualized within-regime), volatility, excess
+    Sharpe, hit rate, and average exposure proxy (= mean |return| share).
+    """
+    from .metrics import sharpe as _sharpe
+    from .metrics import volatility as _vol
+
+    by_label: dict[str, list[float]] = {}
+    for t in timeline:
+        lbl = labels.get(t, "sideways")
+        if t in returns_by_day:
+            by_label.setdefault(lbl, []).append(returns_by_day[t])
+    out = {}
+    for lbl in sorted(by_label):
+        rets = by_label[lbl]
+        days = len(rets)
+        equity = [1.0]
+        for r in rets:
+            equity.append(equity[-1] * (1.0 + r))
+        out[lbl] = {
+            "days": days,
+            "share_of_window": days / max(len(timeline), 1),
+            "cagr": cagr(equity, days),
+            "vol": _vol(rets, periods_per_year),
+            "sharpe": _sharpe(rets, periods_per_year, risk_free_annual),
+            "hit_rate": sum(1 for r in rets if r > 0) / max(days, 1),
+            "max_drawdown": max_drawdown(equity),
+        }
+    return out

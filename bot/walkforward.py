@@ -58,6 +58,7 @@ def walk_forward_at(
     execution: str = "close",
     risk_free_annual: float = 0.0,
     embargo_days: int = 0,
+    cost_params=None,
     selection_fn=None,
     rebalance_band: float = 0.0,
 ) -> dict:
@@ -88,6 +89,7 @@ def walk_forward_at(
         execution=execution,
         risk_free_annual=risk_free_annual,
         rebalance_band=rebalance_band,
+        cost_params=cost_params,
     )
 
     def _run(slice_, cand):
@@ -155,13 +157,13 @@ def walk_forward_at(
         "first_day": days_sorted[0],
         "last_day": days_sorted[-1],
         "trial_sharpes": trial_sharpes,
-        "exposure": sum(e * w for e, w in zip(exposures, day_weights)) / total_days,
-        "turnover": sum(t * w for t, w in zip(turnovers, day_weights)) / total_days,
+        "exposure": sum(e * w for e, w in zip(exposures, day_weights, strict=True)) / total_days,
+        "turnover": sum(t * w for t, w in zip(turnovers, day_weights, strict=True)) / total_days,
     }
     return result
 
 
-def _purged_inner_folds(candles: list[dict], train_days: int, test_days: int, purge_days: int) -> list[tuple[int, int, int]]:
+def _purged_inner_folds(candles: list[dict], train_days: int, test_days: int, purge_days: int) -> list[tuple[int, int, int, int]]:
     """Inner (selection) folds with a purge gap of `purge_days` between the
     end of training and the start of testing, so indicators computed on
     training data cannot reach into the evaluation window."""
@@ -194,8 +196,7 @@ def nested_selection_fn(inner_train_days: int = 365, inner_test_days: int = 182,
         best_score = float("-inf")
         for cand in candidates:
             scores = []
-            for _, train_end, test_start, test_end in inner_folds:
-                sel = train_slice[: max(2, train_end - embargo_days)]
+            for _, _train_end, test_start, test_end in inner_folds:
                 test = train_slice[test_start:test_end + 1]
                 if len(test) < 30:
                     continue
@@ -215,9 +216,9 @@ def nested_selection_fn(inner_train_days: int = 365, inner_test_days: int = 182,
     return select
 
 
-def fixed_candidate_streams(candles: list[dict], abs_folds: list[tuple[int, int]], candidates: list, **engine_kwargs) -> dict[str, dict[int, float]]:
+def fixed_candidate_streams(candles: list[dict], abs_folds: list[tuple[int, int]], candidates: list, cost_params=None, **engine_kwargs) -> dict[str, dict[int, float]]:
     """OOS daily return streams for every candidate trading ALL folds with no
-    selection — the raw material for White's Reality Check."""
+    selection — the raw material for White's Reality Check and the SPA test."""
     times = [c["open_time"] for c in candles]
     n = len(candles)
     streams: dict[str, dict[int, float]] = {}
@@ -229,7 +230,7 @@ def fixed_candidate_streams(candles: list[dict], abs_folds: list[tuple[int, int]
         test_slice = candles[train_end:test_end + 1]
         for cand in candidates:
             try:
-                te = run_strategy(test_slice, cand.weight_at, **engine_kwargs)
+                te = run_strategy(test_slice, cand.weight_at, cost_params=cost_params, **engine_kwargs)
             except (ValueError, ZeroDivisionError):
                 continue
             stream = streams.setdefault(repr(cand), {})

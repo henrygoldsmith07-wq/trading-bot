@@ -1,5 +1,5 @@
-from bot.walkforward import _fold_boundaries, walk_forward
 from bot.strategy import BuyHold, TrendVol
+from bot.walkforward import _fold_boundaries, walk_forward
 
 
 def _candles(closes, start_ms=0):

@@ -1,4 +1,4 @@
-from bot.strategy import Ensemble, MacdTrend, RsiDipBuy, SmaCrossover, TrendVol, sma
+from bot.strategy import Ensemble, MacdTrend, RsiDipBuy, SmaCrossover, TrendVol
 
 
 def _candles(closes):

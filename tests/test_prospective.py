@@ -1,10 +1,9 @@
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 
 from bot.prospective import (
-    append_log,
     checkpoints_due,
     create_freeze,
     load_freeze,
@@ -17,7 +16,7 @@ from bot.prospective import (
 )
 from bot.strategy import TrendVol, strategy_from_spec, strategy_to_spec
 
-NOW = datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 
 
 def _mk_freeze(tmp_path, strategies=None):

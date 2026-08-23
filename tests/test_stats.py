@@ -1,4 +1,3 @@
-import math
 import random
 
 import pytest
@@ -12,8 +11,8 @@ from bot.stats_validation import (
     psr,
     reality_check,
     shuffle_test,
-    stationary_bootstrap_indices,
     start_end_sensitivity,
+    stationary_bootstrap_indices,
 )
 
 
@@ -114,7 +113,6 @@ def test_bootstrap_ci_contains_point_estimate_ballpark():
 # ---------- Reality Check ----------
 
 def test_reality_check_superior_candidate_low_pvalue():
-    rng = random.Random(11)
     n = 1000
     streams = [_rand(n, 0.0, 0.01, seed=100 + i) for i in range(20)]  # noise
     streams.append(_rand(n, 0.0015, 0.01, seed=99))  # one real edge

@@ -12,7 +12,6 @@ Answers four robustness questions about the walk-forward result:
 """
 from __future__ import annotations
 
-from .engine import run_strategy
 from .metrics import cagr, max_drawdown, sharpe
 from .strategy import TrendVol
 from .walkforward import absolute_folds, walk_forward_at

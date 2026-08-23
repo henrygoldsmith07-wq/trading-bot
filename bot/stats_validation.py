@@ -43,8 +43,8 @@ def psr(returns: list[float], periods_per_year: int = 365, sr_benchmark_annual: 
 def expected_max_sharpe_annual(trial_sharpes_annual: list[float], n_trials: int) -> float:
     """Expected maximum Sharpe under the null across `n_trials` independent
     trials (Lopez de Prado's deflation benchmark), in annualized units."""
-    if n_trials < 2 or not trial_sharpes_annual:
-        return 0.0
+    if n_trials < 2 or len(trial_sharpes_annual) < 2:
+        return 0.0  # no cross-trial dispersion to estimate a max from
     var = stdev(trial_sharpes_annual) ** 2
     if var <= 0:
         return 0.0
@@ -61,7 +61,7 @@ def dsr(returns: list[float], trial_sharpes_annual: list[float], n_trials: int, 
 
 def stationary_bootstrap_indices(n: int, block: int, rng: random.Random) -> list[int]:
     """Politis-Romano stationary bootstrap: geometric block lengths with mean `block`."""
-    out = []
+    out: list[int] = []
     i = rng.randrange(n)
     while len(out) < n:
         out.append(i)

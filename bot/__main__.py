@@ -2,15 +2,20 @@
 
 Usage:
   python -m bot backtest --symbol BTCUSDT --interval 1h
-  python -m bot trade    --symbol BTCUSDT --strategy trendvol
+  python -m bot trade    --symbol BTCUSDT [--once]   # paper loop (paper only!)
   python -m bot compare  [--assets 20]                # portfolio vs S&P 500
   python -m bot sensitivity [--symbol BTCUSDT]        # backtesting-quality sweeps
+  python -m bot validate   [--symbol BTCUSDT]         # statistical battery
+  python -m bot research   [--symbol BTCUSDT]         # methodology battery:
+      # SPA test, effective trial count / clustering / duplicates,
+      # family ablation, Bayesian Sharpe, drawdown CIs, sequence risk,
+      # probability-of-underperformance vs buy&hold
 """
 from __future__ import annotations
 
 import argparse
 import time as _time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .backtest import backtest
 from .data import fetch_candles
@@ -24,7 +29,7 @@ def _fmt_pct(x: float) -> str:
 
 
 def _equity_metrics(returns: list[float], periods_per_year: int = 365, risk_free_annual: float = 0.0) -> dict:
-    from .metrics import calmar, cagr, expected_shortfall, max_drawdown, sharpe, sortino, var_hist, volatility
+    from .metrics import cagr, calmar, expected_shortfall, max_drawdown, sharpe, sortino, var_hist, volatility
 
     equity = [1.0]
     for r in returns:
@@ -71,13 +76,13 @@ def _vol_overlay(returns: list[float], target: float = 0.25, window: int = 20, f
 
 
 def _d(ms):
-    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).date()
+    return datetime.fromtimestamp(ms / 1000, tz=UTC).date()
 
 
 def run_compare(args) -> int:
     from .benchmark import equity_metrics, fetch_sp500, slice_window
     from .cache import load_or_fetch
-    from .data import DAY_MS as _D, fetch_daily_history, fetch_yahoo_daily, is_stale
+    from .data import extend_returns_to_timeline, fetch_daily_history, fetch_yahoo_daily, is_stale
     from .universe import ETF_UNIVERSE, top_symbols
     from .walkforward import absolute_folds, combine_portfolio, combine_portfolio_invvol, walk_forward_at
 
@@ -104,12 +109,14 @@ def run_compare(args) -> int:
     min_history = args.train_days + args.test_days + 180
     universe = ["BTCUSDT"] + [s for s in top_symbols(args.assets) if s != "BTCUSDT"]
     universe = universe[: args.assets]
-    specs = [(s, "crypto", 365) for s in universe] + [(e["symbol"], e["asset_class"], e["periods_per_year"]) for e in ETF_UNIVERSE]
+    specs: list[tuple[str, str, int]] = [(s, "crypto", 365) for s in universe] + [
+        (e["symbol"], e["asset_class"], e["periods_per_year"]) for e in ETF_UNIVERSE
+    ]
 
     print(f"Universe: {args.assets} crypto pairs by quote volume + {len(ETF_UNIVERSE)} cross-class ETFs")
     print("  (paper-only validation; no live orders are ever placed)")
-    histories = {}
-    skipped = []
+    histories: dict[str, tuple[list[dict], int]] = {}
+    skipped: list[tuple[str, str]] = []
     for symbol, asset_class, ppy in specs:
         try:
             candles = cached(symbol, fetch_yahoo_daily if asset_class != "crypto" else fetch_daily_history)
@@ -145,15 +152,21 @@ def run_compare(args) -> int:
         per_asset.append({"symbol": symbol, "cagr": wf["cagr"], "sharpe": wf["sharpe"], "max_drawdown": wf["max_drawdown"]})
         for p in wf["folds"]:
             picks_counter[p["strategy"]] = picks_counter.get(p["strategy"], 0) + 1
-        asset_dailies[symbol] = {t: r for t, r in wf["daily"].items() if oos_start_ms <= t < oos_end_ms}
+        asset_dailies[symbol] = extend_returns_to_timeline(
+            {t: r for t, r in wf["daily"].items() if oos_start_ms <= t < oos_end_ms}, timeline
+        )
 
         banded_kwargs = dict(engine_kwargs)
         banded_kwargs["rebalance_band"] = 0.05
         wb = walk_forward_at(candles, folds_abs, periods_per_year=ppy, **banded_kwargs)
-        banded_dailies[symbol] = {t: r for t, r in wb["daily"].items() if oos_start_ms <= t < oos_end_ms}
+        banded_dailies[symbol] = extend_returns_to_timeline(
+            {t: r for t, r in wb["daily"].items() if oos_start_ms <= t < oos_end_ms}, timeline
+        )
 
         wfx = walk_forward_at(candles, folds_abs, periods_per_year=ppy, candidates=[risk_ensemble()], **banded_kwargs)
-        fixed_dailies[symbol] = {t: r for t, r in wfx["daily"].items() if oos_start_ms <= t < oos_end_ms}
+        fixed_dailies[symbol] = extend_returns_to_timeline(
+            {t: r for t, r in wfx["daily"].items() if oos_start_ms <= t < oos_end_ms}, timeline
+        )
     t_compute = _time.perf_counter()
 
     from .portfolio_rules import combine_portfolio_rule
@@ -256,10 +269,10 @@ def _print_regimes(btc, timeline, port_returns, sp_window, args) -> None:
 
     labels = label_regimes(btc, timeline)
     segments = segment(labels, timeline)
-    port_by_day = {t: r for t, r in zip(timeline, port_returns)}
+    port_by_day = {t: r for t, r in zip(timeline, port_returns, strict=True)}
 
     sp_times = [
-        int(datetime(r["date"].year, r["date"].month, r["date"].day, tzinfo=timezone.utc).timestamp() * 1000)
+        int(datetime(r["date"].year, r["date"].month, r["date"].day, tzinfo=UTC).timestamp() * 1000)
         for r in sp_window
     ]
     sp_closes = [r["close"] for r in sp_window]
@@ -333,7 +346,7 @@ def run_sensitivity(args) -> int:
 def run_validate(args) -> int:
     from .cache import load_or_fetch
     from .data import fetch_daily_history
-    from .metrics import calmar, expected_shortfall, kurtosis, sharpe, skewness, sortino, var_hist
+    from .metrics import calmar, expected_shortfall, kurtosis, skewness, sortino, var_hist
     from .sensitivity import parameter_grid
     from .stats_validation import (
         bootstrap_metrics,
@@ -438,11 +451,114 @@ def run_validate(args) -> int:
     return 0
 
 
+def run_research(args) -> int:
+    from .ablation import family_ablation
+    from .cache import load_or_fetch
+    from .clustering import effective_trial_count, near_duplicate_pairs, strategy_clusters
+    from .data import fetch_daily_history
+    from .research import (
+        bayesian_sharpe,
+        drawdown_confidence_intervals,
+        expanded_bootstrap,
+        mc_future_paths,
+        probability_of_underperformance,
+        sequence_risk,
+        spa_test,
+    )
+    from .strategy import BuyHold, build_candidates
+    from .walkforward import absolute_folds, fixed_candidate_streams, walk_forward_at
+
+    candles = load_or_fetch(args.symbol, lambda s: fetch_daily_history(s))[0]
+    folds = absolute_folds(candles, args.train_days, args.test_days)
+    if not folds:
+        print("Not enough history for one fold")
+        return 2
+    engine_kwargs = dict(
+        fee=args.fee,
+        spread_bps=args.spread_bps,
+        slippage_bps=args.slippage_bps,
+        execution=args.execution,
+        risk_free_annual=args.risk_free,
+    )
+    candidates = build_candidates()
+    print(f"Research-methodology battery on {args.symbol}: {len(folds)} folds, {len(candidates)} candidates")
+
+    print("\n[1/7] Walk-forward OOS record (selection by train Sharpe)...")
+    wf = walk_forward_at(candles, folds, candidates=candidates, embargo_days=args.embargo_days, **engine_kwargs)
+    days = sorted(wf["daily"])
+    oos = [wf["daily"][t] for t in days]
+    print(f"  OOS: CAGR {_fmt_pct(wf['cagr'])}, Sharpe {wf['sharpe']:.2f}, maxDD {_fmt_pct(wf['max_drawdown'])}")
+
+    print(f"\n[2/7] Candidate stream structure ({args.rc_boots} SPA bootstraps)...")
+    streams = fixed_candidate_streams(candles, folds, candidates, **engine_kwargs)
+    common_days = sorted(set.intersection(*(set(s) for s in streams.values()))) if streams else []
+    matrix = [[s[t] for t in common_days] for s in streams.values()]
+    spa = spa_test(matrix, n_boot=args.rc_boots, seed=args.seed)
+    print(f"  SPA p-value: {spa['p_value']:.3f}  (< 0.05 => best candidate unlikely to be selection luck)")
+
+    print("\n[3/7] Strategy families: clusters, duplicates, effective trial count...")
+    aligned = {name: [s[t] for t in common_days] for name, s in streams.items()}
+    eff = effective_trial_count(aligned)
+    print(f"  {eff['n_strategies']} strategies -> {eff['n_clusters']} clusters at corr 0.90; "
+          f"effective trials ~{eff['n_effective']:.1f}; avg pairwise corr {eff['avg_pairwise_corr']:.3f}")
+    dups = near_duplicate_pairs(aligned)
+    if dups:
+        print(f"  near-duplicates (|rho| >= 0.995): {len(dups)} pair(s), e.g.:")
+        for d in dups[:5]:
+            print(f"    {d['a']}  <->  {d['b']}  (rho={d['correlation']:.4f})")
+    else:
+        print("  no near-duplicate pairs at |rho| >= 0.995")
+    clusters = strategy_clusters(aligned)
+    big = sorted(clusters.values(), key=len, reverse=True)[:3]
+    print(f"  largest families: {[f'{len(m)} members' for m in big]}")
+
+    print("\n[4/7] Strategy-family ablation (omit one family at a time)...")
+    abl = family_ablation(candles, folds, candidates, **engine_kwargs)
+    print(f"  {'family':12}{'remaining':>10}{'OOS Sharpe':>12}{'dSharpe':>9}")
+    for row in abl[:6]:
+        print(f"  {row['omitted_family']:12}{row['n_remaining']:>10}{row['sharpe']:>12.2f}{row.get('sharpe_delta', 0.0):>+9.2f}")
+    print("  (negative delta = removing the family HURT; positive = it was noise fit)")
+
+    print("\n[5/7] Bayesian Sharpe (posterior over annualized Sharpe)...")
+    bays = bayesian_sharpe(oos, draws=4000, seed=args.seed)
+    lo, hi = bays["ci_90"]
+    print(f"  posterior mean {bays['posterior_mean']:.2f}, median {bays['median']:.2f}, 90% CI [{lo:.2f}, {hi:.2f}], "
+          f"P(Sharpe > 0) = {bays['prob_above_benchmark']:.3f}")
+
+    print("\n[6/7] Drawdown & sequence risk...")
+    dd = drawdown_confidence_intervals(oos, n_boot=args.boots // 2, seed=args.seed)
+    print(f"  maxDD 90% CI: [{_fmt_pct(dd['mdd_90_ci'][0])}, {_fmt_pct(dd['mdd_90_ci'][1])}], worst {_fmt_pct(dd['mdd_worst'])}; "
+          f"time-under-water median {dd['time_under_water_median']:.0%}, p95 {dd['time_under_water_p95']:.0%}")
+    seq = sequence_risk(oos, horizon_days=min(252, len(oos) // 2), n_shuffles=100, seed=args.seed)
+    print(f"  sequence risk over {seq['horizon_days']}d windows: P(loss) observed {seq['observed_p_loss']:.2f} vs shuffled "
+          f"{seq['shuffle_mean_p_loss']:.2f} (gap {seq['sequence_risk_gap']:+.2f}); "
+          f"worst entry {_fmt_pct(seq['observed_worst'])}, best entry {_fmt_pct(seq['observed_best'])}")
+    mc = mc_future_paths(oos, horizon_days=min(252, len(oos)), n_paths=2000, seed=args.seed)
+    print(f"  forward MC (block bootstrap, 1y): P(loss) {mc['p_loss']:.2f}, terminal p5/p50/p95 "
+          f"{mc['terminal_p05']:.2f}/{mc['terminal_median']:.2f}/{mc['terminal_p95']:.2f}, path-maxDD p95 {_fmt_pct(mc['path_mdd_p95'])}")
+    eb = expanded_bootstrap(oos, n_boot=max(args.boots // 2, 200), seed=args.seed)
+    schemes = list(eb)
+    agree_lo = min(eb[s]["sharpe_ci"][0] for s in schemes)
+    agree_hi = max(eb[s]["sharpe_ci"][1] for s in schemes)
+    print(f"  bootstrap agreement (stationary/circular/moving): Sharpe CI union [{agree_lo:.2f}, {agree_hi:.2f}]")
+
+    print("\n[7/7] Probability of underperformance vs buy&hold (same window)...")
+    bh_stream = fixed_candidate_streams(candles, folds, [BuyHold()], **engine_kwargs).get("BuyHold", {})
+    bench_days = sorted(bh_stream)
+    shared = sorted(set(days) & set(bench_days))
+    strat_al = [wf["daily"][t] for t in shared]
+    bench_al = [bh_stream[t] for t in shared]
+    pou = probability_of_underperformance(strat_al, bench_al, n_boot=args.boots // 2, seed=args.seed)
+    print(f"  P(bot CAGR < b&h): {pou['p_underperform_cagr']:.3f};  P(bot Sharpe < b&h): {pou['p_underperform_sharpe']:.3f}")
+    print(f"  Sharpe gap 90% CI: [{pou['sharpe_gap_ci'][0]:+.2f}, {pou['sharpe_gap_ci'][1]:+.2f}]")
+    return 0
+
+
 def run_freeze(args) -> int:
     import subprocess
 
     from .cache import load_or_fetch
-    from .data import DAY_MS, fetch_daily_history, fetch_yahoo_daily, is_stale
+    from .data import fetch_daily_history, fetch_yahoo_daily, is_stale
     from .prospective import create_freeze
     from .universe import ETF_UNIVERSE, top_symbols
     from .walkforward import absolute_folds, walk_forward_at
@@ -459,13 +575,16 @@ def run_freeze(args) -> int:
     )
     universe = ["BTCUSDT"] + [s for s in top_symbols(args.assets) if s != "BTCUSDT"]
     universe = universe[: args.assets]
-    specs = [(s, "binance", 365) for s in universe] + [(e["symbol"], "yahoo", e["periods_per_year"]) for e in ETF_UNIVERSE]
+    specs: list[tuple[str, str, int]] = [(s, "binance", 365) for s in universe] + [
+        (e["symbol"], "yahoo", e["periods_per_year"]) for e in ETF_UNIVERSE
+    ]
     min_history = args.train_days + args.test_days + 180
-    assets = []
+    assets: list[dict] = []
     print("Selecting per-asset strategies on data up to the freeze (never forward):")
     for symbol, source, ppy in specs:
+        fetcher = fetch_yahoo_daily if source == "yahoo" else fetch_daily_history
         try:
-            candles = load_or_fetch(symbol, fetch_yahoo_daily if source == "yahoo" else fetch_daily_history)[0]
+            candles = load_or_fetch(symbol, fetcher)[0]
         except Exception as e:
             print(f"  {symbol:10} fetch failed ({e}), skipped")
             continue
@@ -526,7 +645,7 @@ def run_forward(args) -> int:
     from datetime import date as _date
 
     from .benchmark import equity_metrics, fetch_sp500, slice_window
-    from .prospective import checkpoints_due, load_freeze, load_log, monthly_returns, outage_stats, run_step, slippage_stats
+    from .prospective import alert_stats, checkpoints_due, load_freeze, load_log, monthly_returns, outage_stats, run_step, slippage_stats
 
     manifest = load_freeze(args.freeze_file)
     freeze_date = _date.fromisoformat(manifest["frozen_at_date"])
@@ -566,8 +685,11 @@ def run_forward(args) -> int:
 
     slip = slippage_stats(entries)
     out = outage_stats(entries)
+    al = alert_stats(entries)
     print(f"\nIncidents: mean |decision->execution| {slip['mean_abs_bps'] or 0:.0f}bp over {slip['count']} turnover events; "
           f"{out['outage_days']} outage days ({out['outage_events']} events); {out['missed_fills']} missed fills")
+    if al["total"]:
+        print(f"Data-staleness alerts: {al['total']} ({al['by_level']}) on {', '.join(al['symbols'])}")
 
     months = monthly_returns(entries)
     print("\nMonthly returns (negative periods published):")
@@ -595,12 +717,14 @@ def main():
     bt.add_argument("--slow", type=int, default=50)
 
     tr = sub.add_parser("trade", help="Run the live paper-trading loop (paper only)")
-    tr.add_argument("--symbol", default="BTCUSDT")
+    tr.add_argument("--symbol", default="BTCUSDT", help="single symbol or comma-separated list")
     tr.add_argument("--interval", default=None, help="candle interval (default: 1d for trendvol, 1h otherwise)")
     tr.add_argument("--poll", type=int, default=None)
     tr.add_argument("--fast", type=int, default=20)
     tr.add_argument("--slow", type=int, default=50)
     tr.add_argument("--strategy", choices=["sma", "trendvol"], default="sma")
+    tr.add_argument("--once", action="store_true", help="run one cycle, write the audit report, exit")
+    tr.add_argument("--reports-dir", default="reports")
 
     cmp = sub.add_parser("compare", help="Walk-forward out-of-sample portfolio comparison vs the S&P 500")
     cmp.add_argument("--assets", type=int, default=20, help="number of top-volume crypto assets (+3 ETFs)")
@@ -639,6 +763,20 @@ def main():
     val.add_argument("--rc-boots", type=int, default=100)
     val.add_argument("--seed", type=int, default=42)
 
+    res = sub.add_parser("research", help="Methodology battery: SPA, clustering/effective trials, ablation, Bayesian, sequence risk")
+    res.add_argument("--symbol", default="BTCUSDT")
+    res.add_argument("--train-days", type=int, default=1095)
+    res.add_argument("--test-days", type=int, default=365)
+    res.add_argument("--fee", type=float, default=0.001)
+    res.add_argument("--spread-bps", type=float, default=5.0)
+    res.add_argument("--slippage-bps", type=float, default=5.0)
+    res.add_argument("--execution", choices=["close", "next_open"], default="next_open")
+    res.add_argument("--risk-free", type=float, default=0.03)
+    res.add_argument("--embargo-days", type=int, default=30)
+    res.add_argument("--boots", type=int, default=600)
+    res.add_argument("--rc-boots", type=int, default=150)
+    res.add_argument("--seed", type=int, default=42)
+
     frz = sub.add_parser("freeze", help="Freeze strategies/params/universe into a tamper-evident manifest")
     frz.add_argument("--assets", type=int, default=20)
     frz.add_argument("--train-days", type=int, default=1095)
@@ -672,13 +810,15 @@ def main():
         # TrendVol's volatility targeting assumes daily bars; default accordingly.
         interval = args.interval or ("1d" if args.strategy == "trendvol" else "1h")
         poll = args.poll or (3600 if args.strategy == "trendvol" else 60)
-        run(args.symbol, interval, poll, args.fast, args.slow, args.strategy)
+        run(args.symbol, interval, poll, args.fast, args.slow, args.strategy, once=args.once, reports_dir=args.reports_dir)
     elif args.command == "compare":
         raise SystemExit(run_compare(args))
     elif args.command == "sensitivity":
         raise SystemExit(run_sensitivity(args))
     elif args.command == "validate":
         raise SystemExit(run_validate(args))
+    elif args.command == "research":
+        raise SystemExit(run_research(args))
     elif args.command == "freeze":
         raise SystemExit(run_freeze(args))
     elif args.command == "forward":

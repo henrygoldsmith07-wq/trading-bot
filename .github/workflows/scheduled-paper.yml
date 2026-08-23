@@ -1,0 +1,66 @@
+name: Scheduled paper run
+
+# Runs the prospective forward test daily: one paper-trading step from the
+# committed freeze manifest plus the checkpoint report. Paper only — no real
+# orders exist anywhere in this repo. If no freeze manifest is present the
+# job exits successfully with a notice, so enabling the schedule is safe.
+
+on:
+  schedule:
+    - cron: "17 6 * * *" # daily 06:17 UTC — off-the-hour to avoid runner contention
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: paper-run
+  cancel-in-progress: false
+
+jobs:
+  forward-step:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache market data
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: market-data-${{ github.run_id }}
+          restore-keys: market-data-
+      - name: Advance the prospective paper portfolio one day
+        env:
+          FREEZE_FILE: freeze.json
+          LOG_FILE: forward_log.jsonl
+        run: |
+          if [ ! -f "$FREEZE_FILE" ]; then
+            echo "::notice::no freeze.json committed yet — create one with 'python -m bot freeze' to start the forward test"
+            exit 0
+          fi
+          python -m bot forward --step --freeze-file "$FREEZE_FILE" --log-file "$LOG_FILE"
+          python -m bot forward --report --freeze-file "$FREEZE_FILE" --log-file "$LOG_FILE"
+      - name: Commit the appended forward log (tamper-evident trail)
+        if: hashFiles('forward_log.jsonl') != ''
+        run: |
+          git config user.name "paper-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add forward_log.jsonl
+          if git diff --cached --quiet; then
+            echo "no new entries"
+          else
+            git commit -m "paper forward log: $(date -u +%F)"
+            git push
+          fi
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: forward-state-${{ github.run_id }}
+          path: |
+            forward_log.jsonl
+            reports/
+          if-no-files-found: ignore

@@ -1,4 +1,3 @@
-import math
 
 from bot.__main__ import _vol_overlay
 

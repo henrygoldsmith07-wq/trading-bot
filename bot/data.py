@@ -6,7 +6,6 @@ import math
 import time
 import urllib.request
 
-
 BINANCE_KLINES = "https://api.binance.com/api/v3/klines"
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval=1d"
 DAY_MS = 86_400_000
@@ -22,6 +21,7 @@ def _get(url: str, timeout: int = 15, attempts: int = 3) -> str:
             if attempt == attempts - 1:
                 raise
             time.sleep(2 ** attempt)
+    raise RuntimeError("unreachable")  # loop raises on final failed attempt
 
 
 def _parse_klines(raw: str) -> list[dict]:
@@ -91,24 +91,118 @@ def is_stale(candles: list[dict], now_ms: int | None = None, max_age_days: float
     """Delisted-asset detection: history that stopped updating weeks ago."""
     if not candles:
         return True
-    if now_ms is None:
-        now_ms = time.time() * 1000
-    return (now_ms - candles[-1]["open_time"]) > max_age_days * DAY_MS
+    now = time.time() * 1000 if now_ms is None else now_ms
+    return (now - candles[-1]["open_time"]) > max_age_days * DAY_MS
 
 
 def fetch_yahoo_daily(symbol: str, range_: str = "10y") -> list[dict]:
-    """Daily OHLC candles for ETFs/equities from Yahoo Finance's chart API."""
+    """Daily OHLCV candles for ETFs/equities from Yahoo Finance's chart API."""
     url = YAHOO_CHART.format(symbol=symbol, range_=range_)
     payload = json.loads(_get(url))
     result = payload["chart"]["result"][0]
     ts = result.get("timestamp", [])
     quote = result["indicators"]["quote"][0]
+    volumes = quote.get("volume", []) or []
     candles = []
-    for t, o, c in zip(ts, quote.get("open", []), quote.get("close", [])):
+    for k, (t, o, c) in enumerate(zip(ts, quote.get("open", []), quote.get("close", []), strict=False)):
         if c is None or not math.isfinite(c) or c <= 0:
             continue
         candle = {"open_time": int(t) * 1000, "close": float(c)}
         if o is not None and math.isfinite(o) and o > 0:
             candle["open"] = float(o)
+        if k < len(volumes) and volumes[k] is not None and math.isfinite(volumes[k]) and volumes[k] > 0:
+            candle["volume"] = float(volumes[k])
         candles.append(candle)
     return clean_candles(candles)
+
+
+def gap_report(candles: list[dict], expected_interval_ms: int = DAY_MS) -> list[dict]:
+    """Gaps longer than one expected interval: [(start_ms, end_ms, days)]."""
+    out = []
+    for prev, cur in zip(candles, candles[1:], strict=False):
+        gap_days = (cur["open_time"] - prev["open_time"]) / expected_interval_ms
+        if gap_days > 1.5:
+            out.append({"start": prev["open_time"], "end": cur["open_time"], "days": gap_days})
+    return out
+
+
+def fill_small_gaps(candles: list[dict], max_gap_days: int = 3) -> list[dict]:
+    """Forward-fill closes across gaps of at most `max_gap_days` missing bars.
+
+    Filled bars carry `"filled": True` and zero volume, so indicators see a
+    continuous series while anything downstream can distinguish real prints
+    from carried ones. Gaps beyond the tolerance are left alone (a long
+    outage or delisting must stay visible, never papered over).
+    """
+    if not candles:
+        return []
+    out = [dict(candles[0])]
+    for c in candles[1:]:
+        gap_days = (c["open_time"] - out[-1]["open_time"]) / DAY_MS
+        n_missing = int(gap_days) - 1 if gap_days > 1.5 else 0
+        if 0 < n_missing <= max_gap_days:
+            for k in range(n_missing):
+                out.append(
+                    {
+                        "open_time": c["open_time"] - (n_missing - k) * DAY_MS,
+                        "open": out[-1]["close"],
+                        "high": out[-1]["close"],
+                        "low": out[-1]["close"],
+                        "close": out[-1]["close"],
+                        "volume": 0.0,
+                        "filled": True,
+                    }
+                )
+        out.append(dict(c))
+    return out
+
+
+def extend_returns_to_timeline(
+    daily: dict[int, float],
+    timeline: list[int],
+) -> dict[int, float]:
+    """Place an asset's daily returns on the shared portfolio timeline using
+    exchange-calendar-aware semantics:
+
+    - Interior gaps (weekends/holidays/outages between the asset's first and
+      last return) become 0.0-return *invested* days: an ETF held over a
+      weekend does not sit in cash, and its next trading bar carries the
+      whole Fri->Mon move, so compounding stays exact under constant weights.
+    - Days before the first return (late listing) and after the last
+      (delisted/stale) stay ABSENT: the sleeve sits in cash there, which is
+      the survivorship-safe convention — dead capital never reflows.
+    """
+    if not daily:
+        return {}
+    first_t, last_t = min(daily), max(daily)
+    out = {}
+    for t in timeline:
+        if t in daily:
+            out[t] = daily[t]
+        elif first_t < t < last_t:
+            out[t] = 0.0
+    return out
+
+
+def simulate_delisting(
+    candles: list[dict],
+    delist_at_ms: int,
+    terminal_cost_bps: float = 10.0,
+) -> list[dict]:
+    """Truncate a history at `delist_at_ms` to simulate a delisting.
+
+    The final print marks the asset down by `terminal_cost_bps` (forced
+    liquidation into a bid-less book) and carries a note. Downstream stages
+    treat the result exactly like a real death: stale detection fires past
+    the cutoff and the portfolio strands the sleeve in cash.
+    """
+    kept = [c for c in candles if c["open_time"] <= delist_at_ms]
+    if not kept:
+        return []
+    last = dict(kept[-1])
+    last["close"] = last["close"] * (1.0 - terminal_cost_bps / 10_000.0)
+    if "open" in last:
+        last["open"] = last["open"] * (1.0 - terminal_cost_bps / 10_000.0)
+    last["note"] = "simulated delisting"
+    kept[-1] = last
+    return kept

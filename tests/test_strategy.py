@@ -1,4 +1,4 @@
-from bot.strategy import SmaCrossover, Signal
+from bot.strategy import Signal, SmaCrossover
 
 
 def _candles(closes):

@@ -64,6 +64,24 @@ def test_risk_ensemble_spec_roundtrip():
     assert repr(rebuilt) == repr(ens)
 
 
+def test_dual_momentum_spec_roundtrip_keeps_horizons():
+    """Freeze regression: tuple params (horizons) must survive the roundtrip.
+
+    Dropping them would resurrect default horizons on rebuild — a frozen
+    forward config that trades something other than what was frozen.
+    """
+    s = DualMomentum((42, 84, 168), 20, 0.35)
+    rebuilt = strategy_from_spec(strategy_to_spec(s))
+    assert rebuilt.horizons == (42, 84, 168)
+    assert repr(rebuilt) == "DualMom(42/84/168,0.35)"
+
+
+def test_every_candidate_freezes_exactly():
+    for cand in build_candidates():
+        rebuilt = strategy_from_spec(strategy_to_spec(cand))
+        assert repr(rebuilt) == repr(cand)
+
+
 def test_pool_expanded():
     pool = build_candidates()
     assert len(pool) >= 80

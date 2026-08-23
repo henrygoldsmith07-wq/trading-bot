@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from .strategy import strategy_from_spec, strategy_to_spec
@@ -55,8 +55,8 @@ def create_freeze(
         "overlay": overlay,
     }
     manifest = {
-        "frozen_at": (now or datetime.now(timezone.utc)).isoformat(),
-        "frozen_at_date": (now or datetime.now(timezone.utc)).date().isoformat(),
+        "frozen_at": (now or datetime.now(UTC)).isoformat(),
+        "frozen_at_date": (now or datetime.now(UTC)).date().isoformat(),
         "git_commit_at_freeze": git_commit,
         "retune_policy": "FORWARD PERIOD IS NEVER USED FOR SELECTION OR TUNING",
         "config": config,
@@ -113,7 +113,7 @@ def run_step(
     string describing an outage. Returns the log entry (or the existing entry
     if today was already logged — steps are idempotent per date).
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     today = now.date().isoformat()
     log = load_log(log_path)
     for e in log:
@@ -132,6 +132,7 @@ def run_step(
 
     n_assets = len(config["assets"])
     outages = []
+    alerts = []  # non-fatal warnings (stale prints) that still make the audit
     missed_fills = []
     sleeve_rets = []
     asset_details = {}
@@ -146,12 +147,17 @@ def run_step(
             asset_details[sym] = {"weight": w_prev, "price": None, "slippage_bps": None, "note": problem}
             continue
         # use only completed candles for the decision
-        completed = [c for c in candles if datetime.fromtimestamp(c["open_time"] / 1000, tz=timezone.utc).date() < now.date()]
+        completed = [c for c in candles if datetime.fromtimestamp(c["open_time"] / 1000, tz=UTC).date() < now.date()]
         if len(completed) < 2:
             outages.append({"symbol": sym, "problem": "insufficient completed candles"})
             sleeve_rets.append(0.0)
             asset_details[sym] = {"weight": prev_weights.get(sym, 0.0), "price": None, "slippage_bps": None, "note": "insufficient history"}
             continue
+        # data-staleness alert: a print much older than one bar means the feed
+        # is silently frozen; trade the stale weight but say so loudly
+        age_days = (now - datetime.fromtimestamp(completed[-1]["open_time"] / 1000, tz=UTC)).total_seconds() / 86_400.0
+        if age_days > 3.0:
+            alerts.append({"symbol": sym, "level": "stale_data", "age_days": round(age_days, 1)})
         w_target = max(0.0, min(1.0, strategy.weight(completed)))
         prev_w = prev_weights.get(sym, 0.0)
         decision_close = completed[-1]["close"]
@@ -187,6 +193,8 @@ def run_step(
         "outages": outages,
         "missed_fills": missed_fills,
     }
+    if alerts:
+        entry["alerts"] = alerts
     append_log(entry, log_path)
     return {"status": "logged", "entry": entry}
 
@@ -225,4 +233,14 @@ def outage_stats(entries: list[dict]) -> dict:
         "outage_days": sum(1 for e in entries if e.get("outages")),
         "outage_events": sum(len(e.get("outages", [])) for e in entries),
         "missed_fills": sum(len(e.get("missed_fills", [])) for e in entries),
+    }
+
+
+def alert_stats(entries: list[dict]) -> dict:
+    """Data-staleness (and other) alerts across the forward log."""
+    alerts = [a for e in entries for a in e.get("alerts", [])]
+    return {
+        "total": len(alerts),
+        "by_level": {lvl: sum(1 for a in alerts if a.get("level") == lvl) for lvl in sorted({a.get("level", "?") for a in alerts})},
+        "symbols": sorted({a["symbol"] for a in alerts}),
     }

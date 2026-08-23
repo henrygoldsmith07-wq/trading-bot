@@ -6,12 +6,26 @@ on:
   pull_request:
 
 jobs:
-  test:
+  quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pytest
-      - run: pytest -q
+      - name: Install tooling
+        run: pip install pytest ruff mypy pytest-cov
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Type check (mypy)
+        run: mypy
+      - name: Tests + coverage gate
+        run: pytest --cov=bot --cov-report=term-missing
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image and run the in-container quality gate
+        run: docker build -t trading-bot .

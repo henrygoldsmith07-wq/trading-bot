@@ -11,7 +11,7 @@ import io
 import json
 import time
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=SP500"
 YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?range=10y&interval=1d"
@@ -27,6 +27,7 @@ def _get(url: str, attempts: int = 3) -> str:
             if attempt == attempts - 1:
                 raise
             time.sleep(2 ** attempt)
+    raise RuntimeError("unreachable")  # loop raises on final failed attempt
 
 
 def parse_fred_csv(text: str) -> list[dict]:
@@ -45,10 +46,10 @@ def parse_yahoo_json(text: str) -> list[dict]:
     timestamps = result.get("timestamp", [])
     closes = result["indicators"]["quote"][0].get("close", [])
     rows = []
-    for ts, close in zip(timestamps, closes):
+    for ts, close in zip(timestamps, closes, strict=False):
         if close is None:
             continue
-        rows.append({"date": datetime.fromtimestamp(ts, tz=timezone.utc).date(), "close": float(close)})
+        rows.append({"date": datetime.fromtimestamp(ts, tz=UTC).date(), "close": float(close)})
     return rows
 
 
@@ -65,7 +66,7 @@ def slice_window(rows: list[dict], start_date, end_date) -> list[dict]:
 
 def equity_metrics(rows: list[dict], risk_free_annual: float = 0.0) -> dict:
     """Metrics for a buy-and-hold equity curve over the given daily closes."""
-    from .metrics import calmar, cagr, expected_shortfall, max_drawdown, sharpe, sortino, var_hist, volatility
+    from .metrics import cagr, calmar, expected_shortfall, max_drawdown, sharpe, sortino, var_hist, volatility
 
     closes = [r["close"] for r in rows]
     if len(closes) < 3:

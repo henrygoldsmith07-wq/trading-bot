@@ -1,0 +1,58 @@
+[project]
+name = "trading-bot"
+version = "2.0.0"
+description = "Research-grade paper-trading bot: walk-forward validation, statistical inference, realistic frictions (paper only)"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+[tool.ruff]
+line-length = 140
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # warnings
+    "F",  # pyflakes
+    "I",  # import sorting
+    "B",  # bugbear
+    "UP", # modernize
+]
+ignore = [
+    "E501",  # line length handled by formatter config; repo favors dense tables
+    "B905",  # zip(strict=): mixed-length zips are intentional in data parsing
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "E712"]
+"bot/strategy.py" = ["UP042"] # Signal(str, Enum) kept: repr/value semantics are load-bearing
+
+[tool.mypy]
+python_version = "3.12"
+files = ["bot"]
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["bot"]
+branch = true
+omit = ["bot/__main__.py"] # CLI entry points: thin wrappers over covered library code, hit live endpoints
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 88
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
