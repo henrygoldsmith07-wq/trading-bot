@@ -175,19 +175,17 @@ def combine_portfolio_rule(
     dd_trigger: float = -0.10,
     dd_exit: float = -0.05,
     throttle: float = 0.5,
+    denominator_by_day: dict[int, int] | None = None,
 ) -> list[float]:
     """Fixed composite rule: inverse-vol base + XS-momentum tilt + crisis
-    de-risking + optional drawdown throttle. Same survivorship convention as
-    the other combiners: a missing asset's sleeve sits in cash (exposure
-    shrinks, never reflows).
+    de-risking + optional drawdown throttle.
 
-    The drawdown throttle cuts exposure to `throttle` once the portfolio's
-    own drawdown breaches `dd_trigger`, restoring it only after the drawdown
-    recovers above `dd_exit` (hysteresis prevents whipsaw). It reads the
-    rule's own realized equity — strictly past data.
-
-    Delegates each day to `day_allocation` — the same function the forward
-    runner uses — so backtest and forward cannot drift apart.
+    `denominator_by_day` enables the point-in-time survivorship control:
+    {day_ms: number of assets ELIGIBLE on that day} (listed, aged, liquid —
+    bot/universe_pit.py). The day's exposure then scales by
+    present/eligible(day) instead of present/n_assets, so a portfolio can
+    only hold what a same-day investor could actually have held. Default
+    None keeps the historical fixed-denominator behavior.
     """
     syms = list(asset_dailies)
     hist: dict[str, list[float]] = {s: [] for s in syms}
@@ -197,10 +195,11 @@ def combine_portfolio_rule(
     throttled = False
     for t in timeline:
         present = [s for s in syms if t in asset_dailies[s]]
+        denom = n_assets if denominator_by_day is None else max(1, denominator_by_day.get(t, n_assets))
         weights, exposure, throttled = day_allocation(
             hist,
             present,
-            n_assets,
+            denom,
             vol_window=vol_window,
             max_multiple_of_equal=max_multiple_of_equal,
             use_tilt=use_tilt,

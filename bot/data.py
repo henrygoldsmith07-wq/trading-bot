@@ -27,16 +27,24 @@ def _get(url: str, timeout: int = 15, attempts: int = 3) -> str:
 def _parse_klines(raw: str) -> list[dict]:
     candles = []
     for k in json.loads(raw):
-        candles.append(
-            {
-                "open_time": k[0],
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": float(k[5]),
-            }
-        )
+        candle = {
+            "open_time": k[0],
+            "open": float(k[1]),
+            "high": float(k[2]),
+            "low": float(k[3]),
+            "close": float(k[4]),
+            "volume": float(k[5]),
+        }
+        # k[7] is quote-asset volume (true USD turnover) — required for
+        # point-in-time liquidity/eligibility decisions; tolerate absent field
+        if len(k) > 7:
+            try:
+                qv = float(k[7])
+                if math.isfinite(qv):
+                    candle["quote_volume"] = qv
+            except (TypeError, ValueError):
+                pass
+        candles.append(candle)
     return candles
 
 

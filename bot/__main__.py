@@ -175,7 +175,20 @@ def run_compare(args) -> int:
 
     port_returns = combine_portfolio(asset_dailies, timeline, n_selected)
     iv_returns = combine_portfolio_invvol(asset_dailies, timeline, n_selected)
-    base_rule = dict(use_tilt=True, use_crisis=True)
+    # point-in-time survivorship control: per-day eligible counts from each
+    # asset's OWN history (listing age, trailing dollar volume, alive-at-day)
+    from .universe_pit import point_in_time_universe
+
+    pit = point_in_time_universe({s: c for s, (c, _) in histories.items()}, timeline)
+    denominator_by_day = {t: max(1, len(pit[t])) for t in timeline}
+    elig_counts = [denominator_by_day[t] for t in timeline]
+    if elig_counts:
+        print(f"\nPoint-in-time eligibility (listed+aged+liquid at each date): "
+              f"min {min(elig_counts)}, median {sorted(elig_counts)[len(elig_counts)//2]}, max {max(elig_counts)} of {n_selected} fetched")
+        print("  denominators scale by eligible-per-day — today's winners cannot join 2020 early")
+    port_returns = combine_portfolio(asset_dailies, timeline, n_selected, denominator_by_day=denominator_by_day)
+    iv_returns = combine_portfolio_invvol(asset_dailies, timeline, n_selected, denominator_by_day=denominator_by_day)
+    base_rule: dict = dict(use_tilt=True, use_crisis=True, denominator_by_day=denominator_by_day)
     full_returns = combine_portfolio_rule(asset_dailies, timeline, n_selected, **base_rule)
     throttle_returns = combine_portfolio_rule(asset_dailies, timeline, n_selected, use_dd_throttle=True, **base_rule)
     banded_returns = combine_portfolio_rule(banded_dailies, timeline, n_selected, **base_rule)
@@ -575,6 +588,37 @@ def run_research(args) -> int:
     pou = probability_of_underperformance(strat_al, bench_al, n_boot=args.boots // 2, seed=args.seed)
     print(f"  P(bot CAGR < b&h): {pou['p_underperform_cagr']:.3f};  P(bot Sharpe < b&h): {pou['p_underperform_sharpe']:.3f}")
     print(f"  Sharpe gap 90% CI: [{pou['sharpe_gap_ci'][0]:+.2f}, {pou['sharpe_gap_ci'][1]:+.2f}]")
+    return 0
+
+
+def run_universe_snapshot(args) -> int:
+    """Record TODAY's ranked universe — today's data recorded today is
+    point-in-time by construction. Daily snapshots compound into the
+    survivorship-free dataset future backtests deserve."""
+    from .universe import top_symbols
+    from .universe_pit import record_snapshot
+
+    ranked_raw = top_symbols(args.top)
+    if not ranked_raw:
+        print("could not fetch Binance 24h ticker rankings")
+        return 2
+    # attach quote volumes for the snapshot (re-fetch with volumes)
+    import json as _json
+
+    from .data import _get
+    from .universe import TICKER_URL
+
+    rows = _json.loads(_get(TICKER_URL))
+    vol_by_sym = {}
+    for t in rows:
+        sym = t.get("symbol", "")
+        try:
+            vol_by_sym[sym] = float(t.get("quoteVolume", 0) or 0)
+        except ValueError:
+            continue
+    ranked = [(s, vol_by_sym.get(s, 0.0)) for s in ranked_raw]
+    res = record_snapshot(ranked, log_path=args.log)
+    print(f"universe snapshot [{res['status']}] {res['date']}: {res.get('n', len(res.get('symbols', [])))} pairs")
     return 0
 
 
@@ -1008,6 +1052,10 @@ def main():
     led = sub.add_parser("ledger", help="Report the research ledger: every experiment ever searched")
     led.add_argument("--ledger", default="research_ledger.jsonl")
 
+    uni = sub.add_parser("universe-snapshot", help="Record today's ranked universe (point-in-time dataset)")
+    uni.add_argument("--top", type=int, default=20)
+    uni.add_argument("--log", default="universe_log.jsonl")
+
     fwd = sub.add_parser("forward", help="Prospective paper trading: --step one day, --report checkpoints")
     fwd.add_argument("--step", action="store_true", help="execute one forward day from the freeze")
     fwd.add_argument("--report", action="store_true", help="print the checkpoint report")
@@ -1058,6 +1106,8 @@ def main():
         raise SystemExit(run_verify_freeze(args))
     elif args.command == "ledger":
         raise SystemExit(run_ledger(args))
+    elif args.command == "universe-snapshot":
+        raise SystemExit(run_universe_snapshot(args))
     elif args.command == "forward":
         if not (args.step or args.report):
             print("use --step and/or --report")

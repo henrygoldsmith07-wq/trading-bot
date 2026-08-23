@@ -239,21 +239,27 @@ def fixed_candidate_streams(candles: list[dict], abs_folds: list[tuple[int, int]
     return streams
 
 
-def combine_portfolio(asset_dailies: dict[str, dict[int, float]], timeline: list[int], n_assets: int) -> list[float]:
+def combine_portfolio(asset_dailies: dict[str, dict[int, float]], timeline: list[int], n_assets: int, denominator_by_day: dict[int, int] | None = None) -> list[float]:
     """Equal-weight portfolio returns on the shared timeline.
 
     The denominator is the *selected* asset count, not the count with data on
     a given day: an asset that is late-listed, stale, or delisted simply sits
     in cash for its missing days. This is a survivorship-bias control — a
     vanished asset can not silently hand its capital to the survivors.
+
+    `denominator_by_day` upgrades the control to point-in-time eligibility
+    ({day_ms: eligible count}, bot/universe_pit.py): exposure scales by
+    present/eligible(day), so late listings only join when they were actually
+    holdable. Default None = fixed historical denominator.
     """
     dailies = list(asset_dailies.values())
     out = []
     for t in timeline:
+        denom = n_assets if denominator_by_day is None else max(1, denominator_by_day.get(t, n_assets))
         total = 0.0
         for daily in dailies:
             total += daily.get(t, 0.0)
-        out.append(total / n_assets)
+        out.append(total / denom)
     return out
 
 
@@ -263,6 +269,7 @@ def combine_portfolio_invvol(
     n_assets: int,
     window: int = 20,
     max_multiple_of_equal: float = 2.0,
+    denominator_by_day: dict[int, int] | None = None,
 ) -> list[float]:
     """Inverse-volatility-weighted portfolio returns.
 
@@ -272,6 +279,8 @@ def combine_portfolio_invvol(
     that do trade, weights are proportional to 1/trailing-vol (computed from
     strictly past returns), capped at `max_multiple_of_equal` x the equal
     weight so a single low-vol asset (e.g. a bond ETF) cannot dominate.
+    `denominator_by_day` enables point-in-time eligibility denominators
+    (see combine_portfolio).
     """
     import math
 
@@ -279,6 +288,7 @@ def combine_portfolio_invvol(
     hist: dict[str, list[float]] = {s: [] for s in syms}
     out = []
     for t in timeline:
+        denom = n_assets if denominator_by_day is None else max(1, denominator_by_day.get(t, n_assets))
         present = [s for s in syms if t in asset_dailies[s]]
         if not present:
             out.append(0.0)
@@ -308,7 +318,7 @@ def combine_portfolio_invvol(
             eq = 1.0 / len(present)
             weights = {s: eq for s in present}
         gross = sum(weights[s] * asset_dailies[s][t] for s in present)
-        out.append(gross * len(present) / n_assets)
+        out.append(gross * len(present) / denom)
         for s in present:
             hist[s].append(asset_dailies[s][t])
     return out

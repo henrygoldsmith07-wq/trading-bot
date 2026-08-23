@@ -82,6 +82,13 @@ jobs:
           python -m bot forward --step --freeze-file freeze.json --log-file "$LOG_FILE"
           python -m bot forward --report --freeze-file freeze.json --log-file "$LOG_FILE"
 
+      # ---- step 4b: record today's universe (point-in-time dataset) -------
+      # Today's ranking recorded TODAY carries no survivorship bias; a year
+      # of these snapshots is the dataset future backtests deserve.
+      - name: Snapshot today's universe
+        if: steps.pointer.outputs.commit != ''
+        run: python -m bot universe-snapshot --top 20 --log universe_log.jsonl
+
       # ---- step 5: return to main; append ONLY the log (data, not code) ----
       - name: Append forward log to main
         if: steps.pointer.outputs.commit != ''
@@ -90,22 +97,38 @@ jobs:
         run: |
           [ -f forward_log.jsonl ] || { echo "no log produced this run"; exit 0; }
           cp forward_log.jsonl /tmp/forward_log.jsonl
+          [ -f universe_log.jsonl ] && cp universe_log.jsonl /tmp/universe_log.jsonl
           git config user.name "paper-bot"
           git config user.email "actions@users.noreply.github.com"
           git checkout -f "$BRANCH"
           python - <<'PY'
           import json, pathlib
-          new = [json.loads(l) for l in pathlib.Path('/tmp/forward_log.jsonl').read_text().splitlines() if l.strip()]
+          merged_any = False
           p = pathlib.Path('forward_log.jsonl')
+          new = [json.loads(l) for l in pathlib.Path('/tmp/forward_log.jsonl').read_text().splitlines() if l.strip()]
           old = []
           if p.exists():
               old = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
           seen = {e.get('date') for e in old}
           merged = old + [e for e in new if e.get('date') not in seen]
           p.write_text(''.join(json.dumps(e) + '\n' for e in merged))
-          print(f"log entries after merge: {len(merged)}")
+          print(f"forward log entries after merge: {len(merged)}")
+          u = pathlib.Path('universe_log.jsonl')
+          if pathlib.Path('/tmp/universe_log.jsonl').exists():
+              uold = {}
+              if u.exists():
+                  for l in u.read_text().splitlines():
+                      if l.strip():
+                          e = json.loads(l); uold[e['date']] = l
+              for l in pathlib.Path('/tmp/universe_log.jsonl').read_text().splitlines():
+                  if l.strip():
+                      e = json.loads(l)
+                      if e['date'] not in uold:
+                          uold[e['date']] = l
+              u.write_text(''.join(uold[d] + '\n' for d in sorted(uold)))
+              print(f"universe snapshot days: {len(uold)}")
           PY
-          git add forward_log.jsonl
+          git add forward_log.jsonl universe_log.jsonl
           if git diff --cached --quiet; then
             echo "no new entries"
           else

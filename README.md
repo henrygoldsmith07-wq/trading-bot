@@ -76,7 +76,7 @@ How the pipeline addresses each dimension:
 | Stale prices | Assets whose history stopped >45d ago are flagged and excluded |
 | Missing data | Non-finite/non-positive closes dropped, timestamps deduped, history sorted on ingest |
 | Delisting | Missing days hold cash — a dead asset strands its sleeve, it never redistributes to survivors |
-| Survivorship bias | Fixed-denominator portfolio combine + explicit disclosure (point-in-time constituents aren't freely available) |
+| Survivorship bias | **Point-in-time eligibility** (`bot/universe_pit.py`): per-day denominators from listing age + trailing 30d dollar volume + alive-at-date — a 2023 listing only joins the 2023 portfolio, however famous it is today. **Forward snapshots** (`python -m bot universe-snapshot`, daily in CI) compound into a genuinely point-in-time dataset. Residual, disclosed: symbols purged from Binance's API before we ever fetched them remain invisible without an external archive |
 | Cash returns | Idle cash accrues a configurable risk-free rate (default 3%/yr); all Sharpe ratios are excess-of-cash |
 | Benchmark consistency | Same window, calendar-day CAGR, same risk-free rate; the index carries no costs and is labeled as such |
 
