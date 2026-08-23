@@ -47,6 +47,7 @@ def create_freeze(
     git_commit: str | None = None,
     image_digest: str | None = None,
     git_tag: str | None = None,
+    research_context: dict | None = None,
 ) -> dict:
     """Write the freeze manifest. `assets`: [{symbol, source, periods_per_year,
     strategy (object)}].
@@ -55,6 +56,10 @@ def create_freeze(
     selection mode, weighting, tilt, crisis, band, throttle, overlay. It is
     nested under config so the existing tamper seal covers it — a manifest
     without it cannot prove what would run and is rejected.
+
+    `research_context` pins the state of the research ledger at freeze time
+    (entry count + sha256), so multiple-testing corrections are computed
+    against an immutable record of how much was actually searched.
     """
     from .algorithm import validate_algorithm
 
@@ -73,6 +78,8 @@ def create_freeze(
         "overlay": {"target_vol": algorithm["overlay"]["target_vol"]},  # legacy view
         "algorithm": algorithm,
     }
+    if research_context is not None:
+        config["research_context"] = research_context
     manifest = {
         "frozen_at": (now or datetime.now(UTC)).isoformat(),
         "frozen_at_date": (now or datetime.now(UTC)).date().isoformat(),

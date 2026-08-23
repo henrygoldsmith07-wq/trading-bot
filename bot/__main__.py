@@ -402,7 +402,23 @@ def run_validate(args) -> int:
     trials = len(candidates)
     d = dsr(oos, wf["trial_sharpes"], trials)
     print(f"  PSR (vs Sharpe 0): {p:.3f}")
-    print(f"  DSR (deflated for {trials} trials, trial-Sharpe sd {_stats.stdev(wf['trial_sharpes']):.2f}): {d:.3f}")
+    print(f"  DSR (deflated for {trials} pool trials, trial-Sharpe sd {_stats.stdev(wf['trial_sharpes']):.2f}): {d:.3f}")
+    from .research_ledger import recommended_trial_count
+
+    n_ledger = recommended_trial_count("research_ledger.jsonl")
+    if n_ledger:
+        # The research program searched more than one selection grid: portfolio
+        # rules, bands, throttles, execution models... Count them all.
+        combined_trials = list(wf["trial_sharpes"])
+        from .research_ledger import load_entries, summarize
+
+        led_summary = summarize(load_entries("research_ledger.jsonl"))
+        combined_trials += led_summary["trial_sharpes"]
+        d_ledger = dsr(oos, combined_trials, trials + n_ledger)
+        print(f"  DSR (ledger-informed: {trials} pool + {n_ledger} research-program experiments): {d_ledger:.3f}"
+              f"   <- the honest number")
+    else:
+        print("  (no research ledger found — pool-only correction; seed research_ledger.jsonl for the honest N)")
     print("  PSR/DSR > 0.95 is the usual 'real edge' bar; DSR is the honest number")
 
     print("\n[4/7] Stationary block bootstrap (20d blocks)...")
@@ -503,6 +519,12 @@ def run_research(args) -> int:
     eff = effective_trial_count(aligned)
     print(f"  {eff['n_strategies']} strategies -> {eff['n_clusters']} clusters at corr 0.90; "
           f"effective trials ~{eff['n_effective']:.1f}; avg pairwise corr {eff['avg_pairwise_corr']:.3f}")
+    from .research_ledger import recommended_trial_count as _ledger_n
+
+    n_ledger = _ledger_n("research_ledger.jsonl")
+    if n_ledger:
+        print(f"  research ledger records {n_ledger} additional portfolio/execution/universe "
+              f"searches — DSR corrections in 'validate' count these too")
     dups = near_duplicate_pairs(aligned)
     if dups:
         print(f"  near-duplicates (|rho| >= 0.995): {len(dups)} pair(s), e.g.:")
@@ -693,6 +715,7 @@ def run_freeze(args) -> int:
         git_commit=commit,
         git_tag=tag if commit and not args.no_tag else None,
         image_digest=args.image_digest,
+        research_context=_research_context(),
     )
 
     print(f"\nFroze {len(assets)} assets at {manifest['frozen_at']}")
@@ -716,6 +739,44 @@ def manifest_date() -> str:
     from datetime import UTC, datetime
 
     return datetime.now(UTC).strftime("%Y%m%d")
+
+
+def _research_context() -> dict | None:
+    """Pin the research ledger at freeze time: how much was searched, sealed."""
+    from .research_ledger import ledger_fingerprint, recommended_trial_count
+
+    fp = ledger_fingerprint()
+    if fp is None:
+        return None
+    n_entries, sha = fp
+    return {
+        "ledger_entries": n_entries,
+        "ledger_sha256": sha,
+        "recommended_trial_count": recommended_trial_count(),
+    }
+
+
+def run_ledger(args) -> int:
+    from .research_ledger import load_entries, summarize, verify_chain
+
+    entries = load_entries(args.ledger)
+    if not entries:
+        print(f"No research ledger at {args.ledger} — seed one with scripts/seed_research_ledger.py")
+        return 2
+    verify_chain(entries)
+    s = summarize(entries)
+    print(f"Research ledger: {s['total_entries']} experiments (hash-chain verified)")
+    print(f"  {'category':14}{'total':>7}{'accepted':>10}{'rejected':>10}")
+    for cat in s["by_category"]:
+        if s["by_category"][cat]:
+            acc = s["accepted_by_category"][cat]
+            print(f"  {cat:14}{s['by_category'][cat]:>7}{acc:>10}{s['by_category'][cat] - acc:>10}")
+    print(f"\nSearch categories total (strategy+portfolio+execution+universe): {s['recommended_trial_count']}")
+    print(f"Sharpe-valued trial results recorded: {s['sharpe_valued_trials']}")
+    print("\nDefensible multiple-testing corrections count THESE, not just the "
+          f"{sum(1 for e in entries if e['category'] == 'strategy')} strategy-family entries.")
+    print("Rejected ideas stay in the file forever — the search was real even when the idea failed.")
+    return 0
 
 
 def run_verify_freeze(args) -> int:
@@ -944,6 +1005,9 @@ def main():
     ver = sub.add_parser("verify-freeze", help="Refuse unless running code matches the frozen implementation")
     ver.add_argument("--freeze-file", default="freeze.json")
 
+    led = sub.add_parser("ledger", help="Report the research ledger: every experiment ever searched")
+    led.add_argument("--ledger", default="research_ledger.jsonl")
+
     fwd = sub.add_parser("forward", help="Prospective paper trading: --step one day, --report checkpoints")
     fwd.add_argument("--step", action="store_true", help="execute one forward day from the freeze")
     fwd.add_argument("--report", action="store_true", help="print the checkpoint report")
@@ -992,6 +1056,8 @@ def main():
         raise SystemExit(run_freeze(args))
     elif args.command == "verify-freeze":
         raise SystemExit(run_verify_freeze(args))
+    elif args.command == "ledger":
+        raise SystemExit(run_ledger(args))
     elif args.command == "forward":
         if not (args.step or args.report):
             print("use --step and/or --report")

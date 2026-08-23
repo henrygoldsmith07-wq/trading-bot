@@ -214,6 +214,31 @@ python -m bot trade --symbol BTCUSDT --once --ai-note               # adds an 'A
 - **No limits within the allowlist**: output tokens are uncapped by default (`max_tokens=None`), and when a model fails or hits its per-model rate limit the request rotates through *every* remaining allowlisted chat model — embeddings/rerank/TTS/safety endpoints are excluded from the chat rotation automatically
 - **Advisory by construction**: model output is clearly labeled commentary appended after execution; no code path feeds it back into weights, signals, or decisions; every entry point degrades gracefully to "no commentary" without a key
 
+## Research ledger: counting the TRUE number of experiments
+
+An 85-candidate pool understates the real search. The project also explored
+equal vs inverse-vol weighting, XS tilt on/off, crisis thresholds, a drawdown
+throttle, band widths, execution models, cost models, universe rules... Every
+one of those is a draw from the same multiple-testing lottery.
+
+`research_ledger.jsonl` is the append-only record of every experiment —
+hypothesis, full configuration, primary metric, numeric result,
+accepted/rejected, git provenance — hash-chained so edits and deletions of
+failed ideas are detectable (`python -m bot ledger` verifies and reports).
+Backfilled entries (33 seeded from git history) carry `backfilled: true`
+and their original commit.
+
+```bash
+python -m bot ledger        # counts by category; search total = the honest N
+```
+
+Current counts: **29 search experiments** (7 strategy families, 8 portfolio,
+12 execution, 2 universe) + 4 methodology tools excluded from the search N.
+`validate` now reports DSR twice: once against the 85-candidate pool, once
+against the ledger-informed total — the latter is the honest number.
+Freezes pin `research_context` (ledger entry count + sha256), so forward-test
+corrections are computed against an immutable record of how much was searched.
+
 ## Usage
 
 ```bash
