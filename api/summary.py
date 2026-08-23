@@ -8,15 +8,14 @@ Zero third-party dependencies — a pure-stdlib ASGI app, which Vercel's
 Python runtime detects automatically. Deployed with the repo's classic
 zero-config layout (static `public/` + functions in `api/`).
 """
-import asyncio
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from bot.data import fetch_candles, fetch_daily_history  # noqa: E402
+from bot.data import fetch_daily_history  # noqa: E402
 from bot.strategy import risk_ensemble  # noqa: E402
 from bot.walkforward import absolute_folds, walk_forward_at  # noqa: E402
 
@@ -55,11 +54,11 @@ def build_summary(symbol: str = "BTCUSDT") -> dict:
     return {
         "symbol": symbol,
         "strategy": "RiskEnsemble (fixed, a-priori)",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "frictions": ENGINE_KWARGS,
         "oos": {
-            "first_day": datetime.fromtimestamp(wf["first_day"] / 1000, tz=timezone.utc).date().isoformat(),
-            "last_day": datetime.fromtimestamp(wf["last_day"] / 1000, tz=timezone.utc).date().isoformat(),
+            "first_day": datetime.fromtimestamp(wf["first_day"] / 1000, tz=UTC).date().isoformat(),
+            "last_day": datetime.fromtimestamp(wf["last_day"] / 1000, tz=UTC).date().isoformat(),
             "cagr": round(wf["cagr"], 4),
             "sharpe": round(wf["sharpe"], 3),
             "max_drawdown": round(wf["max_drawdown"], 4),
@@ -71,7 +70,7 @@ def build_summary(symbol: str = "BTCUSDT") -> dict:
         "curve": points,
         "live": {
             "price": candles[-1]["close"],
-            "price_date": datetime.fromtimestamp(candles[-1]["open_time"] / 1000, tz=timezone.utc).date().isoformat(),
+            "price_date": datetime.fromtimestamp(candles[-1]["open_time"] / 1000, tz=UTC).date().isoformat(),
             "weight_now": round(strategy.weight(candles), 3),
         },
         "disclaimer": "Paper trading only. Educational software. Not financial advice.",
