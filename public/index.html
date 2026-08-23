@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper Trading Bot — Monitor</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --green: #3fb950; --red: #f85149; --blue: #58a6ff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; padding: 24px; }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 600; }
+  h1 .tag { font-size: 11px; background: var(--border); border-radius: 10px; padding: 2px 10px; vertical-align: middle; margin-left: 8px; color: var(--muted); }
+  .sub { color: var(--muted); margin: 6px 0 20px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+  .pos { color: var(--green); } .neg { color: var(--red); }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+  .panel h2 { font-size: 15px; margin-bottom: 10px; font-weight: 600; }
+  .panel .note { color: var(--muted); font-size: 13px; }
+  svg { width: 100%; height: 260px; display: block; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .banner { display: none; background: #21262d; border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 20px; font-size: 13px; color: var(--muted); }
+  footer { color: var(--muted); font-size: 12px; margin-top: 24px; border-top: 1px solid var(--border); padding-top: 12px; }
+  a { color: var(--blue); text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Paper Trading Bot <span class="tag">PAPER ONLY</span></h1>
+  <p class="sub">Fixed RiskEnsemble strategy, walk-forward out-of-sample track record under realistic frictions (next-open execution, 20bp round-trip). No real orders are ever placed.</p>
+
+  <div id="banner" class="banner"></div>
+
+  <div class="cards">
+    <div class="card"><div class="label">BTC price (live)</div><div class="value" id="price">—</div></div>
+    <div class="card"><div class="label">Trend vs 50d SMA</div><div class="value" id="trend">—</div></div>
+    <div class="card"><div class="label">Target weight now</div><div class="value" id="weight">—</div></div>
+    <div class="card"><div class="label">OOS Sharpe</div><div class="value" id="sharpe">—</div></div>
+    <div class="card"><div class="label">OOS max drawdown</div><div class="value" id="mdd">—</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>Out-of-sample equity curve — growth of $1</h2>
+    <p class="note" id="curve-note">Loading from /api/summary…</p>
+    <svg id="chart" viewBox="0 0 900 260" preserveAspectRatio="none"></svg>
+  </div>
+
+  <div class="panel">
+    <h2>Summary</h2>
+    <table>
+      <tr><th>Metric</th><th>Value</th></tr>
+      <tr><td>Strategy</td><td id="m-strategy">—</td></tr>
+      <tr><td>Out-of-sample window</td><td id="m-window">—</td></tr>
+      <tr><td>CAGR</td><td id="m-cagr">—</td></tr>
+      <tr><td>Growth of $1</td><td id="m-final">—</td></tr>
+      <tr><td>Average exposure</td><td id="m-exp">—</td></tr>
+      <tr><td>Generated at (UTC)</td><td id="m-gen">—</td></tr>
+    </table>
+  </div>
+
+  <footer>
+    Backtest ≠ future performance. The deflated Sharpe ratio of selected strategies is disclosed in the
+    <a href="https://github.com/henrygoldsmith07-wq/trading-bot" target="_blank" rel="noopener">repository README</a> — read it before taking any number here seriously.
+    Educational software. Not financial advice.
+  </footer>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const pct = (x, d=1) => (x*100).toFixed(d) + "%";
+
+function setVal(id, text, cls) {
+  const el = $(id); el.textContent = text;
+  el.className = "value" + (cls ? " " + cls : "");
+}
+
+// ---- equity curve (hand-rolled SVG, no dependencies) ----
+function drawCurve(points) {
+  const svg = $("chart");
+  if (!points || points.length < 2) { svg.innerHTML = ""; return; }
+  const W = 900, H = 260, padL = 8, padB = 22, padT = 8;
+  const vs = points.map(p => p.v);
+  const vMin = Math.min(...vs, 1), vMax = Math.max(...vs, 1);
+  const x = (i) => padL + (i / (points.length - 1)) * (W - 2*padL);
+  const y = (v) => padT + (1 - (v - vMin) / (vMax - vMin || 1)) * (H - padT - padB);
+  let d = points.map((p, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(p.v).toFixed(1)).join(" ");
+  const baseline = y(1).toFixed(1);
+  svg.innerHTML =
+    '<line x1="'+padL+'" y1="'+baseline+'" x2="'+(W-padL)+'" y2="'+baseline+'" stroke="#30363d" stroke-dasharray="4 4"/>' +
+    '<path d="'+d+'" fill="none" stroke="#3fb950" stroke-width="2"/>' +
+    '<text x="'+padL+'" y="'+(H-6)+'" fill="#8b949e" font-size="11">'+new Date(points[0].t).toISOString().slice(0,10)+'</text>' +
+    '<text x="'+(W-padL)+'" y="'+(H-6)+'" fill="#8b949e" font-size="11" text-anchor="end">'+new Date(points[points.length-1].t).toISOString().slice(0,10)+'</text>' +
+    '<text x="'+padL+'" y="'+(padT+10)+'" fill="#8b949e" font-size="11">'+vMax.toFixed(2)+'x</text>' +
+    '<text x="'+padL+'" y="'+(H-padB-2)+'" fill="#8b949e" font-size="11">'+vMin.toFixed(2)+'x</text>';
+}
+
+// ---- authoritative summary from the Python serverless function ----
+async function loadSummary() {
+  try {
+    const res = await fetch("/api/summary");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const s = await res.json();
+    if (s.error) throw new Error(s.error);
+    setVal("sharpe", s.oos.sharpe.toFixed(2));
+    setVal("mdd", pct(s.oos.max_drawdown), "neg");
+    setVal("weight", s.live.weight_now.toFixed(2));
+    $("m-strategy").textContent = s.strategy + " on " + s.symbol;
+    $("m-window").textContent = s.oos.first_day + " → " + s.oos.last_day + " (yearly walk-forward folds)";
+    setVal("m-cagr", pct(s.oos.cagr), s.oos.cagr >= 0 ? "pos" : "neg");
+    $("m-final").textContent = s.oos.final.toFixed(2) + "x";
+    $("m-exp").textContent = (s.oos.exposure*100).toFixed(0) + "% invested";
+    $("m-gen").textContent = s.generated_at.replace("T", " ").slice(0, 19);
+    $("curve-note").textContent = "Fixed rule, strictly out-of-sample: strategy re-picked yearly on prior data only. " +
+      s.folds.length + " folds, " + s.folds.filter(f => f === s.folds[0]).length + "× " + s.folds[0] + ".";
+    drawCurve(s.curve);
+  } catch (e) {
+    $("banner").style.display = "block";
+    $("banner").textContent = "Python API unavailable (" + e.message + ") — showing the client-side live monitor only. The full summary returns when /api/summary warms up.";
+    $("curve-note").textContent = "Equity curve requires the /api/summary endpoint.";
+  }
+}
+
+// ---- client-side live monitor (works even without the API) ----
+async function loadLive() {
+  try {
+    const res = await fetch("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=60");
+    const rows = await res.json();
+    const closes = rows.map(k => parseFloat(k[4]));
+    const price = closes[closes.length - 1];
+    setVal("price", "$" + price.toLocaleString(undefined, {maximumFractionDigits: 0}));
+    const sma50approx = closes.slice(-50).reduce((a, b) => a + b, 0) / Math.min(50, closes.length);
+    const up = price >= sma50approx;
+    setVal("trend", up ? "UP" : "DOWN", up ? "pos" : "neg");
+  } catch (e) {
+    setVal("price", "unavailable");
+  }
+}
+
+loadLive();
+setInterval(loadLive, 60000);
+loadSummary();
+</script>
+</body>
+</html>

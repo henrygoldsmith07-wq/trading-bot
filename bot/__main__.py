@@ -134,27 +134,45 @@ def run_compare(args) -> int:
     timeline = [c["open_time"] for c in btc if oos_start_ms <= c["open_time"] < oos_end_ms]
     n_selected = len(histories)
     asset_dailies = {}
+    banded_dailies = {}
+    fixed_dailies = {}
     per_asset = []
     picks_counter: dict[str, int] = {}
+    from .strategy import risk_ensemble
+
     for symbol, (candles, ppy) in histories.items():
         wf = walk_forward_at(candles, folds_abs, periods_per_year=ppy, **engine_kwargs)
         per_asset.append({"symbol": symbol, "cagr": wf["cagr"], "sharpe": wf["sharpe"], "max_drawdown": wf["max_drawdown"]})
         for p in wf["folds"]:
             picks_counter[p["strategy"]] = picks_counter.get(p["strategy"], 0) + 1
         asset_dailies[symbol] = {t: r for t, r in wf["daily"].items() if oos_start_ms <= t < oos_end_ms}
-    port_returns = combine_portfolio(asset_dailies, timeline, n_selected)
-    iv_returns = combine_portfolio_invvol(asset_dailies, timeline, n_selected)
+
+        banded_kwargs = dict(engine_kwargs)
+        banded_kwargs["rebalance_band"] = 0.05
+        wb = walk_forward_at(candles, folds_abs, periods_per_year=ppy, **banded_kwargs)
+        banded_dailies[symbol] = {t: r for t, r in wb["daily"].items() if oos_start_ms <= t < oos_end_ms}
+
+        wfx = walk_forward_at(candles, folds_abs, periods_per_year=ppy, candidates=[risk_ensemble()], **banded_kwargs)
+        fixed_dailies[symbol] = {t: r for t, r in wfx["daily"].items() if oos_start_ms <= t < oos_end_ms}
+    t_compute = _time.perf_counter()
+
     from .portfolio_rules import combine_portfolio_rule
 
-    tilt_returns = combine_portfolio_rule(asset_dailies, timeline, n_selected, use_tilt=True, use_crisis=False)
-    full_returns = combine_portfolio_rule(asset_dailies, timeline, n_selected, use_tilt=True, use_crisis=True)
-    t_compute = _time.perf_counter()
+    port_returns = combine_portfolio(asset_dailies, timeline, n_selected)
+    iv_returns = combine_portfolio_invvol(asset_dailies, timeline, n_selected)
+    base_rule = dict(use_tilt=True, use_crisis=True)
+    full_returns = combine_portfolio_rule(asset_dailies, timeline, n_selected, **base_rule)
+    throttle_returns = combine_portfolio_rule(asset_dailies, timeline, n_selected, use_dd_throttle=True, **base_rule)
+    banded_returns = combine_portfolio_rule(banded_dailies, timeline, n_selected, **base_rule)
+    fixed_returns = combine_portfolio_rule(fixed_dailies, timeline, n_selected, use_dd_throttle=True, **base_rule)
 
     port = _equity_metrics(port_returns, risk_free_annual=args.risk_free)
     port_rm = _equity_metrics(_vol_overlay(port_returns, target=args.portfolio_vol), risk_free_annual=args.risk_free)
     iv_rm = _equity_metrics(_vol_overlay(iv_returns, target=args.portfolio_vol), risk_free_annual=args.risk_free)
-    tilt_rm = _equity_metrics(_vol_overlay(tilt_returns, target=args.portfolio_vol), risk_free_annual=args.risk_free)
     full_rm = _equity_metrics(_vol_overlay(full_returns, target=args.portfolio_vol), risk_free_annual=args.risk_free)
+    throttle_rm = _equity_metrics(_vol_overlay(throttle_returns, target=args.portfolio_vol), risk_free_annual=args.risk_free)
+    banded_rm = _equity_metrics(_vol_overlay(banded_returns, target=args.portfolio_vol), risk_free_annual=args.risk_free)
+    fixed_rm = _equity_metrics(_vol_overlay(fixed_returns, target=args.portfolio_vol), risk_free_annual=args.risk_free)
 
     print("\nFetching S&P 500 daily history (FRED)...")
     sp = fetch_sp500()
@@ -187,24 +205,26 @@ def run_compare(args) -> int:
 
     print("\nFixed portfolio rules (a-priori overlays, all risk-managed):")
     rules = [
-        ("inv-vol", iv_rm, _vol_overlay(iv_returns, target=args.portfolio_vol)),
-        ("inv-vol + XS-momentum tilt", tilt_rm, _vol_overlay(tilt_returns, target=args.portfolio_vol)),
-        ("inv-vol + tilt + crisis de-risk", full_rm, _vol_overlay(full_returns, target=args.portfolio_vol)),
+        ("inv-vol (selected underlying)", iv_rm, _vol_overlay(iv_returns, target=args.portfolio_vol)),
+        ("+ tilt + crisis de-risk", full_rm, _vol_overlay(full_returns, target=args.portfolio_vol)),
+        ("+ drawdown throttle", throttle_rm, _vol_overlay(throttle_returns, target=args.portfolio_vol)),
+        ("+ tilt + crisis, banded 5% rebalance", banded_rm, _vol_overlay(banded_returns, target=args.portfolio_vol)),
+        ("fully-fixed: RiskEnsemble everywhere, banded, all overlays", fixed_rm, _vol_overlay(fixed_returns, target=args.portfolio_vol)),
     ]
-    header = f"  {'rule':30}{'CAGR':>8}{'Sharpe':>8}{'maxDD':>8}{'ES95':>7}{'Calmar':>8}"
+    header = f"  {'rule':58}{'CAGR':>8}{'Sharpe':>8}{'maxDD':>8}{'ES95':>7}{'Calmar':>8}"
     print(header)
     print("  " + "-" * (len(header) - 2))
     for name, m, _ in rules:
-        print(f"  {name:30}{_fmt_pct(m['cagr']):>8}{m['sharpe']:>8.2f}{_fmt_pct(m['max_drawdown']):>8}{_fmt_pct(m['es95']):>7}{m['calmar']:>8.2f}")
+        print(f"  {name:58}{_fmt_pct(m['cagr']):>8}{m['sharpe']:>8.2f}{_fmt_pct(m['max_drawdown']):>8}{_fmt_pct(m['es95']):>7}{m['calmar']:>8.2f}")
 
     from .metrics import sharpe as _sharpe_ann
     from .stats_validation import dsr, psr
 
-    print("\nStatistical standing of the fixed rules (trial count = 1, nothing selected):")
+    print("\nStatistical standing (trial count 1 for the fixed rows; selected underlying carries the 85-trial caveat):")
     for name, _, rets in rules:
         p1 = psr(rets)
         d1 = dsr(rets, [_sharpe_ann(rets, 365)], 1)
-        print(f"  {name:30} PSR {p1:.3f}  DSR {d1:.3f}")
+        print(f"  {name:58} PSR {p1:.3f}  DSR {d1:.3f}")
     print(f"\nFrictions: execution={args.execution}, fee={args.fee:.2%}, spread={args.spread_bps:.0f}bp, "
           f"slippage={args.slippage_bps:.0f}bp, latency={args.latency_days}d, cash yield={args.risk_free:.0%}/yr")
     print("Benchmark consistency: same window/calendar-day CAGR; Sharpe in excess of the same risk-free rate; index is untradeable so carries no costs.")

@@ -45,11 +45,15 @@ def run_strategy(
     latency_days: int = 0,
     execution: str = "close",
     risk_free_annual: float = 0.0,
+    rebalance_band: float = 0.0,
 ) -> dict:
     """Backtest `weight_fn` over `candles`.
 
     weight_fn(candles, i) -> target exposure for day i, using data through
     day i-1 only. `latency_days` further delays when that signal takes effect.
+    `rebalance_band` suppresses trades: a new target is only acted on when it
+    differs from the currently-held weight by more than the band (cuts
+    turnover cost from continuous micro-rebalancing).
     """
     if execution not in ("close", "next_open"):
         raise ValueError("execution must be 'close' or 'next_open'")
@@ -67,9 +71,10 @@ def run_strategy(
     for i in range(start_index, n):
         sig_i = i - latency_days
         if sig_i >= 1:
-            w = min(1.0, max(0.0, weight_fn(candles, sig_i)))
+            w_target = min(1.0, max(0.0, weight_fn(candles, sig_i)))
         else:
-            w = 0.0
+            w_target = 0.0
+        w = w_target if abs(w_target - prev_w) > rebalance_band else prev_w
         cost = cost_rate * abs(w - prev_w)
         if execution == "next_open":
             o = _open_price(candles[i], closes[i - 1])

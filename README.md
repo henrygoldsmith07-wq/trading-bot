@@ -1,8 +1,20 @@
 # Trading Bot (Paper Trading)
 
-A Python trading bot that trades **on paper only** — no real orders are ever placed. It pulls free public market data (Binance, Yahoo Finance, FRED — no API keys) and runs a research-grade validation pipeline: a 74-strategy candidate pool, a multi-asset-class portfolio, walk-forward out-of-sample selection, realistic execution frictions, and regime/stress/sensitivity diagnostics against the S&P 500.
+A Python trading bot that trades **on paper only** — no real orders are ever placed. It pulls free public market data (Binance, Yahoo Finance, FRED — no API keys) and runs a research-grade validation pipeline: an 85-strategy candidate pool, multi-asset-class portfolio construction, walk-forward out-of-sample selection, realistic execution frictions, a full statistical-validation battery, prospective (frozen, forward) testing — and a **web dashboard deployable to Vercel in one command**.
 
 > ⚠️ Educational software. Not financial advice. Past out-of-sample performance does not guarantee future results — do not wire real money to anything based on this repo.
+
+## Web dashboard (Vercel)
+
+The repo uses Vercel's zero-config layout — static assets in `public/`, serverless functions in `api/`:
+
+```bash
+npm i -g vercel   # once
+vercel            # deploy from the repo root; accept defaults
+```
+
+- **`/`** — the dashboard: live BTC price and trend monitor (client-side, always works), plus the authoritative out-of-sample summary and equity curve from `/api/summary`. If the Python function is cold or unavailable, the page degrades gracefully to the client-side monitor.
+- **`/api/summary`** — pure-stdlib ASGI function that imports the `bot` package and computes the fixed-rule walk-forward live (BTC, realistic frictions, ~4s cold). No third-party Python dependencies.
 
 ## Headline result (real data, out-of-sample, realistic frictions)
 
@@ -30,7 +42,18 @@ On top of the fixed rules, two a-priori portfolio overlays (`bot/portfolio_rules
 | inv-vol + XS-momentum tilt | 20.8% | 1.10 | -16.9% | -1.7% | 1.23 |
 | inv-vol + tilt + crisis de-risk | **21.0%** | **1.12** | -16.9% | -1.7% | **1.24** |
 
-The **cross-sectional momentum tilt** ranks assets by trailing 90d return and tilts sleeves within a ±50% band (gross exposure preserved); the **crisis de-risk** cuts exposure 40% when average pairwise correlation exceeds 0.6 (diversification breakdown). Both use strictly trailing data, and all three rules carry **DSR = 1.000 at trial count 1** — statistically defensible precisely because nothing was searched.
+The **cross-sectional momentum tilt** ranks assets by trailing 90d return and tilts sleeves within a ±50% band (gross exposure preserved); the **crisis de-risk** cuts exposure 40% when average pairwise correlation exceeds 0.6 (diversification breakdown). Both use strictly trailing data.
+
+Two later refinements, measured honestly:
+
+| Variant (risk-managed) | CAGR | Sharpe | maxDD | Verdict |
+|---|---|---|---|---|
+| inv-vol + tilt + crisis | 21.0% | 1.12 | -16.9% | previous best |
+| **+ 5% rebalance band** (trade only when the weight moves >5%) | **22.0%** | **1.23** | -16.9% | **new best — pure cost reduction, DSR 1.000** |
+| + drawdown throttle (halve exposure past -10% DD) | 16.5% | 0.94 | **-13.2%** | trades ~5pp CAGR for drawdown; available, not default |
+| fully-fixed (RiskEnsemble on every asset, no selection anywhere) | 6.3% | 0.44 | -9.8% | the only *strictly* N=1 pipeline; much weaker — the per-asset selection genuinely adds value across 15 assets |
+
+The honest statistical note: rows 1-2 sit on selection-based per-asset streams (the 85-trial caveat applies and is printed); only the last row is trial-count-1 end to end. The banded variant is the headline configuration.
 
 Beats the S&P 500 on CAGR, excess Sharpe, and max drawdown simultaneously — with the frictions of real trading priced in.
 
@@ -104,20 +127,24 @@ python -m bot trade --strategy trendvol
 
 ```
 bot/
-  strategy.py    # 74-candidate strategy pool + prefix-sum indicator cache
+  strategy.py    # 85-candidate strategy pool + prefix-sum indicator cache
   engine.py      # daily-bar engine: next-open execution, spread/slippage/
-                 # latency, fee-on-turnover, cash accrual, no lookahead
-  metrics.py     # CAGR / excess Sharpe / vol / max drawdown
-  walkforward.py # expanding-window walk-forward + survivorship-safe combine
-  regime.py     # bull/bear/sideways segmentation + stress windows
+                 # latency, fee-on-turnover, cash accrual, rebalance banding
+  metrics.py     # CAGR / excess Sharpe / Sortino / Calmar / VaR / ES
+  walkforward.py # expanding-window walk-forward + survivorship-safe combiners
+  portfolio_rules.py # XS-momentum tilt, crisis de-risk, drawdown throttle
+  regimes.py     # bull/bear/sideways segmentation + stress windows
   sensitivity.py # parameter / rolling / cost / latency / execution sweeps
   stats_validation.py # PSR, DSR, block bootstrap, Reality Check, shuffle MC
+  prospective.py # freeze manifest, forward paper-trading log, checkpoints
   universe.py    # top-volume crypto + SPY/GLD/TLT cross-class ETFs
   benchmark.py   # S&P 500 data (FRED primary, Yahoo fallback)
   data.py        # Binance + Yahoo fetchers, cleaning, stale/delist detection
   cache.py       # disk cache for daily history
   paper.py       # paper broker + live loop
-tests/           # 1658 unit/property tests
+api/             # Vercel serverless endpoint (stdlib ASGI)
+public/          # static dashboard served by Vercel
+tests/           # 1667 unit/property tests
 .github/         # CI workflow
 ```
 

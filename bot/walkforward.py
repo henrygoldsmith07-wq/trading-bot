@@ -59,6 +59,7 @@ def walk_forward_at(
     risk_free_annual: float = 0.0,
     embargo_days: int = 0,
     selection_fn=None,
+    rebalance_band: float = 0.0,
 ) -> dict:
     """Walk-forward using absolute fold boundaries.
 
@@ -86,6 +87,7 @@ def walk_forward_at(
         latency_days=latency_days,
         execution=execution,
         risk_free_annual=risk_free_annual,
+        rebalance_band=rebalance_band,
     )
 
     def _run(slice_, cand):
