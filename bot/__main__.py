@@ -643,6 +643,19 @@ def run_freeze(args) -> int:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip() or None
     except Exception:
         commit = None
+
+    # Immutable-artifact trail: tag the frozen commit (keeps it reachable and
+    # human-auditable) and record a container digest when one was built.
+    tag = f"freeze/{args.tag or manifest_date()}"
+    if commit and not args.no_tag:
+        made = subprocess.run(["git", "tag", "-f", tag, commit], capture_output=True, text=True)
+        if made.returncode == 0:
+            print(f"tagged frozen commit as {tag}")
+        else:
+            print(f"warning: could not create git tag {tag} ({made.stderr.strip()})")
+    if args.image_digest:
+        print(f"recording image digest {args.image_digest}")
+
     manifest = create_freeze(
         assets,
         frictions={
@@ -655,10 +668,53 @@ def run_freeze(args) -> int:
         overlay={"target_vol": args.portfolio_vol},
         path=args.freeze_file,
         git_commit=commit,
+        git_tag=tag if commit and not args.no_tag else None,
+        image_digest=args.image_digest,
     )
+
     print(f"\nFroze {len(assets)} assets at {manifest['frozen_at']}")
     print(f"config sha256: {manifest['config_sha256']}")
-    print(f"manifest: {args.freeze_file} — COMMIT IT NOW: the git timestamp is the tamper-evident freeze date")
+    print(f"code sha256  : {manifest['code_sha256']} ({manifest['code_fingerprint_algo']})")
+    print(f"commit       : {manifest['git_commit_at_freeze']}  tag: {manifest.get('git_tag')}")
+    if manifest.get("image_digest"):
+        print(f"image digest : {manifest['image_digest']}")
+    print(f"PUSH THE TAG: git push origin {tag}")
+    print(f"manifest: {args.freeze_file} — COMMIT IT NOW; CI will check out this exact commit, "
+          "verify the code fingerprint, then trade the forward day on frozen code only")
+    return 0
+
+
+def manifest_date() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).strftime("%Y%m%d")
+
+
+def run_verify_freeze(args) -> int:
+    import json
+
+    from .identity import verify_freeze_code
+
+    try:
+        raw = json.loads(open(args.freeze_file, encoding="utf-8").read())
+    except FileNotFoundError:
+        print(f"FAIL: {args.freeze_file} not found — nothing frozen to verify against")
+        return 1
+    try:
+        # config hash first for the clearer message on tampering
+        from .prospective import _config_hash
+
+        if _config_hash(raw["config"]) != raw.get("config_sha256"):
+            print("FAIL: freeze.json config was modified after freezing (config_sha256 mismatch)")
+            return 1
+        verify_freeze_code(raw)
+    except (ValueError, KeyError) as e:
+        print(f"FAIL: {e}")
+        return 1
+    print("OK: running implementation matches the freeze")
+    print(f"  frozen at : {raw['frozen_at']}")
+    print(f"  commit    : {raw.get('git_commit_at_freeze')}")
+    print(f"  code sha  : {raw.get('code_sha256')}")
     return 0
 
 
@@ -837,6 +893,12 @@ def main():
     frz.add_argument("--portfolio-vol", type=float, default=0.25)
     frz.add_argument("--embargo-days", type=int, default=30)
     frz.add_argument("--freeze-file", default="freeze.json")
+    frz.add_argument("--no-tag", action="store_true", help="skip creating the freeze/<date> git tag")
+    frz.add_argument("--tag", default=None, help="override the tag name (default: freeze/<YYYYMMDD>)")
+    frz.add_argument("--image-digest", default=None, help='record a container digest, e.g. "sha256:..."')
+
+    ver = sub.add_parser("verify-freeze", help="Refuse unless running code matches the frozen implementation")
+    ver.add_argument("--freeze-file", default="freeze.json")
 
     fwd = sub.add_parser("forward", help="Prospective paper trading: --step one day, --report checkpoints")
     fwd.add_argument("--step", action="store_true", help="execute one forward day from the freeze")
@@ -884,6 +946,8 @@ def main():
         raise SystemExit(run_ask(args))
     elif args.command == "freeze":
         raise SystemExit(run_freeze(args))
+    elif args.command == "verify-freeze":
+        raise SystemExit(run_verify_freeze(args))
     elif args.command == "forward":
         if not (args.step or args.report):
             print("use --step and/or --report")

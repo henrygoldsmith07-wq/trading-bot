@@ -1,9 +1,20 @@
 name: Scheduled paper run
 
-# Runs the prospective forward test daily: one paper-trading step from the
-# committed freeze manifest plus the checkpoint report. Paper only — no real
-# orders exist anywhere in this repo. If no freeze manifest is present the
-# job exits successfully with a notice, so enabling the schedule is safe.
+# Runs the prospective forward test daily ON THE FROZEN CODE.
+#
+# Threat model (why the dance below): freeze.json pins configuration AND a
+# code fingerprint, but a naive `actions/checkout` would execute whatever is
+# on main today — so editing strategy.py after freezing would silently change
+# the experiment while the manifest kept claiming otherwise. The workflow
+# therefore:
+#   1. reads the pointer fields from freeze.json on main,
+#   2. checks out git_commit_at_freeze (the frozen implementation),
+#   3. refuses to run unless the running source's sha256 matches the
+#      manifest's code_sha256 (`python -m bot verify-freeze`),
+#   4. trades one forward day from the frozen config only,
+#   5. appends the log entry to main — data flows back, code never.
+#
+# Paper only — no real orders exist anywhere in this repo.
 
 on:
   schedule:
@@ -22,39 +33,87 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      # ---- step 1: read the freeze pointer from main -----------------------
+      - name: Check out main (pointer only)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Read freeze pointer
+        id: pointer
+        run: python scripts/freeze_pointer.py
+
+      - name: Stop gracefully when no freeze exists yet
+        if: steps.pointer.outputs.commit == ''
+        run: echo "::notice::no freeze manifest — nothing to advance today"
+
+      # ---- step 2: become the frozen commit --------------------------------
+      - name: Check out the frozen commit
+        if: steps.pointer.outputs.commit != ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pointer.outputs.commit }}
+          fetch-depth: 0
+
       - uses: actions/setup-python@v5
+        if: steps.pointer.outputs.commit != ''
         with:
           python-version: "3.12"
+
       - name: Cache market data
+        if: steps.pointer.outputs.code_sha256 != ''
         uses: actions/cache@v4
         with:
           path: .cache
           key: market-data-${{ github.run_id }}
           restore-keys: market-data-
+
+      # ---- step 3: prove we are running the frozen implementation ----------
+      - name: Verify running code matches the freeze
+        if: steps.pointer.outputs.commit != ''
+        run: python -m bot verify-freeze --freeze-file freeze.json
+
+      # ---- step 4: one forward day on frozen code --------------------------
       - name: Advance the prospective paper portfolio one day
+        if: steps.pointer.outputs.commit != ''
         env:
-          FREEZE_FILE: freeze.json
           LOG_FILE: forward_log.jsonl
         run: |
-          if [ ! -f "$FREEZE_FILE" ]; then
-            echo "::notice::no freeze.json committed yet — create one with 'python -m bot freeze' to start the forward test"
-            exit 0
-          fi
-          python -m bot forward --step --freeze-file "$FREEZE_FILE" --log-file "$LOG_FILE"
-          python -m bot forward --report --freeze-file "$FREEZE_FILE" --log-file "$LOG_FILE"
-      - name: Commit the appended forward log (tamper-evident trail)
-        if: hashFiles('forward_log.jsonl') != ''
+          python -m bot forward --step --freeze-file freeze.json --log-file "$LOG_FILE"
+          python -m bot forward --report --freeze-file freeze.json --log-file "$LOG_FILE"
+
+      # ---- step 5: return to main; append ONLY the log (data, not code) ----
+      - name: Append forward log to main
+        if: steps.pointer.outputs.commit != ''
+        env:
+          BRANCH: ${{ github.ref_name }}
         run: |
+          [ -f forward_log.jsonl ] || { echo "no log produced this run"; exit 0; }
+          cp forward_log.jsonl /tmp/forward_log.jsonl
           git config user.name "paper-bot"
           git config user.email "actions@users.noreply.github.com"
+          git checkout -f "$BRANCH"
+          python - <<'PY'
+          import json, pathlib
+          new = [json.loads(l) for l in pathlib.Path('/tmp/forward_log.jsonl').read_text().splitlines() if l.strip()]
+          p = pathlib.Path('forward_log.jsonl')
+          old = []
+          if p.exists():
+              old = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+          seen = {e.get('date') for e in old}
+          merged = old + [e for e in new if e.get('date') not in seen]
+          p.write_text(''.join(json.dumps(e) + '\n' for e in merged))
+          print(f"log entries after merge: {len(merged)}")
+          PY
           git add forward_log.jsonl
           if git diff --cached --quiet; then
             echo "no new entries"
           else
-            git commit -m "paper forward log: $(date -u +%F)"
-            git push
+            LAST=$(tail -n 1 forward_log.jsonl | python -c "import json,sys;print(json.load(sys.stdin)['date'])")
+            git commit -m "paper forward log: $LAST"
+            git push origin "$BRANCH"
           fi
+
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4

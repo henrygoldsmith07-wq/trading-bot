@@ -135,6 +135,38 @@ Rewritten around a persistent multi-asset paper portfolio:
 - **Data-staleness alerts** — symbols with frozen feeds get trading blocked for the cycle and land in the audit trail (also raised by `forward --step`)
 - **Decision explanations & daily audit reports** — markdown under `reports/` with positions, fills, alerts, and why every decision was taken (holds included)
 
+## Code identity: a freeze pins the implementation, not just numbers
+
+The original freeze sealed configuration only — `freeze.json` recorded the
+commit, but the scheduled runner checked out whatever `main` held *today*, so
+editing `strategy.py` after freezing would silently change the experiment
+while the manifest kept claiming otherwise. That hole is closed at three
+levels:
+
+1. **Source seal.** `create_freeze` hashes the implementation itself
+   (`bot/*.py` + `pyproject.toml`, LF-normalised so Windows trees and Linux
+   checkouts of one commit hash identically; algorithm id `sha256-lf-v1` is
+   recorded alongside the digest).
+2. **Runner refusal.** `load_freeze` verifies both seals by default and
+   `run_step` refuses to trade on mismatched code:
+   ```
+   CODE MISMATCH: the running implementation does not match the freeze.
+     expected sha : 6c41…
+     running sha  : 9d02…
+   ```
+   The scheduled workflow never passes the research-replay escape hatch.
+3. **Frozen checkout in CI.** `.github/workflows/scheduled-paper.yml` reads
+   the pointer from `freeze.json`, checks out `git_commit_at_freeze`
+   (detached), runs `python -m bot verify-freeze` as a hard gate, trades one
+   forward day on that code, then returns to main to append ONLY the log —
+   data flows back; code never changes mid-experiment.
+
+Artifact trail per freeze: config sha256 + code sha256 + annotated git tag
+(`freeze/<YYYYMMDD>`) + optional container image digest (`--image-digest`;
+build with `docker build -t trading-bot .` and record
+`docker images --digests`). Verify any time with
+`python -m bot verify-freeze`.
+
 ## Engineering quality
 
 | Gate | Tool | Notes |
@@ -206,6 +238,8 @@ bot/
   data.py        # Binance + Yahoo fetchers, cleaning, gap handling, calendar
                  # alignment, delisting simulation
   prospective.py # freeze manifest, forward paper-trading log, checkpoints
+  identity.py    # source fingerprint (sha256-lf-v1): freezes pin the code,
+                 # not just the config; runner refuses on mismatch
   snapshot.py    # reproducible benchmark snapshots (data hashes + metrics)
   universe.py    # top-volume crypto + SPY/GLD/TLT cross-class ETFs
   benchmark.py   # S&P 500 data (FRED primary, Yahoo fallback)

@@ -3,10 +3,14 @@
 Discipline enforced by design:
 - `create_freeze` snapshots the exact per-asset strategy picks, universe,
   frictions, and overlay settings into a hash-sealed manifest with a UTC
-  timestamp (committing it to git makes the freeze tamper-evident).
-- `run_step` executes one day of paper trading using ONLY the manifest —
-  there is no code path from the forward runner back into walk-forward
-  selection, so retuning on forward data is structurally impossible.
+  timestamp (committing it to git makes the freeze tamper-evident). It also
+  seals the IMPLEMENTATION: a code fingerprint over the bot's source is
+  recorded alongside the config hash.
+- `load_freeze` verifies the config hash and — by default — the code
+  fingerprint. `run_step` refuses to trade when the running source differs
+  from the frozen implementation: a freeze pins behaviour, not just numbers,
+  so the scheduled runner must execute the frozen commit (the CI workflow
+  checks out `git_commit_at_freeze`), never an edited main.
 - Every step appends to a JSONL log recording prices, weights, realized
   slippage, data outages, and missed fills.
 - `report` compares bot vs S&P 500 vs BTC at 1/3/6/12-month checkpoints and
@@ -19,6 +23,7 @@ import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from .identity import CODE_FINGERPRINT_ALGO, code_fingerprint, verify_freeze_code
 from .strategy import strategy_from_spec, strategy_to_spec
 
 FREEZE_FILE = "freeze.json"
@@ -38,9 +43,16 @@ def create_freeze(
     path: str | Path = FREEZE_FILE,
     now: datetime | None = None,
     git_commit: str | None = None,
+    image_digest: str | None = None,
+    git_tag: str | None = None,
 ) -> dict:
     """Write the freeze manifest. `assets`: [{symbol, source, periods_per_year,
-    strategy (object)}]. The config hash seals the exact parameterization."""
+    strategy (object)}]. The config hash seals the exact parameterization and
+    the code fingerprint seals the exact implementation that must execute it.
+
+    `image_digest` (sha256:... of a built container) and `git_tag` are
+    recorded when provided so the artifact trail is auditable end to end.
+    """
     config = {
         "assets": [
             {
@@ -58,19 +70,28 @@ def create_freeze(
         "frozen_at": (now or datetime.now(UTC)).isoformat(),
         "frozen_at_date": (now or datetime.now(UTC)).date().isoformat(),
         "git_commit_at_freeze": git_commit,
+        "git_tag": git_tag,
+        "image_digest": image_digest,
         "retune_policy": "FORWARD PERIOD IS NEVER USED FOR SELECTION OR TUNING",
+        "code_policy": "RUNNER MUST EXECUTE THE FROZEN COMMIT; REFUSE ON CODE MISMATCH",
         "config": config,
         "config_sha256": _config_hash(config),
+        "code_fingerprint_algo": CODE_FINGERPRINT_ALGO,
+        "code_sha256": code_fingerprint(),
     }
     Path(path).write_text(json.dumps(manifest, indent=2))
     return manifest
 
 
-def load_freeze(path: str | Path = FREEZE_FILE) -> dict:
+def load_freeze(path: str | Path = FREEZE_FILE, verify_code: bool = True) -> dict:
+    """Load and verify the manifest. Raises on config tampering and, unless
+    `verify_code=False`, on any implementation mismatch with the running tree."""
     manifest = json.loads(Path(path).read_text())
     actual = _config_hash(manifest["config"])
     if actual != manifest.get("config_sha256"):
         raise ValueError("freeze manifest hash mismatch — config was modified after freezing")
+    if verify_code:
+        verify_freeze_code(manifest)
     return manifest
 
 
@@ -106,13 +127,20 @@ def run_step(
     fetcher,
     now: datetime | None = None,
     log_path: str | Path = LOG_FILE,
+    allow_code_mismatch: bool = False,
 ) -> dict:
     """One forward day of paper trading from the frozen config only.
 
     `fetcher(symbol, source)` -> (candles, problem) where problem is None or a
     string describing an outage. Returns the log entry (or the existing entry
     if today was already logged — steps are idempotent per date).
+
+    Refuses to execute unless the running source matches the manifest's
+    frozen implementation. `allow_code_mismatch=True` is an explicit
+    research-replay escape hatch — the scheduled runner never passes it.
     """
+    if not allow_code_mismatch:
+        verify_freeze_code(manifest)
     now = now or datetime.now(UTC)
     today = now.date().isoformat()
     log = load_log(log_path)
