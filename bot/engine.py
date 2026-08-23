@@ -23,6 +23,7 @@ import math
 from datetime import UTC, datetime
 
 from .costs import CostParams, realized_vol_series, square_root_impact_fraction, vol_cost_multiplier
+from .execution import calculate_transition
 from .metrics import summarize
 
 DAY_MS = 86_400_000
@@ -97,14 +98,32 @@ def run_strategy(
                 cost_rate = fee + (spread_eff + slip_eff) / 10_000.0
             if cp.impact_k > 0 and cp.adv_to_equity is not None:
                 cost_rate += square_root_impact_fraction(dw, rv[i - 1] / sqrt_ppy, cp.adv_to_equity, cp.impact_k)
-        cost = cost_rate * dw
+        # ONE transition implementation for both modes (bot/execution.py):
+        # next_open fills at today's open (overnight to the OLD position,
+        # intraday to the NEW); close mode fills at the previous close, so
+        # the whole move accrues to the new position.
         if execution == "next_open":
             o = _open_price(candles[i], closes[i - 1])
-            overnight = prev_w * (o / closes[i - 1] - 1.0)
-            intraday = w * (closes[i] / o - 1.0)
-            r = overnight + (1.0 - prev_w) * rf_daily + intraday - cost
+            t = calculate_transition(
+                prev_w, w,
+                previous_close=closes[i - 1],
+                execution_price=o,
+                closing_price=closes[i],
+                costs=cost_rate,
+                cash_rate_period=rf_daily,
+                cash_basis="previous",
+            )
         else:
-            r = w * (closes[i] / closes[i - 1] - 1.0) + (1.0 - w) * rf_daily - cost
+            t = calculate_transition(
+                prev_w, w,
+                previous_close=closes[i - 1],
+                execution_price=closes[i - 1],
+                closing_price=closes[i],
+                costs=cost_rate,
+                cash_rate_period=rf_daily,
+                cash_basis="target",
+            )
+        r = t["return"]
         equity.append(equity[-1] * (1.0 + r))
         returns.append(r)
         weights.append(w)

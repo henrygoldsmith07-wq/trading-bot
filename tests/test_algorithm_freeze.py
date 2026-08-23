@@ -153,6 +153,133 @@ class TestParity:
         for a, b in zip(fwd, expected):
             assert a == pytest.approx(b, abs=1e-12)
 
+    def test_forward_matches_engine_with_weight_changes_fees_and_cash(self, tmp_path, monkeypatch):
+        """The heavyweight proof: sleeves whose weights CHANGE daily, traded
+        with next_open execution, fees, spread/slippage AND a cash yield.
+        Reference = engine.run_strategy per asset -> combiner -> overlay.
+        Forward   = run_step day-by-day on the frozen manifest.
+        Both sides route through calculate_transition; any accounting
+        difference between backtest and forward shows up here."""
+        import bot.strategy as S
+        from bot.engine import run_strategy
+        from bot.prospective import create_freeze
+        from bot.strategy import WeightStrategy
+
+        class Toggle(WeightStrategy):
+            """Full in/out on a 5-day cycle — constant turnover."""
+
+            def weight_at(self, candles, i):
+                return 1.0 if (i // 5) % 2 == 0 else 0.0
+
+            def __repr__(self):
+                return "Toggle"
+
+        monkeypatch.setattr(S, "_STRATEGY_TYPES", {**S._STRATEGY_TYPES, "Toggle": Toggle})
+
+        syms = ["AAA", "BBB", "CCC"]
+        n_days = 160
+        base_rng = random.Random(23)
+        candles_by_sym = {}
+        for s in syms:
+            p = 100.0
+            seq = []
+            for _ in range(n_days + 2):
+                p *= 1 + base_rng.gauss(0.0004, 0.02)
+                seq.append({"open_time": BASE_MS + len(seq) * 86_400_000,
+                            "open": p / (1 + base_rng.gauss(0.0, 0.004)),
+                            "close": p})
+            # fix opens to exact prior close so overnight/intraday are deterministic-ish
+            for i, c in enumerate(seq):
+                c["open"] = seq[i - 1]["close"] if i else c["open"]
+            candles_by_sym[s] = seq
+
+        frictions = {"fee": 0.001, "spread_bps": 5.0, "slippage_bps": 5.0,
+                     "execution": "next_open", "risk_free_annual": 0.03}
+        algo = _algo(rebalance_band=0.0)
+
+        manifest = create_freeze(
+            assets=[{"symbol": s, "source": "test", "periods_per_year": 365, "strategy": Toggle()}
+                    for s in syms],
+            frictions=frictions,
+            algorithm=algo,
+            path=tmp_path / "freeze_toggle.json",
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            git_commit="toggle",
+        )
+        log = tmp_path / "log.jsonl"
+
+        # --- reference: engine per asset over the FULL history ---------------
+        # The forward runner cannot trade before it has two completed candles
+        # (its first steppable day is bar 2), yet the portfolio it inherits
+        # ALREADY holds bar-1 positions. Model that reality: seed the forward
+        # log with engine bar-1 sleeves/weights, drop nothing, compare all.
+        dailies = {}
+        engine_bar1 = {}
+        for s in syms:
+            res = run_strategy(
+                candles_by_sym[s], Toggle().weight_at,
+                fee=frictions["fee"], spread_bps=frictions["spread_bps"],
+                slippage_bps=frictions["slippage_bps"], execution="next_open",
+                risk_free_annual=frictions["risk_free_annual"],
+            )
+            pairs = list(res["return_days"])
+            dailies[s] = dict(pairs)
+            engine_bar1[s] = {"ret": pairs[0][1], "weight": res["weights"][0]}
+        timeline = sorted(t for t, _ in dailies["AAA"].items())
+        ref_rule = combine_portfolio_rule(
+            dailies, timeline, len(syms),
+            vol_window=algo["weighting"]["vol_window"],
+            max_multiple_of_equal=algo["weighting"]["max_multiple_of_equal"],
+            use_tilt=algo["xs_momentum"]["enabled"], tilt_lookback=algo["xs_momentum"]["lookback"],
+            max_tilt=algo["xs_momentum"]["max_tilt"],
+            use_crisis=algo["crisis_derisk"]["enabled"], corr_window=algo["crisis_derisk"]["corr_window"],
+            corr_threshold=algo["crisis_derisk"]["corr_threshold"], derisk=algo["crisis_derisk"]["multiplier"],
+        )
+        from bot.__main__ import _vol_overlay
+
+        expected = _vol_overlay(ref_rule, target=algo["overlay"]["target_vol"])
+
+        # --- forward ----------------------------------------------------------
+        manifest = create_freeze(
+            assets=[{"symbol": s, "source": "test", "periods_per_year": 365, "strategy": Toggle()}
+                    for s in syms],
+            frictions=frictions,
+            algorithm=algo,
+            path=tmp_path / "freeze_toggle.json",
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            git_commit="toggle",
+        )
+        log = tmp_path / "log.jsonl"
+        # warmup seed: bar-1 state as the engine left it (positions exist)
+        bar1_ts = timeline[0]
+        seed = {
+            "ts": datetime.fromtimestamp((bar1_ts) / 1000, tz=UTC).isoformat(),
+            "date": datetime.fromtimestamp(bar1_ts / 1000, tz=UTC).date().isoformat(),
+            "assets": {s: {"weight": engine_bar1[s]["weight"], "target": engine_bar1[s]["weight"],
+                           "sleeve_ret": engine_bar1[s]["ret"], "note": None} for s in syms},
+            "port_ret": sum(engine_bar1[s]["ret"] for s in syms) / len(syms),
+            "rule_ret": sum(engine_bar1[s]["ret"] for s in syms) / len(syms),
+            "overlay_weight": 1.0,
+            "exposure": 1.0,
+            "throttled": False,
+            "outages": [],
+            "missed_fills": [],
+        }
+        log.write_text(json.dumps(seed) + "\n")
+
+        fwd = []
+        last_ts = max(t for t, _ in [(t, v) for t, v in dailies["AAA"].items()])
+        last_p = int((last_ts - BASE_MS) // 86_400_000)
+        for p in range(2, last_p + 1):
+            data = {s: candles_by_sym[s][: p + 1] for s in syms}
+            res = run_step(manifest, lambda sym, src, d=data: (d[sym], None),
+                           now=_now_for(p), log_path=log)
+            fwd.append(res["entry"]["port_ret"])
+
+        assert len(fwd) == len(expected) - 1
+        worst = max(abs(a - b) for a, b in zip(fwd, expected[1:]))
+        assert worst < 5e-9, f"forward diverged from engine accounting by {worst}"
+
 
 class TestSpecValidation:
     def test_unknown_top_key_rejected(self):

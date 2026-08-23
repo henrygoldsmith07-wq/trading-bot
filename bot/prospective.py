@@ -23,6 +23,7 @@ import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from .execution import calculate_transition, open_of
 from .identity import CODE_FINGERPRINT_ALGO, code_fingerprint, verify_freeze_code
 from .portfolio_rules import day_allocation
 from .strategy import strategy_from_spec, strategy_to_spec
@@ -221,13 +222,34 @@ def run_step(
         # the target moves further from the HELD weight than the band
         w_eff = w_target if abs(w_target - prev_w) > band else prev_w
         decision_close = completed[-1]["close"]
-        exec_price = candles[-1]["close"]  # latest print (may be today's live candle)
-        move = exec_price / decision_close - 1.0
-        sleeve_ret = w_eff * move - cost_rate * abs(w_eff - prev_w)
+        today_candle = candles[-1]
+        is_today = datetime.fromtimestamp(today_candle["open_time"] / 1000, tz=UTC).date() == now.date()
+        if is_today:
+            exec_price = open_of(today_candle, fallback=decision_close)  # fill at today's open
+        else:
+            exec_price = today_candle["close"]  # lagged feed: first available print
+        closing_price = today_candle["close"]  # latest snapshot (live print)
+        # Accounting anchor: the LAST MARKED price for this asset (previous
+        # entry's snapshot), falling back to the decision close on the first
+        # day or after an outage. Chaining marks means every price interval
+        # is accounted exactly once — no silent tail gaps between snapshots.
+        prev_detail = prev_entries[-1].get("assets", {}).get(sym, {}) if prev_entries else {}
+        accounting_anchor = prev_detail.get("mark_price") or decision_close
+        tr = calculate_transition(
+            prev_w,
+            w_eff,
+            previous_close=accounting_anchor,
+            execution_price=exec_price,
+            closing_price=closing_price,
+            costs=cost_rate,
+            cash_rate_period=config["frictions"].get("risk_free_annual", 0.0) / 365.0,
+            cash_basis="previous",  # engine next_open convention: cash on old allocation
+        )
+        sleeve_ret = tr["return"]
         sleeve_rets.append(sleeve_ret)
         slip_bps = None
         if abs(w_eff - prev_w) > 0.01:
-            slip_bps = move * 10_000.0  # decision-to-execution gap on a turnover day
+            slip_bps = (exec_price / decision_close - 1.0) * 10_000.0  # decision-to-execution gap
         # a data gap that delayed a weight change = missed fill(s)
         last_gap_days = (completed[-1]["open_time"] - completed[-2]["open_time"]) / 86_400_000
         if last_gap_days > 1.5 and abs(w_target - prev_w) > 0.05:
@@ -235,8 +257,13 @@ def run_step(
         asset_details[sym] = {
             "weight": w_eff,
             "target": w_target,
-            "price": exec_price,
+            "price": closing_price,
+            "mark_price": closing_price,
+            "exec_price": exec_price,
             "decision_close": decision_close,
+            "accounting_anchor": accounting_anchor,
+            "overnight": tr["overnight"],
+            "intraday": tr["intraday"],
             "sleeve_ret": sleeve_ret,
             "slippage_bps": slip_bps,
         }
