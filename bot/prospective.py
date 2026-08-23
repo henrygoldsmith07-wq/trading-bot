@@ -24,6 +24,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from .identity import CODE_FINGERPRINT_ALGO, code_fingerprint, verify_freeze_code
+from .portfolio_rules import day_allocation
 from .strategy import strategy_from_spec, strategy_to_spec
 
 FREEZE_FILE = "freeze.json"
@@ -39,7 +40,7 @@ def _config_hash(config: dict) -> str:
 def create_freeze(
     assets: list[dict],
     frictions: dict,
-    overlay: dict,
+    algorithm: dict,
     path: str | Path = FREEZE_FILE,
     now: datetime | None = None,
     git_commit: str | None = None,
@@ -47,12 +48,16 @@ def create_freeze(
     git_tag: str | None = None,
 ) -> dict:
     """Write the freeze manifest. `assets`: [{symbol, source, periods_per_year,
-    strategy (object)}]. The config hash seals the exact parameterization and
-    the code fingerprint seals the exact implementation that must execute it.
+    strategy (object)}].
 
-    `image_digest` (sha256:... of a built container) and `git_tag` are
-    recorded when provided so the artifact trail is auditable end to end.
+    `algorithm` is the COMPLETE portfolio construction (bot/algorithm.py):
+    selection mode, weighting, tilt, crisis, band, throttle, overlay. It is
+    nested under config so the existing tamper seal covers it — a manifest
+    without it cannot prove what would run and is rejected.
     """
+    from .algorithm import validate_algorithm
+
+    validate_algorithm(algorithm)
     config = {
         "assets": [
             {
@@ -64,7 +69,8 @@ def create_freeze(
             for a in assets
         ],
         "frictions": frictions,
-        "overlay": overlay,
+        "overlay": {"target_vol": algorithm["overlay"]["target_vol"]},  # legacy view
+        "algorithm": algorithm,
     }
     manifest = {
         "frozen_at": (now or datetime.now(UTC)).isoformat(),
@@ -122,6 +128,29 @@ def trailing_overlay_weight(port_rets: list[float], target: float, window: int =
     return min(1.0, target / rv)
 
 
+def replay_throttle_state(port_rets: list[float], th: dict) -> tuple[float, float, bool]:
+    """Replay the drawdown-throttle state machine over past portfolio returns.
+
+    Returns (equity, peak, throttled) as of today's decision — strictly past
+    data, identical to how combine_portfolio_rule evolves its own state.
+    """
+    equity = 1.0
+    peak = 1.0
+    throttled = False
+    if not th.get("enabled"):
+        return equity, peak, False
+    for r in port_rets:
+        dd = equity / peak - 1.0
+        if throttled:
+            if dd > th["dd_exit"]:
+                throttled = False
+        elif dd <= th["dd_trigger"]:
+            throttled = True
+        equity *= 1.0 + r
+        peak = max(peak, equity)
+    return equity, peak, throttled
+
+
 def run_step(
     manifest: dict,
     fetcher,
@@ -156,9 +185,10 @@ def run_step(
     if prev_entries:
         for sym, detail in prev_entries[-1].get("assets", {}).items():
             prev_weights[sym] = detail.get("weight", 0.0)
-    port_history = [e["port_ret"] for e in prev_entries]
 
     n_assets = len(config["assets"])
+    algo = config["algorithm"]  # required: the frozen portfolio construction
+    band = float(algo["rebalance_band"])
     outages = []
     alerts = []  # non-fatal warnings (stale prints) that still make the audit
     missed_fills = []
@@ -167,19 +197,19 @@ def run_step(
     for a in config["assets"]:
         sym = a["symbol"]
         strategy = strategy_from_spec(a["strategy"])  # raises on tampered spec: no fallback
+        prev_w = prev_weights.get(sym, 0.0)  # EFFECTIVE (post-band) weight held
         candles, problem = fetcher(sym, a["source"])
         if problem:
             outages.append({"symbol": sym, "problem": problem})
-            w_prev = prev_weights.get(sym, 0.0)
             sleeve_rets.append(0.0)
-            asset_details[sym] = {"weight": w_prev, "price": None, "slippage_bps": None, "note": problem}
+            asset_details[sym] = {"weight": prev_w, "target": prev_w, "price": None, "sleeve_ret": 0.0, "slippage_bps": None, "note": problem}
             continue
         # use only completed candles for the decision
         completed = [c for c in candles if datetime.fromtimestamp(c["open_time"] / 1000, tz=UTC).date() < now.date()]
         if len(completed) < 2:
             outages.append({"symbol": sym, "problem": "insufficient completed candles"})
             sleeve_rets.append(0.0)
-            asset_details[sym] = {"weight": prev_weights.get(sym, 0.0), "price": None, "slippage_bps": None, "note": "insufficient history"}
+            asset_details[sym] = {"weight": prev_w, "target": prev_w, "price": None, "sleeve_ret": 0.0, "slippage_bps": None, "note": "insufficient history"}
             continue
         # data-staleness alert: a print much older than one bar means the feed
         # is silently frozen; trade the stale weight but say so loudly
@@ -187,37 +217,83 @@ def run_step(
         if age_days > 3.0:
             alerts.append({"symbol": sym, "level": "stale_data", "age_days": round(age_days, 1)})
         w_target = max(0.0, min(1.0, strategy.weight(completed)))
-        prev_w = prev_weights.get(sym, 0.0)
+        # rebalance band — same semantics as engine.run_strategy: act only when
+        # the target moves further from the HELD weight than the band
+        w_eff = w_target if abs(w_target - prev_w) > band else prev_w
         decision_close = completed[-1]["close"]
         exec_price = candles[-1]["close"]  # latest print (may be today's live candle)
         move = exec_price / decision_close - 1.0
-        sleeve_ret = w_target * move - cost_rate * abs(w_target - prev_w)
+        sleeve_ret = w_eff * move - cost_rate * abs(w_eff - prev_w)
         sleeve_rets.append(sleeve_ret)
         slip_bps = None
-        if abs(w_target - prev_w) > 0.01:
+        if abs(w_eff - prev_w) > 0.01:
             slip_bps = move * 10_000.0  # decision-to-execution gap on a turnover day
         # a data gap that delayed a weight change = missed fill(s)
         last_gap_days = (completed[-1]["open_time"] - completed[-2]["open_time"]) / 86_400_000
         if last_gap_days > 1.5 and abs(w_target - prev_w) > 0.05:
             missed_fills.append({"symbol": sym, "delayed_days": int(last_gap_days - 1)})
         asset_details[sym] = {
-            "weight": w_target,
+            "weight": w_eff,
+            "target": w_target,
             "price": exec_price,
             "decision_close": decision_close,
             "sleeve_ret": sleeve_ret,
             "slippage_bps": slip_bps,
         }
 
-    port_gross = sum(sleeve_rets) / max(n_assets, 1)
-    overlay_w = trailing_overlay_weight(port_history, config["overlay"]["target_vol"])
+    # ---- portfolio construction: THE FROZEN ALGORITHM ----------------------
+    # Sleeve history for every asset comes from the log (strictly past days);
+    # today's weights/exposure come from the same day_allocation function the
+    # backtest combiner uses — identical math by construction.
+    sleeve_hist: dict[str, list[float]] = {a["symbol"]: [] for a in config["assets"]}
+    for e in prev_entries:
+        for sym, detail in e.get("assets", {}).items():
+            if sym in sleeve_hist and isinstance(detail, dict):
+                sleeve_hist[sym].append(float(detail.get("sleeve_ret", 0.0)))
+    present = [sym for sym in asset_details if asset_details[sym].get("note") is None]
+    xs, wt, cd, th = algo["xs_momentum"], algo["weighting"], algo["crisis_derisk"], algo["drawdown_throttle"]
+    # Overlay and throttle read the RULE series (pre-overlay), matching how
+    # the backtest pipeline stacks _vol_overlay on top of combine_portfolio_rule.
+    rule_history = [e["rule_ret"] for e in prev_entries]
+    equity, peak, throttled = replay_throttle_state(rule_history, th)
+    dd = equity / peak - 1.0
+    weights, exposure, throttled_new = day_allocation(
+        sleeve_hist,
+        present,
+        n_assets,
+        vol_window=wt["vol_window"],
+        max_multiple_of_equal=wt["max_multiple_of_equal"],
+        use_tilt=xs["enabled"],
+        tilt_lookback=xs["lookback"],
+        max_tilt=xs["max_tilt"],
+        use_crisis=cd["enabled"],
+        corr_window=cd["corr_window"],
+        corr_threshold=cd["corr_threshold"],
+        derisk=cd["multiplier"],
+        dd=dd,
+        throttled=throttled,
+        use_dd_throttle=th["enabled"],
+        dd_trigger=th["dd_trigger"],
+        dd_exit=th["dd_exit"],
+        throttle=th["factor"],
+    )
+    port_gross = sum(weights.get(sym, 0.0) * asset_details[sym]["sleeve_ret"] for sym in present)
+    rule_ret = port_gross * exposure
+
+    ov = algo["overlay"]
+    overlay_w = trailing_overlay_weight(rule_history, ov["target_vol"], window=ov["window"]) if ov["enabled"] else 1.0
     prev_overlay = prev_entries[-1].get("overlay_weight", 1.0) if prev_entries else 1.0
-    port_ret = overlay_w * port_gross - 0.0015 * abs(overlay_w - prev_overlay)
+    overlay_fee = ov["fee_on_turnover"]
+    port_ret = overlay_w * rule_ret - overlay_fee * abs(overlay_w - prev_overlay)
     entry = {
         "ts": now.isoformat(),
         "date": today,
         "assets": asset_details,
         "port_ret": port_ret,
+        "rule_ret": rule_ret,
         "overlay_weight": overlay_w,
+        "exposure": exposure,
+        "throttled": throttled_new,
         "outages": outages,
         "missed_fills": missed_fills,
     }

@@ -56,12 +56,13 @@ def _vol_overlay(returns: list[float], target: float = 0.25, window: int = 20, f
 
     The weight for day t uses only returns up to t-1 — no lookahead. This is
     the risk-management layer that de-risks a crypto portfolio to
-    equity-like volatility.
+    equity-like volatility. During the warmup the overlay stays fully
+    invested (w=1.0) and charges nothing: there is no transition to pay for.
     """
     import math
 
     out = []
-    w = 0.0
+    w = 1.0
     for i, r in enumerate(returns):
         if i >= window:
             hist = returns[i - window : i]
@@ -656,6 +657,28 @@ def run_freeze(args) -> int:
     if args.image_digest:
         print(f"recording image digest {args.image_digest}")
 
+    from .algorithm import algorithm_fingerprint, build_algorithm
+
+    algorithm = build_algorithm(
+        selection_mode="fixed_risk_ensemble" if args.fixed else "walk_forward_selected",
+        rebalance_band=args.band,
+        use_tilt=not args.no_tilt,
+        tilt_lookback=args.tilt_lookback,
+        max_tilt=args.max_tilt,
+        use_crisis=not args.no_crisis,
+        corr_window=args.corr_window,
+        corr_threshold=args.corr_threshold,
+        derisk_factor=args.derisk,
+        use_throttle=args.throttle,
+        dd_trigger=args.dd_trigger,
+        dd_exit=args.dd_exit,
+        throttle_factor=args.throttle_factor,
+        vol_window=args.vol_window,
+        max_multiple_of_equal=args.max_multiple_of_equal,
+        overlay_enabled=not args.no_overlay,
+        target_vol=args.portfolio_vol,
+    )
+
     manifest = create_freeze(
         assets,
         frictions={
@@ -665,7 +688,7 @@ def run_freeze(args) -> int:
             "execution": args.execution,
             "risk_free_annual": args.risk_free,
         },
-        overlay={"target_vol": args.portfolio_vol},
+        algorithm=algorithm,
         path=args.freeze_file,
         git_commit=commit,
         git_tag=tag if commit and not args.no_tag else None,
@@ -675,6 +698,11 @@ def run_freeze(args) -> int:
     print(f"\nFroze {len(assets)} assets at {manifest['frozen_at']}")
     print(f"config sha256: {manifest['config_sha256']}")
     print(f"code sha256  : {manifest['code_sha256']} ({manifest['code_fingerprint_algo']})")
+    print(f"algo sha256  : {algorithm_fingerprint(algorithm)}")
+    print(f"  mode={algorithm['selection_mode']} band={algorithm['rebalance_band']:.0%} "
+          f"tilt={algorithm['xs_momentum']['enabled']} crisis={algorithm['crisis_derisk']['enabled']} "
+          f"throttle={algorithm['drawdown_throttle']['enabled']} invvol(w={algorithm['weighting']['vol_window']}) "
+          f"overlay(target={algorithm['overlay']['target_vol']:.0%})")
     print(f"commit       : {manifest['git_commit_at_freeze']}  tag: {manifest.get('git_tag')}")
     if manifest.get("image_digest"):
         print(f"image digest : {manifest['image_digest']}")
@@ -896,6 +924,22 @@ def main():
     frz.add_argument("--no-tag", action="store_true", help="skip creating the freeze/<date> git tag")
     frz.add_argument("--tag", default=None, help="override the tag name (default: freeze/<YYYYMMDD>)")
     frz.add_argument("--image-digest", default=None, help='record a container digest, e.g. "sha256:..."')
+    # --- full-algorithm knobs: every return-affecting quantity is frozen ----
+    frz.add_argument("--fixed", action="store_true", help="freeze the fully-fixed RiskEnsemble (N=1) pipeline")
+    frz.add_argument("--band", type=float, default=0.05, help="rebalance band fraction (default 5%%)")
+    frz.add_argument("--no-tilt", action="store_true", help="disable XS-momentum tilt")
+    frz.add_argument("--tilt-lookback", type=int, default=90)
+    frz.add_argument("--max-tilt", type=float, default=0.5)
+    frz.add_argument("--no-crisis", action="store_true", help="disable crisis de-risking")
+    frz.add_argument("--corr-window", type=int, default=60)
+    frz.add_argument("--corr-threshold", type=float, default=0.60)
+    frz.add_argument("--derisk", type=float, default=0.60)
+    frz.add_argument("--throttle", action="store_true", help="enable drawdown throttle")
+    frz.add_argument("--dd-trigger", type=float, default=-0.10)
+    frz.add_argument("--dd-exit", type=float, default=-0.05)
+    frz.add_argument("--throttle-factor", type=float, default=0.5)
+    frz.add_argument("--vol-window", type=int, default=20, help="inverse-vol weighting window")
+    frz.add_argument("--max-multiple-of-equal", type=float, default=2.0)
 
     ver = sub.add_parser("verify-freeze", help="Refuse unless running code matches the frozen implementation")
     ver.add_argument("--freeze-file", default="freeze.json")

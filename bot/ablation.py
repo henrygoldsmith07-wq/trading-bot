@@ -99,11 +99,12 @@ def overlay_ablation(
 
 
 def _vol_target(returns: list[float], target: float, window: int = 20, fee: float = 0.0015) -> list[float]:
-    """Trailing-vol exposure scaling (same convention as the CLI overlay)."""
+    """Trailing-vol exposure scaling (same convention as the CLI overlay).
+    Warmup stays fully invested with no phantom transition fee."""
     import math
 
     out = []
-    w = 0.0
+    w = 1.0
     for i, r in enumerate(returns):
         if i >= window:
             hist = returns[i - window : i]

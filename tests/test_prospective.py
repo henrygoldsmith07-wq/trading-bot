@@ -3,6 +3,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 
+from bot.algorithm import build_algorithm
 from bot.prospective import (
     checkpoints_due,
     create_freeze,
@@ -19,6 +20,10 @@ from bot.strategy import TrendVol, strategy_from_spec, strategy_to_spec
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 
 
+def _algo(**overrides):
+    return build_algorithm(with_pool_version=False, **overrides)
+
+
 def _mk_freeze(tmp_path, strategies=None):
     assets = [
         {"symbol": "AAA", "source": "test", "periods_per_year": 365, "strategy": strategies["AAA"]},
@@ -27,7 +32,7 @@ def _mk_freeze(tmp_path, strategies=None):
     manifest = create_freeze(
         assets,
         frictions={"fee": 0.001, "spread_bps": 5, "slippage_bps": 5, "execution": "next_open", "risk_free_annual": 0.03},
-        overlay={"target_vol": 0.25},
+        algorithm=_algo(),
         path=tmp_path / "freeze.json",
         now=NOW,
         git_commit="abc123",

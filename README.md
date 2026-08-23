@@ -143,29 +143,46 @@ editing `strategy.py` after freezing would silently change the experiment
 while the manifest kept claiming otherwise. That hole is closed at three
 levels:
 
-1. **Source seal.** `create_freeze` hashes the implementation itself
+1. **Algorithm seal.** `freeze.json["config"]["algorithm"]` now captures the
+   COMPLETE portfolio construction — selection mode, candidate-pool version,
+   universe rule, inverse-vol weighting (window + cap), XS-momentum tilt
+   (lookback + max), crisis de-risking (window + threshold + multiplier),
+   rebalance band, drawdown throttle state machine, vol-target overlay
+   (target/window/fee) — every quantity that can affect a return, validated
+   against unknown keys so a typo cannot silently become "default".
+2. **Source seal.** `create_freeze` hashes the implementation itself
    (`bot/*.py` + `pyproject.toml`, LF-normalised so Windows trees and Linux
    checkouts of one commit hash identically; algorithm id `sha256-lf-v1` is
    recorded alongside the digest).
-2. **Runner refusal.** `load_freeze` verifies both seals by default and
+3. **Runner refusal.** `load_freeze` verifies all seals by default and
    `run_step` refuses to trade on mismatched code:
    ```
    CODE MISMATCH: the running implementation does not match the freeze.
      expected sha : 6c41…
      running sha  : 9d02…
    ```
-   The scheduled workflow never passes the research-replay escape hatch.
-3. **Frozen checkout in CI.** `.github/workflows/scheduled-paper.yml` reads
+4. **Frozen checkout in CI.** `.github/workflows/scheduled-paper.yml` reads
    the pointer from `freeze.json`, checks out `git_commit_at_freeze`
    (detached), runs `python -m bot verify-freeze` as a hard gate, trades one
    forward day on that code, then returns to main to append ONLY the log —
    data flows back; code never changes mid-experiment.
 
-Artifact trail per freeze: config sha256 + code sha256 + annotated git tag
-(`freeze/<YYYYMMDD>`) + optional container image digest (`--image-digest`;
-build with `docker build -t trading-bot .` and record
+**Backtest/forward parity is tested, not assumed**
+(`tests/test_algorithm_freeze.py::TestParity`): feeding identical daily asset
+returns day-by-day through `run_step` reproduces `combine_portfolio_rule` +
+vol-overlay exactly (|Δ| ≤ 1e-12) across six configurations — full headline,
+no-tilt, no-crisis, throttle-on, overlay-off, zero-band. Both paths call the
+same `day_allocation` function (`bot/portfolio_rules.py`), so they cannot
+drift.
+
+Artifact trail per freeze: config sha256 + algorithm sha256 + code sha256 +
+annotated git tag (`freeze/<YYYYMMDD>`) + optional container image digest
+(`--image-digest`; build with `docker build -t trading-bot .` and record
 `docker images --digests`). Verify any time with
-`python -m bot verify-freeze`.
+`python -m bot verify-freeze`. Freeze knobs mirror the backtest CLI:
+`--band/--no-tilt/--tilt-lookback/--max-tilt/--no-crisis/--corr-window/
+--corr-threshold/--derisk/--throttle/--dd-trigger/--dd-exit/
+--throttle-factor/--vol-window/--max-multiple-of-equal/--fixed/--no-overlay`.
 
 ## Engineering quality
 

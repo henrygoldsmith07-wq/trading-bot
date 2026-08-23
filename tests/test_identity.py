@@ -82,6 +82,7 @@ class TestVerifyFreezeCode:
 
 class TestFreezeIntegration:
     def _make_freeze(self, tmp_path, monkeypatch):
+        from bot.algorithm import build_algorithm
         from bot.prospective import create_freeze
 
         monkeypatch.chdir(tmp_path)
@@ -95,7 +96,7 @@ class TestFreezeIntegration:
                 }
             ],
             frictions={"fee": 0.001},
-            overlay={"target_vol": 0.25},
+            algorithm=build_algorithm(with_pool_version=False),
             path=tmp_path / "freeze.json",
             now=datetime(2026, 8, 23, tzinfo=UTC),
             git_commit="deadbeef",
