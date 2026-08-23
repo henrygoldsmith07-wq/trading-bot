@@ -79,6 +79,8 @@ def run_strategy(
     equity = [1.0]
     returns = []
     weights = []
+    targets = []
+    bar_costs = []
     prev_w = 0.0
     closes = [c["close"] for c in candles]
     for i in range(start_index, n):
@@ -127,6 +129,8 @@ def run_strategy(
         equity.append(equity[-1] * (1.0 + r))
         returns.append(r)
         weights.append(w)
+        targets.append(w_target)
+        bar_costs.append(t["cost"])
         prev_w = w
 
     days = (candles[n - 1]["open_time"] - candles[start_index - 1]["open_time"]) / DAY_MS
@@ -136,5 +140,9 @@ def run_strategy(
     stats["equity"] = equity
     stats["returns"] = returns
     stats["weights"] = weights
+    # Per-bar audit trail (post-clamp target, post-band weight, fractional
+    # cost charged). Backtest/forward parity tests compare on these.
+    stats["targets"] = targets
+    stats["bar_costs"] = bar_costs
     stats["return_days"] = [(candles[i]["open_time"], returns[k]) for k, i in enumerate(range(start_index, n))]
     return stats

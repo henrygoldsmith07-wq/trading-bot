@@ -167,13 +167,16 @@ levels:
    forward day on that code, then returns to main to append ONLY the log —
    data flows back; code never changes mid-experiment.
 
-**Backtest/forward parity is tested, not assumed**
-(`tests/test_algorithm_freeze.py::TestParity`): feeding identical daily asset
-returns day-by-day through `run_step` reproduces `combine_portfolio_rule` +
-vol-overlay exactly (|Δ| ≤ 1e-12) across six configurations — full headline,
-no-tilt, no-crisis, throttle-on, overlay-off, zero-band. Both paths call the
-same `day_allocation` function (`bot/portfolio_rules.py`), so they cannot
-drift.
+**Backtest/forward parity is tested, not assumed.** The flagship identity
+test (`tests/test_backtest_forward_parity.py`) runs ONE fixed dataset two
+ways — `run_strategy(...)` over full history vs freeze→`run_step` day by
+day — and requires per-asset, per-day equality of target weights, held
+weights, trades (count/size), costs, daily returns (incl. the
+overnight/intraday split and cash accrual) plus portfolio equity, under
+both a zero band and the 5% band (the banded case genuinely suppresses
+trades: 22 vs 40). Tolerance is 1e-12; both paths share
+`calculate_transition`, so they cannot drift. If this test fails, fix the
+implementation — never loosen it.
 
 Artifact trail per freeze: config sha256 + algorithm sha256 + code sha256 +
 annotated git tag (`freeze/<YYYYMMDD>`) + optional container image digest
