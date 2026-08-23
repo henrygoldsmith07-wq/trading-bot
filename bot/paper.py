@@ -355,9 +355,15 @@ def run_cycle(
     reports_dir: str | Path = "reports",
     max_age_days: float = 3.0,
     now: datetime | None = None,
+    ai_note_fn=None,
 ) -> dict:
     """One full paper-trading cycle over `symbols`: fetch, explain, execute
-    (idempotently), alert, and write the daily audit report."""
+    (idempotently), alert, and write the daily audit report.
+
+    `ai_note_fn(report_text) -> str | None`, when provided, appends a clearly
+    labeled advisory AI-commentary section to the report. It can never affect
+    weights or fills — it runs after execution is complete.
+    """
     now = now or _utc_now()
     candles_by_symbol = {}
     targets: dict[str, tuple[float, str]] = {}
@@ -397,6 +403,10 @@ def run_cycle(
                 fills.append(res)
 
     report = daily_audit_report(portfolio, prices, decisions, [f for f in fills if f.get("kind") == "fill"], alerts, as_of=now)
+    if ai_note_fn is not None:
+        note = ai_note_fn(report)
+        if note:
+            report += "\n## AI commentary (advisory only — does not affect decisions)\n\n" + note.strip() + "\n"
     report_path = write_audit_report(reports_dir, report, as_of=now)
     return {"decisions": decisions, "fills": fills, "alerts": alerts, "report_path": str(report_path), "report": report}
 
@@ -410,6 +420,7 @@ def run(
     strategy_name: str = "trendvol",
     once: bool = False,
     reports_dir: str | Path = "reports",
+    ai_note_fn=None,
 ) -> None:
     """Live paper-trading loop. Ctrl+C stops; state persists across restarts."""
     from .data import fetch_candles
@@ -437,6 +448,7 @@ def run(
             lambda s: fetch_candles(s, interval, limit=max(fast, slow) + 250),
             portfolio,
             reports_dir,
+            ai_note_fn=ai_note_fn,
         )
         for d in result["decisions"]:
             print(f"[{_utc_now():%Y-%m-%d %H:%M:%S}] {d['symbol']} {d['action']} -> {d['explanation']}")

@@ -9,3 +9,4 @@ paper_state.json
 reports/
 paper_ledger.jsonl
 forward_log.jsonl
+.env

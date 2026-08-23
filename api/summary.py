@@ -12,6 +12,7 @@ import json
 import os
 import sys
 from datetime import UTC, datetime
+from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -19,7 +20,7 @@ from bot.data import fetch_daily_history  # noqa: E402
 from bot.strategy import risk_ensemble  # noqa: E402
 from bot.walkforward import absolute_folds, walk_forward_at  # noqa: E402
 
-ENGINE_KWARGS = dict(
+ENGINE_KWARGS: dict[str, Any] = dict(
     fee=0.001,
     spread_bps=5.0,
     slippage_bps=5.0,

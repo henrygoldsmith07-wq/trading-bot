@@ -147,6 +147,21 @@ Rewritten around a persistent multi-asset paper portfolio:
 | Environment | `Dockerfile` | quality gate by default; override for paper runs |
 | Scheduled paper runs | `.github/workflows/scheduled-paper.yml` | daily forward step + committed log |
 
+## AI commentary (optional, OpenRouter / NVIDIA)
+
+An advisory-only AI layer (`bot/ai.py`) on top of the deterministic pipeline:
+
+```bash
+python -m bot ask "why is the deflated Sharpe the honest number?"   # grounded Q&A over live state
+python -m bot trade --symbol BTCUSDT --once --ai-note               # adds an 'AI commentary' section
+                                                                    # to today's audit report
+```
+
+- **Providers**: `nvidia` (`https://integrate.api.nvidia.com/v1`, default) and `openrouter` — both OpenAI-compatible; select with `AI_PROVIDER=openrouter`. Keys read from `NVIDIA_API_KEY` / `OPENROUTER_API_KEY` env vars or a gitignored `.env`; never hardcoded, never logged
+- **Model allowlist**: only user-approved free models may be called, enforced before any network request; names resolve against the provider's live catalog (disk-cached 24h per provider)
+- **No limits within the allowlist**: output tokens are uncapped by default (`max_tokens=None`), and when a model fails or hits its per-model rate limit the request rotates through *every* remaining allowlisted chat model — embeddings/rerank/TTS/safety endpoints are excluded from the chat rotation automatically
+- **Advisory by construction**: model output is clearly labeled commentary appended after execution; no code path feeds it back into weights, signals, or decisions; every entry point degrades gracefully to "no commentary" without a key
+
 ## Usage
 
 ```bash

@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import sys
 import time as _time
 from datetime import UTC, datetime
 
@@ -554,6 +555,38 @@ def run_research(args) -> int:
     return 0
 
 
+def run_ask(args) -> int:
+    """Grounded Q&A over the bot's own computed state (advisory AI layer)."""
+    import json as _json
+
+    from .ai import DEFAULT_MODEL, complete, load_api_key
+    if not load_api_key():
+        print("No OPENROUTER_API_KEY found (set it or put it in .env). AI layer disabled.")
+        return 2
+    snapshot = {}
+    try:
+        from api.summary import build_summary
+
+        snapshot = build_summary(args.symbol)
+    except Exception as e:  # noqa: BLE001 - degrade gracefully, answer ungrounded
+        print(f"[ai] live summary unavailable ({e}); answering from the question alone")
+
+    system = (
+        "You are the commentary layer of a deterministic paper-trading RESEARCH bot. "
+        "You get a JSON snapshot of real computed metrics. Interpret and explain ONLY "
+        "what the snapshot supports; never invent numbers. Flag caveats honestly "
+        "(selection effects, deflated Sharpe, regime dependence). Plain prose, under 250 words."
+    )
+    user = _json.dumps(snapshot, indent=1)[:6000] + f"\n\nQuestion: {args.question}"
+    print(f"Asking {DEFAULT_MODEL.split(' (')[0]} (rotation across all approved free models)...")
+    answer = complete(user, system=system)
+    if answer is None:
+        return 3
+    print("\n[AI commentary - advisory only; never feeds back into weights or decisions]\n")
+    print(answer)
+    return 0
+
+
 def run_freeze(args) -> int:
     import subprocess
 
@@ -707,6 +740,16 @@ def _cum(rets):
 
 
 def main():
+    # Windows consoles default to legacy codepages that cannot encode model
+    # output (arrows, approx signs); UTF-8 with replacement keeps prints alive
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
     parser = argparse.ArgumentParser(description="Paper trading bot")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -725,6 +768,11 @@ def main():
     tr.add_argument("--strategy", choices=["sma", "trendvol"], default="sma")
     tr.add_argument("--once", action="store_true", help="run one cycle, write the audit report, exit")
     tr.add_argument("--reports-dir", default="reports")
+    tr.add_argument("--ai-note", action="store_true", help="append advisory AI commentary to the audit report")
+
+    ask = sub.add_parser("ask", help="Ask a question grounded in the bot's computed state (OpenRouter, allowlisted free models)")
+    ask.add_argument("question")
+    ask.add_argument("--symbol", default="BTCUSDT")
 
     cmp = sub.add_parser("compare", help="Walk-forward out-of-sample portfolio comparison vs the S&P 500")
     cmp.add_argument("--assets", type=int, default=20, help="number of top-volume crypto assets (+3 ETFs)")
@@ -810,7 +858,20 @@ def main():
         # TrendVol's volatility targeting assumes daily bars; default accordingly.
         interval = args.interval or ("1d" if args.strategy == "trendvol" else "1h")
         poll = args.poll or (3600 if args.strategy == "trendvol" else 60)
-        run(args.symbol, interval, poll, args.fast, args.slow, args.strategy, once=args.once, reports_dir=args.reports_dir)
+        ai_note_fn = None
+        if args.ai_note:
+            from .ai import complete as _ai_complete
+
+            def ai_note_fn(report: str) -> str | None:
+                return _ai_complete(
+                    "Below is today's paper-trading audit report. Write a 4-6 sentence "
+                    "commentary section for it: what changed, one risk to watch, one honest "
+                    "caveat. Use ONLY numbers present in the report.\n\n" + report,
+                    system="You write the 'AI commentary' appendix of an audit report for a "
+                    "deterministic paper-trading bot. Advisory only; concise; no invented data.",
+                )
+
+        run(args.symbol, interval, poll, args.fast, args.slow, args.strategy, once=args.once, reports_dir=args.reports_dir, ai_note_fn=ai_note_fn)
     elif args.command == "compare":
         raise SystemExit(run_compare(args))
     elif args.command == "sensitivity":
@@ -819,6 +880,8 @@ def main():
         raise SystemExit(run_validate(args))
     elif args.command == "research":
         raise SystemExit(run_research(args))
+    elif args.command == "ask":
+        raise SystemExit(run_ask(args))
     elif args.command == "freeze":
         raise SystemExit(run_freeze(args))
     elif args.command == "forward":
