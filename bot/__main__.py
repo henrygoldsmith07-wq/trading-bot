@@ -591,6 +591,32 @@ def run_research(args) -> int:
     return 0
 
 
+def run_calibrate_costs(args) -> int:
+    from .cost_calibration import (
+        calibrate,
+        format_report,
+        load_observations,
+        write_calibration,
+    )
+
+    obs = load_observations(args.observations)
+    if not obs:
+        print(f"No cost observations at {args.observations} — they accumulate automatically "
+              "from 'forward --step' turnover events")
+        return 2
+    v1 = {
+        "fee": args.fee,
+        "spread_bps": args.spread_bps,
+        "slippage_bps": args.slippage_v1_bps if hasattr(args, "slippage_v1_bps") else args.spread_bps,
+    }
+    report = calibrate(obs, v1_frictions=v1, min_observations=args.min)
+    print(format_report(report))
+    if args.write:
+        path = write_calibration(report)
+        print(f"\nwritten: {path}")
+    return 0
+
+
 def run_universe_snapshot(args) -> int:
     """Record TODAY's ranked universe — today's data recorded today is
     point-in-time by construction. Daily snapshots compound into the
@@ -913,6 +939,15 @@ def run_forward(args) -> int:
     if al["total"]:
         print(f"Data-staleness alerts: {al['total']} ({al['by_level']}) on {', '.join(al['symbols'])}")
 
+    from .cost_calibration import calibrate as _cal
+    from .cost_calibration import format_report as _fmt
+    from .cost_calibration import load_observations as _loadobs
+
+    obs = _loadobs("cost_observations.jsonl")
+    if obs:
+        rep = _cal(obs, v1_frictions=manifest["config"]["frictions"], min_observations=30)
+        print("\n" + _fmt(rep))
+
     months = monthly_returns(entries)
     print("\nMonthly returns (negative periods published):")
     for m, r in months.items():
@@ -1056,6 +1091,14 @@ def main():
     uni.add_argument("--top", type=int, default=20)
     uni.add_argument("--log", default="universe_log.jsonl")
 
+    cal = sub.add_parser("calibrate-costs", help="Predicted vs observed trading costs from paper observations")
+    cal.add_argument("--observations", default="cost_observations.jsonl")
+    cal.add_argument("--fee", type=float, default=0.001)
+    cal.add_argument("--spread-bps", type=float, default=5.0)
+    cal.add_argument("--slippage-v1-bps", type=float, default=5.0, dest="slippage_v1_bps")
+    cal.add_argument("--min", type=int, default=30, dest="min")
+    cal.add_argument("--write", action="store_true", help="write cost_calibration.json (V2 proposal)")
+
     fwd = sub.add_parser("forward", help="Prospective paper trading: --step one day, --report checkpoints")
     fwd.add_argument("--step", action="store_true", help="execute one forward day from the freeze")
     fwd.add_argument("--report", action="store_true", help="print the checkpoint report")
@@ -1108,6 +1151,8 @@ def main():
         raise SystemExit(run_ledger(args))
     elif args.command == "universe-snapshot":
         raise SystemExit(run_universe_snapshot(args))
+    elif args.command == "calibrate-costs":
+        raise SystemExit(run_calibrate_costs(args))
     elif args.command == "forward":
         if not (args.step or args.report):
             print("use --step and/or --report")

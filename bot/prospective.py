@@ -23,10 +23,41 @@ import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from .cost_calibration import OBSERVATIONS_LOG as OBSERVATIONS_DEFAULT
+from .cost_calibration import (
+    append_observation as append_observation_fn,
+)
+from .cost_calibration import (
+    build_observation as build_observation_fn,
+)
 from .execution import calculate_transition, open_of
 from .identity import CODE_FINGERPRINT_ALGO, code_fingerprint, verify_freeze_code
 from .portfolio_rules import day_allocation
 from .strategy import strategy_from_spec, strategy_to_spec
+
+
+def _volatility_context(completed: list[dict]) -> tuple[float | None, float | None, float | None]:
+    """(realized vol 20d annualized, 30d ADV in USD, latest day base volume)
+    — context fields for cost observations; None when data is thin."""
+    import math
+
+    closes = [c["close"] for c in completed]
+    if len(closes) >= 21:
+        rets = [math.log(closes[i] / closes[i - 1]) for i in range(len(closes) - 20, len(closes))]
+        m = sum(rets) / len(rets)
+        var = sum((x - m) ** 2 for x in rets) / (len(rets) - 1)
+        rv = math.sqrt(max(var, 0.0) * 365) if var > 0 else None
+    else:
+        rv = None
+    adv = None
+    vols = [(c.get("quote_volume"), c["close"]) for c in completed[-30:]]
+    usable = [qv * px for qv, px in vols if qv is not None and px]
+    if usable:
+        adv = sum(usable) / len(usable)
+    day_vol_base = completed[-1].get("volume")
+    return (float(rv) if rv is not None else None,
+            float(adv) if adv is not None else None,
+            float(day_vol_base) if day_vol_base is not None else None)
 
 FREEZE_FILE = "freeze.json"
 LOG_FILE = "forward_log.jsonl"
@@ -165,6 +196,8 @@ def run_step(
     now: datetime | None = None,
     log_path: str | Path = LOG_FILE,
     allow_code_mismatch: bool = False,
+    kwargs_quote_fetcher=None,
+    cost_observation_path: str | Path | None = OBSERVATIONS_DEFAULT,
 ) -> dict:
     """One forward day of paper trading from the frozen config only.
 
@@ -197,11 +230,13 @@ def run_step(
     n_assets = len(config["assets"])
     algo = config["algorithm"]  # required: the frozen portfolio construction
     band = float(algo["rebalance_band"])
+    quote_fetcher = kwargs_quote_fetcher  # optional live bid/ask capture
     outages = []
     alerts = []  # non-fatal warnings (stale prints) that still make the audit
     missed_fills = []
     sleeve_rets = []
     asset_details = {}
+    cost_observations = []
     for a in config["assets"]:
         sym = a["symbol"]
         strategy = strategy_from_spec(a["strategy"])  # raises on tampered spec: no fallback
@@ -274,6 +309,41 @@ def run_step(
             "sleeve_ret": sleeve_ret,
             "slippage_bps": slip_bps,
         }
+        # ---- cost observation: measure what V1 predicts vs the tape -------
+        if tr["turnover"] > 1e-9 and cost_observation_path is not None:
+            bid = ask = None
+            if quote_fetcher is not None:
+                try:
+                    q = quote_fetcher(sym)
+                except Exception:
+                    q = None
+                if q:
+                    bid, ask = q.get("bid"), q.get("ask")
+            rv_annual, adv30_usd, day_vol_base = _volatility_context(completed)
+            predicted_cost_bps = cost_rate * 10_000.0
+            side = "BUY" if w_eff > prev_w else ("SELL" if w_eff < prev_w else "FLAT")
+            signal_ts = datetime.fromtimestamp(
+                completed[-1]["open_time"] / 1000 + 86_399_000, tz=UTC
+            ).isoformat()
+            obs = build_observation_fn(
+                symbol=sym,
+                side=side,
+                target_weight=w_eff,
+                previous_weight=prev_w,
+                decision_close=decision_close,
+                exec_price=exec_price,
+                mark_price=closing_price,
+                bid=bid,
+                ask=ask,
+                predicted_cost_bps=predicted_cost_bps,
+                realized_vol_annual=rv_annual,
+                adv30_usd=adv30_usd,
+                day_volume_base=day_vol_base,
+                signal_ts=signal_ts,
+                ts=now.isoformat(),
+            )
+            cost_observations.append(obs)
+            append_observation_fn(obs, path=cost_observation_path)
 
     # ---- portfolio construction: THE FROZEN ALGORITHM ----------------------
     # Sleeve history for every asset comes from the log (strictly past days);

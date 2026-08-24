@@ -98,12 +98,12 @@ jobs:
           [ -f forward_log.jsonl ] || { echo "no log produced this run"; exit 0; }
           cp forward_log.jsonl /tmp/forward_log.jsonl
           [ -f universe_log.jsonl ] && cp universe_log.jsonl /tmp/universe_log.jsonl
+          [ -f cost_observations.jsonl ] && cp cost_observations.jsonl /tmp/cost_observations.jsonl
           git config user.name "paper-bot"
           git config user.email "actions@users.noreply.github.com"
           git checkout -f "$BRANCH"
           python - <<'PY'
           import json, pathlib
-          merged_any = False
           p = pathlib.Path('forward_log.jsonl')
           new = [json.loads(l) for l in pathlib.Path('/tmp/forward_log.jsonl').read_text().splitlines() if l.strip()]
           old = []
@@ -117,18 +117,28 @@ jobs:
           if pathlib.Path('/tmp/universe_log.jsonl').exists():
               uold = {}
               if u.exists():
-                  for l in u.read_text().splitlines():
-                      if l.strip():
-                          e = json.loads(l); uold[e['date']] = l
-              for l in pathlib.Path('/tmp/universe_log.jsonl').read_text().splitlines():
-                  if l.strip():
-                      e = json.loads(l)
+                  for line in u.read_text().splitlines():
+                      if line.strip():
+                          e = json.loads(line); uold[e['date']] = line
+              for line in pathlib.Path('/tmp/universe_log.jsonl').read_text().splitlines():
+                  if line.strip():
+                      e = json.loads(line)
                       if e['date'] not in uold:
-                          uold[e['date']] = l
+                          uold[e['date']] = line
               u.write_text(''.join(uold[d] + '\n' for d in sorted(uold)))
               print(f"universe snapshot days: {len(uold)}")
+          cpath = pathlib.Path('cost_observations.jsonl')
+          if pathlib.Path('/tmp/cost_observations.jsonl').exists():
+              existing = set()
+              if cpath.exists():
+                  existing = set(cpath.read_text().splitlines())
+              newlines = [line for line in pathlib.Path('/tmp/cost_observations.jsonl').read_text().splitlines()
+                          if line.strip() and line not in existing]
+              with cpath.open('a', encoding='utf-8') as f:
+                  f.writelines(line + '\n' for line in newlines)
+              print(f"cost observations appended: {len(newlines)}")
           PY
-          git add forward_log.jsonl universe_log.jsonl
+          git add forward_log.jsonl universe_log.jsonl cost_observations.jsonl
           if git diff --cached --quiet; then
             echo "no new entries"
           else

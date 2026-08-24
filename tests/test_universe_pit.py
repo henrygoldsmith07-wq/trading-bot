@@ -146,3 +146,33 @@ class TestSnapshots:
              "universe": [{"symbol": "BTC", "quote_volume_usd": 1.0}]}
         p.write_text(json.dumps(e) + "\n{'date': torn")
         assert load_snapshots(p) == {"2026-08-23": ["BTC"]}
+
+
+class TestListingDates:
+    def test_fetch_with_injected_fetcher_and_disk_cache(self, tmp_path, monkeypatch):
+        from bot import universe_pit as U
+
+        calls = []
+
+        def fake_fetch(sym):
+            calls.append(sym)
+            return U.DAY_MS * (10 if sym == "OLD" else 5000)
+
+        monkeypatch.setattr(U, "_LISTING_CACHE", tmp_path / "listing_map.json")
+        got = U.fetch_listing_dates(["OLD", "NEW"], fetch_first_open=fake_fetch)
+        assert got == {"OLD": U.DAY_MS * 10, "NEW": U.DAY_MS * 5000}
+        # second call served entirely from cache: no new network
+        again = U.fetch_listing_dates(["OLD", "NEW"], fetch_first_open=fake_fetch)
+        assert again == got
+        assert len(calls) == 2
+
+    def test_failed_fetch_excluded_not_zero(self, tmp_path, monkeypatch):
+        from bot import universe_pit as U
+
+        monkeypatch.setattr(U, "_LISTING_CACHE", tmp_path / "listing_map.json")
+
+        def fail(_sym):
+            return None
+
+        got = U.fetch_listing_dates(["GHOST"], fetch_first_open=fail)
+        assert got == {}
