@@ -1067,10 +1067,16 @@ def run_verify_freeze(args) -> int:
 
 
 def _forward_fetch(symbol: str, source: str):
-    from .data import fetch_daily_history, fetch_yahoo_daily
+    from .data import fetch_daily_history, fetch_yahoo_daily, recent_window
 
     try:
-        candles = fetch_yahoo_daily(symbol) if source == "yahoo" else fetch_daily_history(symbol, max_candles=400)
+        if source == "yahoo":
+            candles = fetch_yahoo_daily(symbol)
+        else:
+            # FULL history then take the most recent window: max_candles alone
+            # paginates from the FIRST bar and would hand the forward runner
+            # 2017-era prices while staleness alerts scream about it.
+            candles = recent_window(fetch_daily_history(symbol), 450)
         if not candles:
             return [], "empty history"
         return candles, None

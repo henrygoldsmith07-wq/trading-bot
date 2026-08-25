@@ -80,6 +80,11 @@ def fetch_daily_history(symbol: str = "BTCUSDT", since_ms: int | None = None, ma
     return clean_candles(out[:max_candles])
 
 
+def recent_window(candles: list[dict], n: int) -> list[dict]:
+    """The most recent `n` bars from an ascending history."""
+    return candles[-n:] if len(candles) > n else candles
+
+
 def clean_candles(candles: list[dict]) -> list[dict]:
     """Missing/invalid-data handling: drop non-finite and non-positive closes,
     deduplicate timestamps (keeping the higher-volume print), and sort by time."""
