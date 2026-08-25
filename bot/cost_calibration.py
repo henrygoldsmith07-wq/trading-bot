@@ -29,7 +29,9 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-OBSERVATIONS_LOG = Path("cost_observations.jsonl")
+OBSERVATIONS_LOG = Path(
+    os.environ.get("COST_OBSERVATIONS_LOG", "cost_observations.jsonl")
+)
 CALIBRATION_FILE = Path("cost_calibration.json")
 
 

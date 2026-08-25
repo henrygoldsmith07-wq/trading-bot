@@ -197,8 +197,12 @@ def run_step(
     log_path: str | Path = LOG_FILE,
     allow_code_mismatch: bool = False,
     kwargs_quote_fetcher=None,
-    cost_observation_path: str | Path | None = OBSERVATIONS_DEFAULT,
+    cost_observation_path: str | Path | None = None,
 ) -> dict:
+    if cost_observation_path is None:
+        from .cost_calibration import OBSERVATIONS_LOG
+
+        cost_observation_path = OBSERVATIONS_LOG
     """One forward day of paper trading from the frozen config only.
 
     `fetcher(symbol, source)` -> (candles, problem) where problem is None or a
