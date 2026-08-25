@@ -1,8 +1,8 @@
 {
-  "frozen_at": "2026-08-25T10:44:14.547206+00:00",
+  "frozen_at": "2026-08-25T10:54:24.611493+00:00",
   "frozen_at_date": "2026-08-25",
-  "git_commit_at_freeze": "bf2dbd1041a8cd11f718c81bf2ab186d91e201cb",
-  "git_tag": "freeze/20260825",
+  "git_commit_at_freeze": "41e3ee9a72e5ee392480fece97bb93110f03be0f",
+  "git_tag": null,
   "image_digest": null,
   "retune_policy": "FORWARD PERIOD IS NEVER USED FOR SELECTION OR TUNING",
   "code_policy": "RUNNER MUST EXECUTE THE FROZEN COMMIT; REFUSE ON CODE MISMATCH",
@@ -168,20 +168,6 @@
         }
       },
       {
-        "symbol": "AAVEUSDT",
-        "source": "binance",
-        "periods_per_year": 365,
-        "session": "continuous",
-        "strategy": {
-          "type": "MacdTrend",
-          "params": {
-            "fast": 16,
-            "slow": 32,
-            "signal": 9
-          }
-        }
-      },
-      {
         "symbol": "SPY",
         "source": "yahoo",
         "periods_per_year": 252,
@@ -273,7 +259,7 @@
       }
     }
   },
-  "config_sha256": "c68d43d7414eda982a0759e8950f52e723da52e4052125bdaf7d8413eeb16f18",
+  "config_sha256": "e4176a17b0d39fad9b45f9a5a7c1ec06ab20073ca626dca9ee4b14ddda37228f",
   "code_fingerprint_algo": "sha256-lf-v1",
-  "code_sha256": "6255b0c7da096420459d253f438765a12c699b6ee78575fdd8858e7b549dbdea"
+  "code_sha256": "ebbaa35cefb660ec631b57ddb29bed48d3e87ca71fe64d174e0e6fb90a7cd4c3"
 }
