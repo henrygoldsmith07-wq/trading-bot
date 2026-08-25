@@ -10,3 +10,6 @@ reports/
 paper_ledger.jsonl
 forward_log.jsonl
 .env
+cost_observations.jsonl
+cost_calibration.json
+universe_log.jsonl
