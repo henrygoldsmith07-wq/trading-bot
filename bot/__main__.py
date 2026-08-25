@@ -827,6 +827,7 @@ def run_freeze(args) -> int:
     specs: list[tuple[str, str, int]] = [(s, "binance", 365) for s in universe] + [
         (e["symbol"], "yahoo", e["periods_per_year"]) for e in ETF_UNIVERSE
     ]
+    sessions = {e["symbol"]: e.get("session", "continuous") for e in ETF_UNIVERSE}
     min_history = args.train_days + args.test_days + 180
     assets: list[dict] = []
     print("Selecting per-asset strategies on data up to the freeze (never forward):")
@@ -851,6 +852,7 @@ def run_freeze(args) -> int:
                 "symbol": symbol,
                 "source": source,
                 "periods_per_year": ppy,
+                "session": sessions.get(symbol, "continuous"),
                 "strategy": chosen,
                 "oos_sharpe_at_freeze": wf["sharpe"],
             }

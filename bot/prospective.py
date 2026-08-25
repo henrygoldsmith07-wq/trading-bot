@@ -100,6 +100,7 @@ def create_freeze(
                 "symbol": a["symbol"],
                 "source": a["source"],
                 "periods_per_year": a["periods_per_year"],
+                "session": a.get("session", "continuous"),
                 "strategy": strategy_to_spec(a["strategy"]),
             }
             for a in assets
@@ -189,6 +190,32 @@ def replay_throttle_state(port_rets: list[float], th: dict) -> tuple[float, floa
     return equity, peak, throttled
 
 
+def _session_pending(session: str, now: datetime, candles: list[dict]) -> bool:
+    """True when this asset's current daily bar cannot exist yet.
+
+    - 'continuous' (crypto, UTC days): always live — the bar opens at 00:00.
+    - 'us_equity' (NYSE): pending before 21:15 UTC (16:00 ET close + buffer,
+      valid for both EST and EDT) and on any day whose bar has not appeared
+      (weekends/holidays) — the dangerous fallback is executing against a
+      STALE close while calling it today's fill.
+    """
+    if session == "continuous":
+        return False
+    if session != "us_equity":
+        return False
+    after_close = now.hour > 21 or (now.hour == 21 and now.minute >= 15)
+    if not candles:
+        return True
+    last_date = datetime.fromtimestamp(candles[-1]["open_time"] / 1000, tz=UTC).date()
+    if last_date == now.date() and not after_close:
+        # a same-day print before the gate is an intraday partial; treat as
+        # pending so we never split a session that hasn't closed
+        return True
+    if last_date != now.date():
+        return True
+    return False
+
+
 def run_step(
     manifest: dict,
     fetcher,
@@ -242,6 +269,7 @@ def run_step(
     cost_observations = []
     for a in config["assets"]:
         sym = a["symbol"]
+        session = a.get("session", "continuous")
         strategy = strategy_from_spec(a["strategy"])  # raises on tampered spec: no fallback
         prev_w = prev_weights.get(sym, 0.0)  # EFFECTIVE (post-band) weight held
         candles, problem = fetcher(sym, a["source"])
@@ -250,6 +278,23 @@ def run_step(
             sleeve_rets.append(0.0)
             asset_details[sym] = {"weight": prev_w, "target": prev_w, "price": None, "sleeve_ret": 0.0, "slippage_bps": None, "note": problem}
             continue
+
+        # ---- exchange-calendar gate ------------------------------------------
+        # Crypto runs a continuous UTC session: today's bar exists from 00:00.
+        # US ETFs trade an NYSE session; before it closes (~21:15 UTC covers
+        # EST/EDT), TODAY'S bar cannot exist yet — executing on the last
+        # available close would silently replace next_open with a stale fill.
+        # In that state the asset is PENDING: hold the previous weight, mark
+        # nothing, and let tomorrow's mark-chained transition cover the span.
+        if _session_pending(session, now, candles):
+            sleeve_rets.append(0.0)
+            asset_details[sym] = {
+                "weight": prev_w, "target": prev_w, "sleeve_ret": 0.0,
+                "slippage_bps": None, "note": "session_pending",
+                "session": session,
+            }
+            continue
+
         # use only completed candles for the decision
         completed = [c for c in candles if datetime.fromtimestamp(c["open_time"] / 1000, tz=UTC).date() < now.date()]
         if len(completed) < 2:

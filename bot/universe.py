@@ -25,19 +25,22 @@ STABLE_OR_NONVANILLA = {
 LEVERAGED_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR")
 
 
-class EtfSpec(TypedDict):
+class EtfSpec(TypedDict, total=False):
     """Cross-asset-class sleeve traded via Yahoo Finance daily bars."""
 
     symbol: str
     asset_class: str
     periods_per_year: int
+    session: str  # trading-calendar type: "us_equity" | "continuous"
 
 
 # Non-crypto asset classes the data supports (Yahoo Finance, daily bars).
+# `session` drives exchange-calendar-aware forward execution: NYSE assets are
+# only traded after their session closes (bot/prospective._session_pending).
 ETF_UNIVERSE: list[EtfSpec] = [
-    {"symbol": "SPY", "asset_class": "US equity ETF", "periods_per_year": 252},
-    {"symbol": "GLD", "asset_class": "Gold ETF", "periods_per_year": 252},
-    {"symbol": "TLT", "asset_class": "20y Treasury ETF", "periods_per_year": 252},
+    {"symbol": "SPY", "asset_class": "US equity ETF", "periods_per_year": 252, "session": "us_equity"},
+    {"symbol": "GLD", "asset_class": "Gold ETF", "periods_per_year": 252, "session": "us_equity"},
+    {"symbol": "TLT", "asset_class": "20y Treasury ETF", "periods_per_year": 252, "session": "us_equity"},
 ]
 
 
