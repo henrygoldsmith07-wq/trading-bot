@@ -100,10 +100,16 @@ def tiered_taker_fee(
 
 def median_daily_quote_volume(candles: list[dict], lookback: int = 30) -> float | None:
     """Median daily notional traded (quote currency) over the last `lookback`
-    candles. None when the feed carries no volume (Yahoo candles may omit it),
-    so callers can distinguish 'illiquid' from 'unknown'."""
+    candles. Prefers Binance's exact `quote_volume` field; falls back to
+    base-volume x close when only base units are present. None when the feed
+    carries neither (Yahoo candles may omit both), so callers can distinguish
+    'illiquid' from 'unknown'."""
     vols = []
     for c in candles[-lookback:]:
+        qv = c.get("quote_volume")
+        if qv is not None:
+            vols.append(abs(float(qv)))
+            continue
         v = c.get("volume")
         close = c.get("close")
         if v is None or close is None:

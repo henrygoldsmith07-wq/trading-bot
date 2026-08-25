@@ -152,6 +152,49 @@ class TestPersistenceAndFormatEdges:
         assert load_observations(p) == []
 
 
+class TestVolatilityContextUnits:
+    """ADV units regression: Binance quote_volume is ALREADY USD turnover —
+    multiplying by close produced price x USD nonsense (e.g. BTC $2B volume
+    at $60k recorded as $120T ADV)."""
+
+    def test_adv_is_mean_of_quote_volumes_not_scaled_by_price(self):
+        from bot.prospective import _volatility_context
+
+        closes = []
+        px = 60_000.0
+        for _ in range(30):
+            px *= 1.001
+            closes.append(px)
+        candles = [
+            {"open_time": i * 86_400_000,
+             "close": closes[i],
+             "volume": 1000.0,
+             "quote_volume": 2_000_000_000.0}  # $2B/day, constant
+            for i in range(30)
+        ]
+        _rv, adv, _day = _volatility_context(candles)        assert adv == pytest.approx(2_000_000_000.0)          # exact mean
+        assert adv < 1e10                                      # not $120T nonsense
+
+    def test_mixed_quote_volumes_average(self):
+        from bot.prospective import _volatility_context
+
+        candles = [
+            {"close": 50.0 + i, "quote_volume": 3e6 + i * 1e5} for i in range(30)
+        ]
+        _, adv, _ = _volatility_context(candles)
+        assert adv == pytest.approx(sum(3e6 + i * 1e5 for i in range(30)) / 30)
+
+    def test_missing_quote_volume_gives_none_adv_but_rv_still_computed(self):
+        from bot.prospective import _volatility_context
+
+        candles = [
+            {"close": 100.0 * (1.004 if i % 2 else 0.997)} for i in range(40)
+        ]
+        rv, adv, day = _volatility_context(candles)
+        assert adv is None
+        assert rv is not None and rv > 0
+
+
 class TestRunStepIntegration:
     def test_turnover_writes_observation_with_quotes_and_context(self, tmp_path, monkeypatch):
         from datetime import UTC, datetime
@@ -209,7 +252,10 @@ class TestRunStepIntegration:
         assert o["quoted_spread_bps"] > 0
         assert o["predicted_cost_bps"] == pytest.approx(20.0)
         assert o["realized_vol_annual"] is not None and o["realized_vol_annual"] > 0
-        assert o["adv30_usd"] is not None
+        # UNITS: adv30_usd must be the mean of quote_volumes (already USD),
+        # never quote_volume x close (which would inflate by ~price)
+        expected_adv = sum(c["quote_volume"] for c in candles) / len(candles)
+        assert o["adv30_usd"] == pytest.approx(expected_adv, rel=1e-9)
 
 
 T_BASE_MS = int(datetime(2026, 6, 1, tzinfo=UTC).timestamp() * 1000)

@@ -37,7 +37,11 @@ from .strategy import strategy_from_spec, strategy_to_spec
 
 def _volatility_context(completed: list[dict]) -> tuple[float | None, float | None, float | None]:
     """(realized vol 20d annualized, 30d ADV in USD, latest day base volume)
-    — context fields for cost observations; None when data is thin."""
+    — context fields for cost observations; None when data is thin.
+
+    UNITS: Binance `quote_volume` is ALREADY the quote-currency (≈USD)
+    turnover for that bar. It must be averaged directly — multiplying by
+    close would produce price × USD nonsense."""
     import math
 
     closes = [c["close"] for c in completed]
@@ -49,8 +53,8 @@ def _volatility_context(completed: list[dict]) -> tuple[float | None, float | No
     else:
         rv = None
     adv = None
-    vols = [(c.get("quote_volume"), c["close"]) for c in completed[-30:]]
-    usable = [qv * px for qv, px in vols if qv is not None and px]
+    quotes = [c.get("quote_volume") for c in completed[-30:]]
+    usable = [float(qv) for qv in quotes if qv is not None]
     if usable:
         adv = sum(usable) / len(usable)
     day_vol_base = completed[-1].get("volume")
