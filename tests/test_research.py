@@ -1,6 +1,10 @@
 """Tests for research-methodology extensions."""
+import json
 import math
+import os
 import random
+import subprocess
+import sys
 
 import pytest
 
@@ -50,6 +54,11 @@ class TestSpaTest:
         assert res["p_value"] <= 0.10
         assert res["best_stat"] > 0
 
+    def test_pvalue_resolution_is_bounded_by_resample_count(self):
+        edge = [0.01 + (0.0001 if i % 2 else -0.0001) for i in range(200)]
+        res = spa_test([edge], n_boot=9, seed=3)
+        assert res["p_value"] >= 0.1
+
     def test_all_noise_no_rejection(self):
         rows = [_seeded_iid(seed=s) for s in range(4)]
         res = spa_test(rows, n_boot=100)
@@ -71,6 +80,27 @@ class TestExpandedBootstrap:
             assert lo <= hi
             lo, hi = scheme["mdd_ci"]
             assert lo <= hi
+
+    def test_seed_is_reproducible_across_python_hash_seeds(self):
+        code = (
+            "import json; "
+            "from bot.research import expanded_bootstrap; "
+            "returns = [((i * 37) % 101 - 50) / 10000 for i in range(120)]; "
+            "print(json.dumps(expanded_bootstrap(returns, n_boot=20, seed=17), sort_keys=True))"
+        )
+        outputs = []
+        for hash_seed in ("1", "987654"):
+            env = os.environ.copy()
+            env["PYTHONHASHSEED"] = hash_seed
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            outputs.append(json.loads(result.stdout))
+        assert outputs[0] == outputs[1]
 
 
 class TestDrawdownCIs:

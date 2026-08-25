@@ -7,6 +7,7 @@ from bot.stats_validation import (
     bootstrap_metrics,
     dsr,
     expected_max_sharpe_annual,
+    finite_sample_p_value,
     parameter_stability,
     psr,
     reality_check,
@@ -125,6 +126,15 @@ def test_reality_check_all_noise_high_pvalue():
     streams = [_rand(600, 0.0, 0.01, seed=200 + i) for i in range(15)]
     rc = reality_check(streams, n_boot=50, seed=17)
     assert rc["p_value"] > 0.05
+
+
+def test_finite_sample_pvalue_never_claims_zero_probability():
+    assert finite_sample_p_value(0, 49) == pytest.approx(0.02)
+    assert finite_sample_p_value(49, 49) == pytest.approx(1.0)
+    with pytest.raises(ValueError, match="positive"):
+        finite_sample_p_value(0, 0)
+    with pytest.raises(ValueError, match="between"):
+        finite_sample_p_value(6, 5)
 
 
 # ---------- shuffle / start-end ----------

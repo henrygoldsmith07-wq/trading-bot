@@ -24,6 +24,20 @@ EULER_GAMMA = 0.5772156649015329
 _ND = NormalDist()
 
 
+def finite_sample_p_value(exceedances: int, n_resamples: int) -> float:
+    """Monte Carlo p-value including the observed statistic.
+
+    The add-one correction prevents a finite random sample of the null from
+    reporting impossible zero p-values and makes the attainable resolution
+    explicit: the minimum is 1 / (n_resamples + 1).
+    """
+    if n_resamples < 1:
+        raise ValueError("n_resamples must be positive")
+    if not 0 <= exceedances <= n_resamples:
+        raise ValueError("exceedances must be between 0 and n_resamples")
+    return (exceedances + 1) / (n_resamples + 1)
+
+
 def psr(returns: list[float], periods_per_year: int = 365, sr_benchmark_annual: float = 0.0) -> float:
     """Probabilistic Sharpe: probability the true Sharpe exceeds `sr_benchmark`."""
     n = len(returns)
@@ -141,7 +155,8 @@ def reality_check(candidate_returns: list[list[float]], n_boot: int = 200, block
     their own mean (the 'no skill anywhere' null), block-bootstrap-resampled
     with a COMMON index set (preserving cross-correlation), and the max
     Sharpe across candidates forms the null distribution. The p-value is the
-    fraction of bootstrap maxima reaching the observed best Sharpe.
+    fraction of bootstrap maxima reaching the observed best Sharpe, with the
+    observed statistic included via the finite-sample add-one correction.
     """
     n_cands = len(candidate_returns)
     n = min(len(r) for r in candidate_returns)
@@ -158,7 +173,12 @@ def reality_check(candidate_returns: list[list[float]], n_boot: int = 200, block
         )
         if best_b >= best_obs:
             exceed += 1
-    return {"best_sharpe": best_obs, "p_value": exceed / n_boot, "n_candidates": n_cands, "n_boot": n_boot}
+    return {
+        "best_sharpe": best_obs,
+        "p_value": finite_sample_p_value(exceed, n_boot),
+        "n_candidates": n_cands,
+        "n_boot": n_boot,
+    }
 
 
 def start_end_sensitivity(returns: list[float], trims_days=(0, 90, 180), periods_per_year: int = 365) -> list[dict]:

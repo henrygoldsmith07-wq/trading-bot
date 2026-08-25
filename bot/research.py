@@ -24,7 +24,7 @@ import random
 from statistics import NormalDist, mean, stdev
 
 from .metrics import cagr, max_drawdown, sharpe
-from .stats_validation import stationary_bootstrap_indices
+from .stats_validation import finite_sample_p_value, stationary_bootstrap_indices
 
 _ND = NormalDist()
 
@@ -64,6 +64,15 @@ _BOOTSTRAPS = {
     "moving": moving_block_bootstrap_indices,
 }
 
+# Keep each bootstrap stream independent without relying on Python's hash().
+# String hashes are deliberately randomized between interpreter processes, so
+# using hash(name) here would make nominally seeded research irreproducible.
+_BOOTSTRAP_SEED_OFFSETS = {
+    "stationary": 0,
+    "circular": 1,
+    "moving": 2,
+}
+
 
 def spa_test(
     candidate_returns: list[list[float]],
@@ -77,7 +86,8 @@ def spa_test(
     Same null as White's RC ('no candidate beats zero after fees'), but each
     candidate's mean excess return is studentized by its own volatility, so
     one wild strategy no longer dominates the test statistic. Recentered
-    stationary-bootstrap p-value for the max studentized statistic.
+    stationary-bootstrap p-value for the max studentized statistic, with the
+    observed statistic included via the finite-sample add-one correction.
     """
     rows = [r[:] for r in candidate_returns]
     n = min(len(r) for r in rows)
@@ -101,7 +111,7 @@ def spa_test(
             exceed += 1
     return {
         "best_stat": best_obs,
-        "p_value": exceed / n_boot,
+        "p_value": finite_sample_p_value(exceed, n_boot),
         "n_candidates": len(usable),
         "n_boot": n_boot,
     }
@@ -141,7 +151,7 @@ def expanded_bootstrap(
     n = len(returns)
     out = {}
     for name, sampler in _BOOTSTRAPS.items():
-        rng = random.Random(seed + hash(name) % 1000)
+        rng = random.Random(seed + _BOOTSTRAP_SEED_OFFSETS[name])
         cagrs, sharpes, mdds, tuw = [], [], [], []
         for _ in range(n_boot):
             idx = sampler(n, block, rng)
