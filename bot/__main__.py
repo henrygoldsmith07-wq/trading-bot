@@ -1233,6 +1233,7 @@ def main():
     frz.add_argument("--dd-trigger", type=float, default=-0.10)
     frz.add_argument("--dd-exit", type=float, default=-0.05)
     frz.add_argument("--throttle-factor", type=float, default=0.5)
+    frz.add_argument("--no-overlay", action="store_true", help="disable the trailing-vol target overlay")
     frz.add_argument("--vol-window", type=int, default=20, help="inverse-vol weighting window")
     frz.add_argument("--max-multiple-of-equal", type=float, default=2.0)
 
