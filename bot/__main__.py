@@ -295,6 +295,35 @@ def compute_compare_results(args, fetch=None, log=print, save_run=True):
                            "psr": round(_p1, 3), "dsr": round(_d1, 3)})
     # attached to metrics after its construction below
 
+    # ---- baselines: cash / momentum / mean-reversion / buy&hold -----------
+    from .engine import run_strategy as _run_strat
+    from .sensitivity import _summarize_returns
+    from .strategy import RsiDipBuy as _MR_cls
+    from .strategy import SmaCrossover as _Mom_cls
+
+    baselines_out = {}
+    baseline_defs = [
+        ("cash (risk-free)", None),
+        ("momentum SMA10/50", _Mom_cls(10, 50).weight_at),
+        ("mean-reversion RSI-2", _MR_cls(2, 60, 150).weight_at),
+        ("buy&hold", lambda c, i: 1.0),
+    ]
+    for bname, bfn in baseline_defs:
+        if bfn is None:  # cash: pure risk-free accrual on the OOS timeline
+            rf_daily = engine_kwargs["risk_free_annual"] / 365
+            b_rets = {t: rf_daily for t in timeline}
+        else:
+            bres = _run_strat(btc, bfn, **engine_kwargs)
+            b_rets = {t: r for t, r in bres["return_days"]
+                      if oos_start_ms <= t < oos_end_ms}
+        days_b = sorted(b_rets)
+        if days_b:
+            baselines_out[bname] = _summarize_returns([b_rets[t] for t in days_b])
+    log("\nBaselines (BTC, same frictions & window):")
+    for bname, mm in baselines_out.items():
+        log(f"  {bname:28} CAGR {_fmt_pct(mm['cagr']):>7}  Sharpe {mm['sharpe']:>5.2f}  "
+            f"maxDD {_fmt_pct(mm['max_drawdown']):>7}")
+
     log("\nStatistical standing (trial count 1 for the fixed rows; selected underlying carries the 85-trial caveat):")
     for name, _, rets in rules:
         p1 = psr(rets)
@@ -386,6 +415,7 @@ def compute_compare_results(args, fetch=None, log=print, save_run=True):
             "total": round(_time.perf_counter() - t_start, 3),
         },
     }
+    metrics["baselines"] = baselines_out
     if save_run:
         from .runs import save_run_record
 

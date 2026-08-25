@@ -194,6 +194,37 @@ def replay_throttle_state(port_rets: list[float], th: dict) -> tuple[float, floa
     return equity, peak, throttled
 
 
+def _bar_sanity_problem(candle: dict) -> str | None:
+    """FAIL-CLOSED bar validation. Returns a problem string, or None when the
+    print is tradeable. Guards the execution path against impossible prices:
+    non-positive/non-finite OHLC, high < low, close outside [low, high] band
+    (with a small tolerance), and single-bar moves beyond ±50% vs the open."""
+    import math
+
+    def bad(*vals: float) -> bool:
+        return any(v is None or not math.isfinite(v) or v <= 0 for v in vals)
+
+    o = candle.get("open")
+    hi, lo, c = candle.get("high"), candle.get("low"), candle.get("close")
+    if c is None:
+        return "missing close"
+    if not math.isfinite(float(c)) or float(c) <= 0:
+        return f"non-positive close ({c})"
+    if o is not None and hi is not None and lo is not None:
+        if bad(float(o), float(hi), float(lo)):
+            return "non-finite/zero OHLC field"
+        if float(hi) < float(lo):
+            return f"high<low ({hi}<{lo})"
+        tol = 1.001
+        if not (float(lo) / tol <= float(c) <= float(hi) * tol):
+            return f"close {c} outside [low,high]=[{lo},{hi}]"
+        if o and (float(o) > 0):
+            move = abs(float(c) / float(o) - 1.0)
+            if move > 0.5:
+                return f"|open->close| {move:.0%} exceeds 50% sanity bound"
+    return None
+
+
 def _session_pending(session: str, now: datetime, candles: list[dict]) -> bool:
     """True when this asset's current daily bar cannot exist yet.
 
@@ -268,6 +299,7 @@ def run_step(
     outages = []
     alerts = []  # non-fatal warnings (stale prints) that still make the audit
     missed_fills = []
+    orders = []  # full lifecycle records for every turnover event
     sleeve_rets = []
     asset_details = {}
     cost_observations = []
@@ -299,6 +331,20 @@ def run_step(
             }
             continue
 
+        # ---- feed hygiene: prints from the FUTURE are ignored --------------
+        # A malformed/clock-skewed feed can hand us bars dated AFTER the
+        # decision instant; consuming one would let tomorrow's price leak
+        # into today's fill. Compare INSTANTS (not calendar dates) so an
+        # intraday-timestamped bar later today-but-after-now also fails.
+        # Fail closed instead: keep only prints at or before `now`.
+        now_ms = int(now.timestamp() * 1000)
+        usable = [c for c in candles if c["open_time"] <= now_ms]
+        future_dropped = len(usable) < len(candles)
+        if future_dropped:
+            alerts.append({"symbol": sym, "level": "future_dated_rows_dropped",
+                           "dropped": len(candles) - len(usable)})
+        candles = usable
+
         # use only completed candles for the decision
         completed = [c for c in candles if datetime.fromtimestamp(c["open_time"] / 1000, tz=UTC).date() < now.date()]
         if len(completed) < 2:
@@ -311,7 +357,28 @@ def run_step(
         age_days = (now - datetime.fromtimestamp(completed[-1]["open_time"] / 1000, tz=UTC)).total_seconds() / 86_400.0
         if age_days > 3.0:
             alerts.append({"symbol": sym, "level": "stale_data", "age_days": round(age_days, 1)})
-        w_target = max(0.0, min(1.0, strategy.weight(completed)))
+
+        # ---- FAIL CLOSED on corrupted prints --------------------------------
+        # An impossible final bar (non-positive close, high<low, |1d move|
+        # beyond a wide sanity bound, non-finite fields) must never become an
+        # execution price. The asset sits out this session; the incident is
+        # logged as an outage so the audit trail shows the gap.
+        last_bar = candles[-1]
+        sanity_problem = _bar_sanity_problem(last_bar)
+        if sanity_problem:
+            outages.append({"symbol": sym, "problem": f"bad candle: {sanity_problem}"})
+            sleeve_rets.append(0.0)
+            asset_details[sym] = {"weight": prev_w, "target": prev_w, "price": None,
+                                  "sleeve_ret": 0.0, "slippage_bps": None,
+                                  "note": f"fail_closed:{sanity_problem}"}
+            continue
+
+        try:
+            w_target = max(0.0, min(1.0, strategy.weight(completed)))
+        except Exception as exc:  # noqa: BLE001 — one bad symbol must not kill the day
+            alerts.append({"symbol": sym, "level": "strategy_error",
+                           "detail": f"{type(exc).__name__}: {exc}"})
+            w_target = prev_w  # hold previous weight; no new signal this bar
         # rebalance band — same semantics as engine.run_strategy: act only when
         # the target moves further from the HELD weight than the band
         w_eff = w_target if abs(w_target - prev_w) > band else prev_w
@@ -361,6 +428,28 @@ def run_step(
             "sleeve_ret": sleeve_ret,
             "slippage_bps": slip_bps,
         }
+        # ---- event chain: signal → intent → fill → position -----------------
+        # Every turnover appends the full order lifecycle so the tape can be
+        # replayed as: signal generated → intended order → simulated
+        # submission → fill → resulting position. Holds are not orders.
+        if abs(w_eff - prev_w) > 1e-9:
+            signal_ts = datetime.fromtimestamp(
+                completed[-1]["open_time"] / 1000 + 86_399_000, tz=UTC
+            ).isoformat()
+            orders.append({
+                "symbol": sym,
+                "side": "BUY" if w_eff > prev_w else "SELL",
+                "signal_generated_ts": signal_ts,
+                "intent_ts": (datetime.fromtimestamp(
+                    completed[-1]["open_time"] / 1000 + 86_400_000, tz=UTC
+                )).isoformat(),  # when the order was intended to work
+                "submitted_ts": now.isoformat(),
+                "fill_ts": now.isoformat(),
+                "fill_price": exec_price,
+                "qty_weight_delta": round(w_eff - prev_w, 6),
+                "cost_fraction": round(cost_rate * abs(w_eff - prev_w), 8),
+                "position_after": round(w_eff, 6),
+            })
         # ---- cost observation: measure what V1 predicts vs the tape -------
         if tr["turnover"] > 1e-9 and cost_observation_path is not None:
             bid = ask = None
@@ -452,6 +541,7 @@ def run_step(
         "throttled": throttled_new,
         "outages": outages,
         "missed_fills": missed_fills,
+        "orders": orders,
     }
     if alerts:
         entry["alerts"] = alerts

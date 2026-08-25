@@ -1,6 +1,22 @@
-# Trading Bot (Paper Trading)
+# Trading Bot (Paper Trading) — a forward strategy-validation lab
 
 A Python trading bot that trades **on paper only** — no real orders are ever placed. It pulls free public market data (Binance, Yahoo Finance, FRED — no API keys) and runs a research-grade validation pipeline: an 85-strategy candidate pool, multi-asset-class portfolio construction, walk-forward out-of-sample selection, realistic execution frictions, a full statistical-validation battery, prospective (frozen, forward) testing — and a **web dashboard deployable to Vercel in one command**.
+
+## Evidence taxonomy (do not blur these)
+
+| Label | Meaning | Where it lives |
+|---|---|---|
+| **BACKTEST** | Full-history research runs used to *search* for configurations. Counted in the research ledger; never evidence of edge on its own. | `validate`, `research`, ledger |
+| **OUT-OF-SAMPLE** | Walk-forward folds inside the search window — still part of the selection process. | `compare`, canonical record |
+| **FORWARD PAPER** | Days traded by the frozen runner after `freeze.json` was sealed. The only evidence that grows without the researcher touching anything. | `forward_log.jsonl`, dashboard hero |
+| **LIVE** | Real money. **Does not exist and must not exist in this repo.** | — |
+
+`python -m bot verdict` grades all five dimensions (historical evidence,
+walk-forward robustness, selection-bias risk, cost robustness, prospective
+forward evidence) into one auditable verdict with numeric inputs at every
+tier — see `bot/verdict.py` for the exact thresholds. A negative forward
+result is useful evidence; do not change the strategy to make historical
+charts look better.
 
 > ⚠️ Educational software. Not financial advice. Past out-of-sample performance does not guarantee future results — do not wire real money to anything based on this repo.
 

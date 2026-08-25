@@ -112,6 +112,35 @@ def kurtosis(returns: list[float]) -> float:
     return m4 / m2 ** 2
 
 
+def trade_stats(weights: list[float], returns: list[float], entry_epsilon: float = 1e-9) -> dict:
+    """Per-trade accounting from a weight/return stream.
+
+    A 'trade' is any bar where exposure changed (|Δw| > epsilon). Hit rate,
+    average win/loss and profit factor are computed over those event bars;
+    they describe the strategy's day-level edge around its own turnover, and
+    are reported alongside — never instead of — Sharpe/drawdown."""
+    if len(weights) != len(returns):
+        raise ValueError("weights and returns must align")
+    trades = []
+    prev = 0.0
+    for w, r in zip(weights, returns):
+        if abs(w - prev) > entry_epsilon:
+            trades.append(r)
+        prev = w
+    n = len(trades)
+    wins = [t for t in trades if t > 0]
+    losses = [t for t in trades if t < 0]
+    gross_win = sum(wins)
+    gross_loss = abs(sum(losses))
+    return {
+        "n_trades": n,
+        "hit_rate": round(len(wins) / n, 4) if n else None,
+        "avg_win": round(sum(wins) / len(wins), 6) if wins else None,
+        "avg_loss": round(sum(losses) / len(losses), 6) if losses else None,
+        "profit_factor": round(gross_win / gross_loss, 4) if gross_loss > 0 else None,
+    }
+
+
 def summarize(equity: list[float], returns: list[float], days: float, periods_per_year: int, risk_free_annual: float = 0.0) -> dict:
     return {
         "final": equity[-1],
