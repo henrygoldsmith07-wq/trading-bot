@@ -239,6 +239,30 @@ against the ledger-informed total — the latter is the honest number.
 Freezes pin `research_context` (ledger entry count + sha256), so forward-test
 corrections are computed against an immutable record of how much was searched.
 
+## Reproducible runs: `run.json` + `python -m bot reproduce`
+
+Every `compare` run now writes `runs/<id>/run.json` sealing the full context:
+
+| Section | Contents |
+|---|---|
+| environment | python version, git commit, whole-code fingerprint (sha256-lf-v1), **strategy definitions hash**, **portfolio-rules hash**, **universe hash** |
+| parameters | the complete invocation namespace (frictions, band, folds, vol target, …) |
+| seeds | recorded explicitly; the pipeline is deterministic |
+| datasets | per-asset sha256, provider, download timestamp, start/end — plus S&P 500 via cache |
+| results | every metric block (equal/inv-vol/tilt/crisis/throttle/banded/fixed, S&P, BTC), picks, verdict |
+
+```bash
+python -m bot compare                 # saves runs/<id>/run.json automatically
+python -m bot reproduce list          # enumerate saved runs
+python -m bot reproduce <run-id>      # re-execute and verify identical metrics
+```
+
+`reproduce` REFUSES to run unless: (1) the running code fingerprint matches
+the record, (2) each module seal matches, (3) every frozen dataset is still
+in `.cache` with an identical sha256 — no silent refreshes. It then
+re-executes deterministically and compares all stored metrics at 1e-12.
+`PASS` means the number you quoted is the number you can regenerate.
+
 ## Usage
 
 ```bash

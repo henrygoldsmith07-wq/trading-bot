@@ -104,5 +104,24 @@ def verify_freeze_code(manifest: dict, root: str | Path | None = None) -> None:
         )
 
 
+def source_file_fingerprint(rel_paths: list[str], root: str | Path | None = None) -> dict:
+    """Per-file sha256 (LF-normalised) for a group of source files plus a
+    combined hash — used to seal strategy definitions / portfolio rules /
+    universe modules individually inside run records."""
+    base = Path(root) if root is not None else Path(__file__).resolve().parent.parent
+    files: dict[str, str] = {}
+    combined = hashlib.sha256()
+    for rel in sorted(rel_paths):
+        p = base / rel
+        try:
+            digest = hashlib.sha256(_normalise(p.read_bytes())).hexdigest()
+        except OSError:
+            digest = "missing"
+        files[rel] = digest
+        combined.update(digest.encode())
+        combined.update(b"\n")
+    return {"files": files, "combined": combined.hexdigest()}
+
+
 if __name__ == "__main__":  # tiny debug helper: python -m bot.identity
     print(f"{CODE_FINGERPRINT_ALGO} {code_fingerprint()}", file=sys.stderr)

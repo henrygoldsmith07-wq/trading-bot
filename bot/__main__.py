@@ -81,14 +81,25 @@ def _d(ms):
     return datetime.fromtimestamp(ms / 1000, tz=UTC).date()
 
 
-def run_compare(args) -> int:
+def compute_compare_results(args, fetch=None, log=print, save_run=True):
+    import platform
+
     from .benchmark import equity_metrics, fetch_sp500, slice_window
-    from .cache import load_or_fetch
+    from .cache import load_or_fetch_meta
     from .data import extend_returns_to_timeline, fetch_daily_history, fetch_yahoo_daily, is_stale
+    from .identity import code_fingerprint, source_file_fingerprint
     from .universe import ETF_UNIVERSE, top_symbols
     from .walkforward import absolute_folds, combine_portfolio, combine_portfolio_invvol, walk_forward_at
 
+    def _real_fetch(kind):
+        if fetch is not None:
+            fn = fetch.get(kind) if isinstance(fetch, dict) else fetch
+            if fn is not None:
+                return fn
+        return {"crypto": fetch_daily_history, "yahoo": fetch_yahoo_daily, "sp500": fetch_sp500}[kind]
+
     t_start = _time.perf_counter()
+    datasets_meta: dict[str, dict] = {}
     engine_kwargs = dict(
         fee=args.fee,
         spread_bps=args.spread_bps,
@@ -98,30 +109,39 @@ def run_compare(args) -> int:
         risk_free_annual=args.risk_free,
     )
 
-    def cached(symbol, fetcher):
-        return load_or_fetch(symbol, lambda s: fetcher(s))[0]
+    download_stamps: dict[str, float | None] = {}
 
-    btc = cached("BTCUSDT", lambda s: fetch_daily_history(s))
+    def cached(symbol, kind):
+        real_fetch = _real_fetch(kind)
+        candles, _from_cache, fetched_at = load_or_fetch_meta(
+            symbol, lambda s: real_fetch(s), cache_only=getattr(args, "cache_only", False)
+        )
+        download_stamps[symbol] = fetched_at
+        return candles
+
+    btc = cached("BTCUSDT", "crypto")
     folds_abs = absolute_folds(btc, args.train_days, args.test_days)
     if not folds_abs:
-        print("Not enough BTC history for one walk-forward fold")
-        return 2
+        log("Not enough BTC history for one walk-forward fold")
+        return {"exit_code": 2}
     oos_start_ms, oos_end_ms = folds_abs[0][0], folds_abs[-1][1]
 
     min_history = args.train_days + args.test_days + 180
-    universe = ["BTCUSDT"] + [s for s in top_symbols(args.assets) if s != "BTCUSDT"]
-    universe = universe[: args.assets]
+    override = getattr(args, "universe_symbols", None)
+    universe = list(override) if override else ["BTCUSDT"] + [s for s in top_symbols(args.assets) if s != "BTCUSDT"]
+    universe = universe[: len(override) if override else args.assets]
     specs: list[tuple[str, str, int]] = [(s, "crypto", 365) for s in universe] + [
         (e["symbol"], e["asset_class"], e["periods_per_year"]) for e in ETF_UNIVERSE
     ]
 
-    print(f"Universe: {args.assets} crypto pairs by quote volume + {len(ETF_UNIVERSE)} cross-class ETFs")
-    print("  (paper-only validation; no live orders are ever placed)")
+    log(f"Universe: {args.assets} crypto pairs by quote volume + {len(ETF_UNIVERSE)} cross-class ETFs")
+    log("  (paper-only validation; no live orders are ever placed)")
     histories: dict[str, tuple[list[dict], int]] = {}
     skipped: list[tuple[str, str]] = []
     for symbol, asset_class, ppy in specs:
         try:
-            candles = cached(symbol, fetch_yahoo_daily if asset_class != "crypto" else fetch_daily_history)
+            kind = "crypto" if asset_class == "crypto" else "yahoo"
+            candles = cached(symbol, kind)
         except Exception as e:
             skipped.append((symbol, f"fetch failed: {e}"))
             continue
@@ -131,13 +151,13 @@ def run_compare(args) -> int:
         if is_stale(candles):
             skipped.append((symbol, "history stopped >45d ago (delisted/stale)"))
             continue
-        print(f"  {symbol:10} [{asset_class:16}] {len(candles)} candles since {_d(candles[0]['open_time'])}")
+        log(f"  {symbol:10} [{asset_class:16}] {len(candles)} candles since {_d(candles[0]['open_time'])}")
         histories[symbol] = (candles, ppy)
     for symbol, why in skipped:
-        print(f"  {symbol:10} skipped: {why}")
+        log(f"  {symbol:10} skipped: {why}")
     if not histories:
-        print("No tradeable assets with enough history")
-        return 2
+        log("No tradeable assets with enough history")
+        return {"exit_code": 2}
     t_fetch = _time.perf_counter()
 
     timeline = [c["open_time"] for c in btc if oos_start_ms <= c["open_time"] < oos_end_ms]
@@ -183,9 +203,9 @@ def run_compare(args) -> int:
     denominator_by_day = {t: max(1, len(pit[t])) for t in timeline}
     elig_counts = [denominator_by_day[t] for t in timeline]
     if elig_counts:
-        print(f"\nPoint-in-time eligibility (listed+aged+liquid at each date): "
+        log(f"\nPoint-in-time eligibility (listed+aged+liquid at each date): "
               f"min {min(elig_counts)}, median {sorted(elig_counts)[len(elig_counts)//2]}, max {max(elig_counts)} of {n_selected} fetched")
-        print("  denominators scale by eligible-per-day — today's winners cannot join 2020 early")
+        log("  denominators scale by eligible-per-day — today's winners cannot join 2020 early")
     port_returns = combine_portfolio(asset_dailies, timeline, n_selected, denominator_by_day=denominator_by_day)
     iv_returns = combine_portfolio_invvol(asset_dailies, timeline, n_selected, denominator_by_day=denominator_by_day)
     base_rule: dict = dict(use_tilt=True, use_crisis=True, denominator_by_day=denominator_by_day)
@@ -202,8 +222,22 @@ def run_compare(args) -> int:
     banded_rm = _equity_metrics(_vol_overlay(banded_returns, target=args.portfolio_vol), risk_free_annual=args.risk_free)
     fixed_rm = _equity_metrics(_vol_overlay(fixed_returns, target=args.portfolio_vol), risk_free_annual=args.risk_free)
 
-    print("\nFetching S&P 500 daily history (FRED)...")
-    sp = fetch_sp500()
+    log("\nFetching S&P 500 daily history (FRED)...")
+    from datetime import date as _date
+
+    def _sp_rows():
+        rows = _real_fetch("sp500")()
+        normalized = []
+        for r in rows:
+            d = r["date"]
+            d = d.isoformat() if hasattr(d, "isoformat") else str(d)
+            normalized.append({"date": d, "close": float(r["close"])})
+        return normalized
+
+    sp_blob, _sp_cached, sp_fetched = load_or_fetch_meta("SP500", lambda s: _sp_rows(),
+                                                         cache_only=getattr(args, "cache_only", False))
+    download_stamps["SP500"] = sp_fetched
+    sp = [{"date": _date.fromisoformat(r["date"]), "close": r["close"]} for r in sp_blob]
     sp_window = slice_window(sp, _d(oos_start_ms), _d(oos_end_ms - DAY_MS))
     spx = equity_metrics(sp_window, risk_free_annual=args.risk_free)
 
@@ -213,25 +247,25 @@ def run_compare(args) -> int:
             bh_returns.append(btc[i]["close"] / btc[i - 1]["close"] - 1.0)
     bh = _equity_metrics(bh_returns, risk_free_annual=args.risk_free)
 
-    print()
-    print(f"Out-of-sample window: {_d(oos_start_ms)} -> {_d(oos_end_ms - DAY_MS)} ({len(folds_abs)} yearly folds, {n_selected} assets)")
-    print("Most-picked strategies across all folds and assets:")
+    log()
+    log(f"Out-of-sample window: {_d(oos_start_ms)} -> {_d(oos_end_ms - DAY_MS)} ({len(folds_abs)} yearly folds, {n_selected} assets)")
+    log("Most-picked strategies across all folds and assets:")
     for name, count in sorted(picks_counter.items(), key=lambda kv: -kv[1])[:5]:
-        print(f"  {name} x{count}")
-    print()
+        log(f"  {name} x{count}")
+    log()
     header = f"{'':18}{'Bot inv-vol':>14}{'Bot equal':>13}{'Bot raw eq':>12}{'S&P 500':>12}{'BTC b&h':>11}"
-    print(header)
-    print("-" * len(header))
-    print(f"{'CAGR':18}{_fmt_pct(iv_rm['cagr']):>14}{_fmt_pct(port_rm['cagr']):>13}{_fmt_pct(port['cagr']):>12}{_fmt_pct(spx['cagr']):>12}{_fmt_pct(bh['cagr']):>11}")
-    print(f"{'Volatility':18}{_fmt_pct(iv_rm['vol']):>14}{_fmt_pct(port_rm['vol']):>13}{_fmt_pct(port['vol']):>12}{_fmt_pct(spx['vol']):>12}{_fmt_pct(bh['vol']):>11}")
-    print(f"{'Sharpe (excess)':18}{iv_rm['sharpe']:>14.2f}{port_rm['sharpe']:>13.2f}{port['sharpe']:>12.2f}{spx['sharpe']:>12.2f}{bh['sharpe']:>11.2f}")
-    print(f"{'Max drawdown':18}{_fmt_pct(iv_rm['max_drawdown']):>14}{_fmt_pct(port_rm['max_drawdown']):>13}{_fmt_pct(port['max_drawdown']):>12}{_fmt_pct(spx['max_drawdown']):>12}{_fmt_pct(bh['max_drawdown']):>11}")
-    print(f"{'Sortino':18}{iv_rm['sortino']:>14.2f}{port_rm['sortino']:>13.2f}{port['sortino']:>12.2f}{spx['sortino']:>12.2f}{bh['sortino']:>11.2f}")
-    print(f"{'Calmar':18}{iv_rm['calmar']:>14.2f}{port_rm['calmar']:>13.2f}{port['calmar']:>12.2f}{spx['calmar']:>12.2f}{bh['calmar']:>11.2f}")
-    print(f"{'ES 95% (1d)':18}{_fmt_pct(iv_rm['es95']):>14}{_fmt_pct(port_rm['es95']):>13}{_fmt_pct(port['es95']):>12}{_fmt_pct(spx['es95']):>12}{_fmt_pct(bh['es95']):>11}")
-    print(f"{'Growth of $1':18}{iv_rm['final']:>14.2f}{port_rm['final']:>13.2f}{port['final']:>12.2f}{spx['final']:>12.2f}{bh['final']:>11.2f}")
+    log(header)
+    log("-" * len(header))
+    log(f"{'CAGR':18}{_fmt_pct(iv_rm['cagr']):>14}{_fmt_pct(port_rm['cagr']):>13}{_fmt_pct(port['cagr']):>12}{_fmt_pct(spx['cagr']):>12}{_fmt_pct(bh['cagr']):>11}")
+    log(f"{'Volatility':18}{_fmt_pct(iv_rm['vol']):>14}{_fmt_pct(port_rm['vol']):>13}{_fmt_pct(port['vol']):>12}{_fmt_pct(spx['vol']):>12}{_fmt_pct(bh['vol']):>11}")
+    log(f"{'Sharpe (excess)':18}{iv_rm['sharpe']:>14.2f}{port_rm['sharpe']:>13.2f}{port['sharpe']:>12.2f}{spx['sharpe']:>12.2f}{bh['sharpe']:>11.2f}")
+    log(f"{'Max drawdown':18}{_fmt_pct(iv_rm['max_drawdown']):>14}{_fmt_pct(port_rm['max_drawdown']):>13}{_fmt_pct(port['max_drawdown']):>12}{_fmt_pct(spx['max_drawdown']):>12}{_fmt_pct(bh['max_drawdown']):>11}")
+    log(f"{'Sortino':18}{iv_rm['sortino']:>14.2f}{port_rm['sortino']:>13.2f}{port['sortino']:>12.2f}{spx['sortino']:>12.2f}{bh['sortino']:>11.2f}")
+    log(f"{'Calmar':18}{iv_rm['calmar']:>14.2f}{port_rm['calmar']:>13.2f}{port['calmar']:>12.2f}{spx['calmar']:>12.2f}{bh['calmar']:>11.2f}")
+    log(f"{'ES 95% (1d)':18}{_fmt_pct(iv_rm['es95']):>14}{_fmt_pct(port_rm['es95']):>13}{_fmt_pct(port['es95']):>12}{_fmt_pct(spx['es95']):>12}{_fmt_pct(bh['es95']):>11}")
+    log(f"{'Growth of $1':18}{iv_rm['final']:>14.2f}{port_rm['final']:>13.2f}{port['final']:>12.2f}{spx['final']:>12.2f}{bh['final']:>11.2f}")
 
-    print("\nFixed portfolio rules (a-priori overlays, all risk-managed):")
+    log("\nFixed portfolio rules (a-priori overlays, all risk-managed):")
     rules = [
         ("inv-vol (selected underlying)", iv_rm, _vol_overlay(iv_returns, target=args.portfolio_vol)),
         ("+ tilt + crisis de-risk", full_rm, _vol_overlay(full_returns, target=args.portfolio_vol)),
@@ -240,43 +274,132 @@ def run_compare(args) -> int:
         ("fully-fixed: RiskEnsemble everywhere, banded, all overlays", fixed_rm, _vol_overlay(fixed_returns, target=args.portfolio_vol)),
     ]
     header = f"  {'rule':58}{'CAGR':>8}{'Sharpe':>8}{'maxDD':>8}{'ES95':>7}{'Calmar':>8}"
-    print(header)
-    print("  " + "-" * (len(header) - 2))
+    log(header)
+    log("  " + "-" * (len(header) - 2))
     for name, m, _ in rules:
-        print(f"  {name:58}{_fmt_pct(m['cagr']):>8}{m['sharpe']:>8.2f}{_fmt_pct(m['max_drawdown']):>8}{_fmt_pct(m['es95']):>7}{m['calmar']:>8.2f}")
+        log(f"  {name:58}{_fmt_pct(m['cagr']):>8}{m['sharpe']:>8.2f}{_fmt_pct(m['max_drawdown']):>8}{_fmt_pct(m['es95']):>7}{m['calmar']:>8.2f}")
 
     from .metrics import sharpe as _sharpe_ann
     from .stats_validation import dsr, psr
 
-    print("\nStatistical standing (trial count 1 for the fixed rows; selected underlying carries the 85-trial caveat):")
+    log("\nStatistical standing (trial count 1 for the fixed rows; selected underlying carries the 85-trial caveat):")
     for name, _, rets in rules:
         p1 = psr(rets)
         d1 = dsr(rets, [_sharpe_ann(rets, 365)], 1)
-        print(f"  {name:58} PSR {p1:.3f}  DSR {d1:.3f}")
-    print(f"\nFrictions: execution={args.execution}, fee={args.fee:.2%}, spread={args.spread_bps:.0f}bp, "
+        log(f"  {name:58} PSR {p1:.3f}  DSR {d1:.3f}")
+    log(f"\nFrictions: execution={args.execution}, fee={args.fee:.2%}, spread={args.spread_bps:.0f}bp, "
           f"slippage={args.slippage_bps:.0f}bp, latency={args.latency_days}d, cash yield={args.risk_free:.0%}/yr")
-    print("Benchmark consistency: same window/calendar-day CAGR; Sharpe in excess of the same risk-free rate; index is untradeable so carries no costs.")
+    log("Benchmark consistency: same window/calendar-day CAGR; Sharpe in excess of the same risk-free rate; index is untradeable so carries no costs.")
 
-    print("\nPer-asset out-of-sample results:")
+    log("\nPer-asset out-of-sample results:")
     for a in sorted(per_asset, key=lambda x: -x["sharpe"]):
-        print(f"  {a['symbol']:10} CAGR {_fmt_pct(a['cagr']):>7}  Sharpe {a['sharpe']:>5.2f}  maxDD {_fmt_pct(a['max_drawdown']):>7}")
+        log(f"  {a['symbol']:10} CAGR {_fmt_pct(a['cagr']):>7}  Sharpe {a['sharpe']:>5.2f}  maxDD {_fmt_pct(a['max_drawdown']):>7}")
 
     _print_regimes(btc, timeline, port_returns, sp_window, args)
 
-    print(f"\nTiming: fetch/cache {t_fetch - t_start:.1f}s, walk-forward compute {t_compute - t_fetch:.1f}s, total {_time.perf_counter() - t_start:.1f}s")
-    print("Survivorship note: universe is today's top-volume list (point-in-time constituents are not freely available); missing days are held in cash, not redistributed.")
+    log(f"\nTiming: fetch/cache {t_fetch - t_start:.1f}s, walk-forward compute {t_compute - t_fetch:.1f}s, total {_time.perf_counter() - t_start:.1f}s")
+    log("Survivorship note: universe is today's top-volume list (point-in-time constituents are not freely available); missing days are held in cash, not redistributed.")
 
     beats_cagr = port_rm["cagr"] > spx["cagr"]
     beats_sharpe = port_rm["sharpe"] > spx["sharpe"]
     beats_mdd = port_rm["max_drawdown"] > spx["max_drawdown"]
-    print()
-    print(
-        f"VERDICT: risk-managed portfolio OOS CAGR {'BEATS' if beats_cagr else 'trails'} S&P 500 "
+    verdict_txt = (
+        f"risk-managed portfolio OOS CAGR {'BEATS' if beats_cagr else 'trails'} S&P 500 "
         f"({_fmt_pct(port_rm['cagr'])} vs {_fmt_pct(spx['cagr'])}); "
         f"Sharpe {'beats' if beats_sharpe else 'trails'} ({port_rm['sharpe']:.2f} vs {spx['sharpe']:.2f}); "
         f"max drawdown {'better' if beats_mdd else 'worse'} ({_fmt_pct(port_rm['max_drawdown'])} vs {_fmt_pct(spx['max_drawdown'])})"
     )
-    return 0 if beats_cagr and beats_sharpe else 1
+    log()
+    log(f"VERDICT: {verdict_txt}")
+
+    # ---------------- reproducibility record -------------------------------
+
+    def _iso(ms):
+        return _d(ms).isoformat()
+
+    for s_name in list(histories) + ["SP500"]:
+        src_candles = histories[s_name][0] if s_name in histories else sp_blob
+        from .snapshot import dataset_hash
+
+        datasets_meta[s_name] = {
+            "sha256": dataset_hash(src_candles),
+            "provider": ("binance" if s_name.endswith("USDT") or s_name == "SP500" and False else
+                         ("yahoo" if s_name in {"SPY", "GLD", "TLT"} else
+                          ("fred" if s_name == "SP500" else "binance"))),
+            "downloaded_at": download_stamps.get(s_name),
+            "start": (src_candles[0]["open_time"] if s_name != "SP500" else None),
+            "end": (src_candles[-1]["open_time"] if s_name != "SP500" else None),
+        }
+        if s_name == "SP500":
+            datasets_meta[s_name]["provider"] = "fred"
+            datasets_meta[s_name]["start"] = sp_window[0]["date"].isoformat() if sp_window else None
+            datasets_meta[s_name]["end"] = sp_window[-1]["date"].isoformat() if sp_window else None
+
+    params = {k: v for k, v in vars(args).items()}
+    metrics = {
+        "equal_raw": port, "inv_vol_rm": iv_rm, "equal_rm": port_rm,
+        "full_rm": full_rm, "throttle_rm": throttle_rm,
+        "banded_rm": banded_rm, "fixed_rm": fixed_rm,
+        "spx": spx, "btc_bh": bh,
+    }
+    results = {
+        "exit_code": 0 if beats_cagr and beats_sharpe else 1,
+        "verdict": verdict_txt,
+        "metrics": metrics,
+        "per_asset": sorted(per_asset, key=lambda x: -x["sharpe"]),
+        "picks_counter": picks_counter,
+        "datasets": datasets_meta,
+        "oos_window": {"start": _iso(oos_start_ms), "end": _iso(oos_end_ms - DAY_MS)},
+        "n_folds": len(folds_abs),
+        "n_assets_selected": n_selected,
+        "universe": universe,
+        "pit_eligibility": {"min": min(elig_counts), "median": sorted(elig_counts)[len(elig_counts) // 2],
+                            "max": max(elig_counts)} if elig_counts else None,
+        "environment": {
+            "python": platform.python_version(),
+            "git_commit": current_git_commit_safe(),
+            "code_fingerprint": {"algo": CODE_FP_ALGO, "sha256": code_fingerprint()},
+            "strategy_definitions_hash": source_file_fingerprint(["bot/strategy.py"]),
+            "portfolio_rules_hash": source_file_fingerprint(["bot/portfolio_rules.py"]),
+            "universe_hash": source_file_fingerprint(["bot/universe.py", "bot/universe_pit.py"]),
+        },
+        "seeds": {"seed": getattr(args, "seed", 42), "note": "compare pipeline is deterministic; seed reserved"},
+        "parameters": params,
+        "timing_s": {
+            "fetch_cache": round(t_fetch - t_start, 3),
+            "walk_forward": round(t_compute - t_fetch, 3),
+            "total": round(_time.perf_counter() - t_start, 3),
+        },
+    }
+    if save_run:
+        from .runs import save_run_record
+
+        run_id = save_run_record(results)
+        log(f"run saved: runs/{run_id}/run.json")
+        results["run_id"] = run_id
+    return results
+
+
+
+
+def current_git_commit_safe():
+    try:
+        import subprocess
+
+        out = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10)
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+
+CODE_FP_ALGO = "sha256-lf-v1"
+
+
+def run_compare(args) -> int:
+    res = compute_compare_results(args)
+    if isinstance(res, dict) and "exit_code" in res:
+        return int(res["exit_code"])
+    return 1
 
 
 def _print_regimes(btc, timeline, port_returns, sp_window, args) -> None:
@@ -826,6 +949,34 @@ def _research_context() -> dict | None:
     }
 
 
+def run_reproduce(args) -> int:
+    from .runs import ReproduceRefused, list_runs, reproduce_run
+
+    if args.run_id.lower() in ("list", "ls"):
+        runs = list_runs(args.runs_dir)
+        if not runs:
+            print(f"No saved runs under {args.runs_dir}/")
+            return 0
+        print(f"Saved runs ({len(runs)}):")
+        for r in runs:
+            print(f"  {r['run_id']}  {r['created_at']}")
+        return 0
+    try:
+        res = reproduce_run(args.run_id, runs_dir=args.runs_dir)
+    except (ReproduceRefused, FileNotFoundError, ValueError) as e:
+        print(f"REFUSED: {e}")
+        return 2
+    status = res["status"]
+    print(f"reproduce {res['run_id']}: {status}  "
+          f"({res['n_compared_paths']} metric blocks compared)")
+    if res["diffs"]:
+        for d in res["diffs"][:20]:
+            print(f"  DIFF {d}")
+        return 1
+    print("every stored metric reproduced exactly — the validated engine is the engine that ran")
+    return 0
+
+
 def run_ledger(args) -> int:
     from .research_ledger import load_entries, summarize, verify_chain
 
@@ -1009,6 +1160,8 @@ def main():
     cmp.add_argument("--execution", choices=["close", "next_open"], default="next_open")
     cmp.add_argument("--risk-free", type=float, default=0.03)
     cmp.add_argument("--portfolio-vol", type=float, default=0.25, help="risk-managed overlay target vol")
+    cmp.add_argument("--seed", type=int, default=42, help="recorded for reproducibility (pipeline is deterministic)")
+    cmp.add_argument("--cache-only", action="store_true", help="never refresh datasets from the network")
 
     sen = sub.add_parser("sensitivity", help="Backtesting-quality sensitivity sweeps")
     sen.add_argument("--symbol", default="BTCUSDT")
@@ -1099,6 +1252,10 @@ def main():
     cal.add_argument("--min", type=int, default=30, dest="min")
     cal.add_argument("--write", action="store_true", help="write cost_calibration.json (V2 proposal)")
 
+    rep = sub.add_parser("reproduce", help="Re-execute a saved benchmark run and verify identical results")
+    rep.add_argument("run_id", help="run id, or 'list' to enumerate saved runs")
+    rep.add_argument("--runs-dir", default="runs")
+
     fwd = sub.add_parser("forward", help="Prospective paper trading: --step one day, --report checkpoints")
     fwd.add_argument("--step", action="store_true", help="execute one forward day from the freeze")
     fwd.add_argument("--report", action="store_true", help="print the checkpoint report")
@@ -1153,6 +1310,8 @@ def main():
         raise SystemExit(run_universe_snapshot(args))
     elif args.command == "calibrate-costs":
         raise SystemExit(run_calibrate_costs(args))
+    elif args.command == "reproduce":
+        raise SystemExit(run_reproduce(args))
     elif args.command == "forward":
         if not (args.step or args.report):
             print("use --step and/or --report")
