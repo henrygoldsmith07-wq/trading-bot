@@ -172,7 +172,8 @@ class TestVolatilityContextUnits:
              "quote_volume": 2_000_000_000.0}  # $2B/day, constant
             for i in range(30)
         ]
-        _rv, adv, _day = _volatility_context(candles)        assert adv == pytest.approx(2_000_000_000.0)          # exact mean
+        _rv, adv, _day = _volatility_context(candles)
+        assert adv == pytest.approx(2_000_000_000.0)          # exact mean
         assert adv < 1e10                                      # not $120T nonsense
 
     def test_mixed_quote_volumes_average(self):
