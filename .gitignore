@@ -8,8 +8,8 @@ paper_state.json
 .ruff_cache/
 reports/
 paper_ledger.jsonl
-forward_log.jsonl
 .env
-cost_observations.jsonl
 cost_calibration.json
-universe_log.jsonl
+
+# NOTE: forward_log / universe_log / cost_observations are COMMITTED DATA TAPES
+# (CI appends daily). Do not ignore them.
