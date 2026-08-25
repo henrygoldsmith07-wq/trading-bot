@@ -1,0 +1,279 @@
+{
+  "frozen_at": "2026-08-25T10:44:14.547206+00:00",
+  "frozen_at_date": "2026-08-25",
+  "git_commit_at_freeze": "bf2dbd1041a8cd11f718c81bf2ab186d91e201cb",
+  "git_tag": "freeze/20260825",
+  "image_digest": null,
+  "retune_policy": "FORWARD PERIOD IS NEVER USED FOR SELECTION OR TUNING",
+  "code_policy": "RUNNER MUST EXECUTE THE FROZEN COMMIT; REFUSE ON CODE MISMATCH",
+  "config": {
+    "assets": [
+      {
+        "symbol": "BTCUSDT",
+        "source": "binance",
+        "periods_per_year": 365,
+        "session": "continuous",
+        "strategy": {
+          "type": "TrendVol",
+          "params": {
+            "lookback": 50,
+            "vol_window": 20,
+            "target_vol": 0.2
+          }
+        }
+      },
+      {
+        "symbol": "ETHUSDT",
+        "source": "binance",
+        "periods_per_year": 365,
+        "session": "continuous",
+        "strategy": {
+          "type": "TrendVol",
+          "params": {
+            "lookback": 50,
+            "vol_window": 20,
+            "target_vol": 0.2
+          }
+        }
+      },
+      {
+        "symbol": "SOLUSDT",
+        "source": "binance",
+        "periods_per_year": 365,
+        "session": "continuous",
+        "strategy": {
+          "type": "Ensemble",
+          "members": [
+            {
+              "type": "TrendVol",
+              "params": {
+                "lookback": 50,
+                "vol_window": 20,
+                "target_vol": 0.25
+              }
+            },
+            {
+              "type": "RsiDipBuy",
+              "params": {
+                "period": 3,
+                "exit_above": 60,
+                "trend_filter": 150
+              }
+            },
+            {
+              "type": "MacdTrend",
+              "params": {
+                "fast": 8,
+                "slow": 21,
+                "signal": 5
+              }
+            }
+          ]
+        }
+      },
+      {
+        "symbol": "XRPUSDT",
+        "source": "binance",
+        "periods_per_year": 365,
+        "session": "continuous",
+        "strategy": {
+          "type": "MacdTrend",
+          "params": {
+            "fast": 16,
+            "slow": 32,
+            "signal": 9
+          }
+        }
+      },
+      {
+        "symbol": "ZECUSDT",
+        "source": "binance",
+        "periods_per_year": 365,
+        "session": "continuous",
+        "strategy": {
+          "type": "TrendVol",
+          "params": {
+            "lookback": 25,
+            "vol_window": 20,
+            "target_vol": 0.5
+          }
+        }
+      },
+      {
+        "symbol": "BNBUSDT",
+        "source": "binance",
+        "periods_per_year": 365,
+        "session": "continuous",
+        "strategy": {
+          "type": "SmaCrossover",
+          "params": {
+            "fast": 10,
+            "slow": 50
+          }
+        }
+      },
+      {
+        "symbol": "DOGEUSDT",
+        "source": "binance",
+        "periods_per_year": 365,
+        "session": "continuous",
+        "strategy": {
+          "type": "TrendVol",
+          "params": {
+            "lookback": 25,
+            "vol_window": 20,
+            "target_vol": 0.4
+          }
+        }
+      },
+      {
+        "symbol": "NEARUSDT",
+        "source": "binance",
+        "periods_per_year": 365,
+        "session": "continuous",
+        "strategy": {
+          "type": "TrendVol",
+          "params": {
+            "lookback": 50,
+            "vol_window": 20,
+            "target_vol": 0.4
+          }
+        }
+      },
+      {
+        "symbol": "LINKUSDT",
+        "source": "binance",
+        "periods_per_year": 365,
+        "session": "continuous",
+        "strategy": {
+          "type": "MacdTrend",
+          "params": {
+            "fast": 16,
+            "slow": 32,
+            "signal": 9
+          }
+        }
+      },
+      {
+        "symbol": "ADAUSDT",
+        "source": "binance",
+        "periods_per_year": 365,
+        "session": "continuous",
+        "strategy": {
+          "type": "SmaCrossover",
+          "params": {
+            "fast": 10,
+            "slow": 50
+          }
+        }
+      },
+      {
+        "symbol": "AAVEUSDT",
+        "source": "binance",
+        "periods_per_year": 365,
+        "session": "continuous",
+        "strategy": {
+          "type": "MacdTrend",
+          "params": {
+            "fast": 16,
+            "slow": 32,
+            "signal": 9
+          }
+        }
+      },
+      {
+        "symbol": "SPY",
+        "source": "yahoo",
+        "periods_per_year": 252,
+        "session": "us_equity",
+        "strategy": {
+          "type": "BuyHold",
+          "params": {}
+        }
+      },
+      {
+        "symbol": "GLD",
+        "source": "yahoo",
+        "periods_per_year": 252,
+        "session": "us_equity",
+        "strategy": {
+          "type": "SmaCrossover",
+          "params": {
+            "fast": 20,
+            "slow": 100
+          }
+        }
+      },
+      {
+        "symbol": "TLT",
+        "source": "yahoo",
+        "periods_per_year": 252,
+        "session": "us_equity",
+        "strategy": {
+          "type": "SmaCrossover",
+          "params": {
+            "fast": 10,
+            "slow": 50
+          }
+        }
+      }
+    ],
+    "frictions": {
+      "fee": 0.001,
+      "spread_bps": 5.0,
+      "slippage_bps": 5.0,
+      "execution": "next_open",
+      "risk_free_annual": 0.03
+    },
+    "overlay": {
+      "target_vol": 0.25
+    },
+    "algorithm": {
+      "selection_mode": "walk_forward_selected",
+      "candidate_pool_version": "7d8ad2d1c12ee29f",
+      "universe_selection_rule": "top-N crypto pairs by 24h quote volume (+SPY/GLD/TLT ETFs); today's list, survivorship disclosed",
+      "weighting": {
+        "mode": "inverse_vol",
+        "vol_window": 20,
+        "max_multiple_of_equal": 2.0
+      },
+      "xs_momentum": {
+        "enabled": true,
+        "lookback": 90,
+        "max_tilt": 0.5
+      },
+      "crisis_derisk": {
+        "enabled": true,
+        "corr_window": 60,
+        "corr_threshold": 0.6,
+        "multiplier": 0.6
+      },
+      "rebalance_band": 0.05,
+      "drawdown_throttle": {
+        "enabled": false,
+        "dd_trigger": -0.1,
+        "dd_exit": -0.05,
+        "factor": 0.5
+      },
+      "overlay": {
+        "enabled": true,
+        "target_vol": 0.25,
+        "window": 20,
+        "fee_on_turnover": 0.0015
+      }
+    },
+    "research_context": {
+      "ledger_entries": 34,
+      "ledger_sha256": "4f46504404a4f720084bc168324b63003ae29be64a29265efcad9646e618cafa",
+      "recommended_trial_count": 30,
+      "canonical_run": {
+        "run_id": "canonical-v1",
+        "record_sha256": "aa9ea31c352691f827e7fa8a649a9788107cdab397f49fd4829158418f7fa218",
+        "file_sha256": "7d44e7888ddee689e00ddecbac089922b47d1d009353b5cb60e2ecf4c749892c"
+      }
+    }
+  },
+  "config_sha256": "c68d43d7414eda982a0759e8950f52e723da52e4052125bdaf7d8413eeb16f18",
+  "code_fingerprint_algo": "sha256-lf-v1",
+  "code_sha256": "6255b0c7da096420459d253f438765a12c699b6ee78575fdd8858e7b549dbdea"
+}

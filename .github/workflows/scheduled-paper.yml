@@ -46,7 +46,11 @@ jobs:
 
       - name: Read freeze pointer
         id: pointer
-        run: python scripts/freeze_pointer.py
+        run: |
+          python scripts/freeze_pointer.py
+          # carry the manifest across the upcoming ref checkout: freeze.json
+          # lives on main, but the frozen commit predates it
+          cp freeze.json /tmp/freeze.json
 
       - name: Stop gracefully when no freeze exists yet
         if: steps.pointer.outputs.commit == ''
@@ -59,6 +63,10 @@ jobs:
         with:
           ref: ${{ steps.pointer.outputs.commit }}
           fetch-depth: 0
+
+      - name: Restore the manifest into the frozen tree
+        if: steps.pointer.outputs.commit != ''
+        run: cp /tmp/freeze.json freeze.json
 
       - uses: actions/setup-python@v5
         if: steps.pointer.outputs.commit != ''
