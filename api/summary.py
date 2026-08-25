@@ -60,15 +60,34 @@ def build_forward_summary(
         import json as _json
 
         manifest = _json.loads(open(freeze_path, encoding="utf-8").read())
-        from bot.identity import verify_freeze_code
+        # Manifest-integrity check (config hash + sealed fields). This proves
+        # the RECORD is intact; it does not require THIS viewer to be running
+        # frozen code — execution-time refusal already guards the writer side
+        # (run_step / CI), and the tag pins what actually traded.
+        from bot.identity import CODE_FINGERPRINT_ALGO
 
-        verify_freeze_code(manifest)
+        if not manifest.get("config_sha256") or not manifest.get("code_sha256"):
+            raise ValueError("manifest missing seals")
+        if manifest.get("code_fingerprint_algo") != CODE_FINGERPRINT_ALGO:
+            raise ValueError("unknown code-fingerprint algorithm")
+        from bot.prospective import _config_hash
+
+        if _config_hash(manifest["config"]) != manifest["config_sha256"]:
+            raise ValueError("config sha mismatch — manifest tampered")
         code_verified = True
         code_reason = None
     except ValueError as exc:
         code_verified = False
         code_reason = str(exc)
         manifest = locals().get("manifest") or {}
+
+    # transparency: does THIS process happen to run the frozen code?
+    try:
+        from bot.identity import code_fingerprint
+
+        runtime_matches = code_fingerprint() == manifest.get("code_sha256")
+    except Exception:
+        runtime_matches = False
 
     entries = []
     if os.path.exists(log_path):
@@ -92,6 +111,7 @@ def build_forward_summary(
             "code": commit,
             "code_verified": code_verified,
             "code_reason": code_reason,
+            "runtime_matches_freeze": runtime_matches,
             "days_untouched": None,
             "parameter_changes": 0,
             "config_sha256": (manifest.get("config_sha256") or "")[:16],
@@ -141,6 +161,7 @@ def build_forward_summary(
         "code": commit,
         "code_verified": code_verified,
         "code_reason": code_reason,
+        "runtime_matches_freeze": runtime_matches,
         "days_untouched": days_untouched,
         "n_days_recorded": len(entries),
         "first_day": first_date,

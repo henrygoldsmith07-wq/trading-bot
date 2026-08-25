@@ -1015,6 +1015,60 @@ def run_reproduce(args) -> int:
     return 0
 
 
+def run_verdict(args) -> int:
+    """The product: how much evidence actually supports the frozen system?"""
+    import json as _json
+    import pathlib as _pl
+
+    from .research_ledger import load_entries, recommended_trial_count
+    from .runs import RUNS_DIR, load_run_record
+    from .verdict import build_verdict, format_verdict
+
+    canonical_path = _pl.Path(RUNS_DIR) / "canonical-v1" / "run.json"
+    if not canonical_path.exists():
+        print(f"REFUSED: no canonical record at {canonical_path} — generate it first "
+              "(python -m bot compare --assets 20 --run-id canonical-v1)")
+        return 2
+    record = load_run_record("canonical-v1", runs_dir=RUNS_DIR)
+    m = record["results"]["metrics"]
+    try:
+        from .strategy import build_candidates
+
+        pool = len(build_candidates())
+    except Exception:
+        pool = 85  # documented fallback: the canonical-era pool size
+
+    entries = load_entries("research_ledger.jsonl")
+    ledger_n = recommended_trial_count("research_ledger.jsonl") if entries else None
+
+    from .cost_calibration import calibrate, load_observations
+
+    obs = load_observations("cost_observations.jsonl")
+    cost_report = calibrate(obs, v1_frictions=record["results"]["parameters"].get(
+        "frictions", {"fee": 0.001, "spread_bps": 5.0, "slippage_bps": 5.0}
+    )) if obs else None
+
+    from api.summary import build_forward_summary  # noqa: E402
+
+    forward = build_forward_summary()
+
+    v = build_verdict(
+        canonical_rule_stats=m.get("rules", []),
+        canonical_per_asset=record["results"].get("per_asset", []),
+        canonical_n_folds=record["results"].get("n_folds"),
+        pool_size=pool or 85,
+        ledger_search_n=ledger_n,
+        cost_report=cost_report,
+        forward=forward,
+        headline_rule_substring=args.headline_rule,
+    )
+    if args.json:
+        print(_json.dumps(v, indent=2))
+    else:
+        print(format_verdict(v))
+    return 0
+
+
 def run_ledger(args) -> int:
     from .research_ledger import load_entries, summarize, verify_chain
 
@@ -1286,6 +1340,10 @@ def main():
     led = sub.add_parser("ledger", help="Report the research ledger: every experiment ever searched")
     led.add_argument("--ledger", default="research_ledger.jsonl")
 
+    vd = sub.add_parser("verdict", help="How much evidence supports the frozen system? (the product)")
+    vd.add_argument("--json", action="store_true")
+    vd.add_argument("--headline-rule", default="banded 5% rebalance")
+
     uni = sub.add_parser("universe-snapshot", help="Record today's ranked universe (point-in-time dataset)")
     uni.add_argument("--top", type=int, default=20)
     uni.add_argument("--log", default="universe_log.jsonl")
@@ -1352,6 +1410,8 @@ def main():
         raise SystemExit(run_verify_freeze(args))
     elif args.command == "ledger":
         raise SystemExit(run_ledger(args))
+    elif args.command == "verdict":
+        raise SystemExit(run_verdict(args))
     elif args.command == "universe-snapshot":
         raise SystemExit(run_universe_snapshot(args))
     elif args.command == "calibrate-costs":

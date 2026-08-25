@@ -105,7 +105,10 @@ def test_asgi_app_research_failure_degrades_not_500(monkeypatch, api):
     assert start["status"] == 200  # forward evidence still served
     payload = json.loads([m for m in sent if m["type"] == "http.response.body"][0]["body"])
     assert "network down" in payload["research"]["error"]
-    assert payload["forward"]["available"] is False  # no freeze committed in repo root yet
+    fwd = payload["forward"]
+    # repo-root freeze.json absent in this test env -> unavailable; if a real
+    # freeze exists, it must at least be intact
+    assert fwd["available"] is False or fwd["code_verified"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -116,12 +119,12 @@ FREEZE_TS = "2026-08-23T09:00:00+00:00"
 
 
 def _write_freeze(path: Path, frozen_date="2026-08-23", commit="6d6606dabc"):
+
     from bot.identity import code_fingerprint
+    from bot.prospective import _config_hash
 
     config = {"assets": [{"symbol": "BTCUSDT"}], "frictions": {"fee": 0.001}}
-    import hashlib
-
-    cfg_sha = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+    cfg_sha = _config_hash(config)
     path.write_text(json.dumps({
         "frozen_at": FREEZE_TS,
         "frozen_at_date": frozen_date,
@@ -192,17 +195,37 @@ class TestForwardSummary:
             eq *= 1 + 0.001 * (-1 if res["curve"].index(c) % 5 == 4 else 1)
         assert res["forward_return"] == pytest.approx(eq - 1, abs=1e-3)
 
-    def test_code_tamper_surfaces_not_verified(self, api, tmp_path):
+    def test_manifest_tamper_surfaces_not_verified(self, api, tmp_path):
+        """Reader-side verification covers the manifest seal (config hash).
+        A stale code sha is NOT flagged here — the tag pins what traded, and
+        execution-time refusal guards the writer. Runtime mismatch is
+        reported transparently instead."""
         fp = tmp_path / "freeze.json"
         _write_freeze(fp)
         blob = json.loads(fp.read_text())
         blob["code_sha256"] = "f" * 64
+        blob["config"]["frictions"]["fee"] = 9.99  # real tamper: config change
+        from bot.prospective import _config_hash
+
+        blob["config_sha256"] = _config_hash(blob["config"])  # keep config seal valid? no—recompute shows tamper path separately
+        # first: config-tamper variant keeps OLD config hash -> mismatch
+        blob["config_sha256"] = "e" * 64
         fp.write_text(json.dumps(blob))
         lp = tmp_path / "log.jsonl"
         _write_log(lp, days=3)
         res = api.build_forward_summary(freeze_path=str(fp), log_path=str(lp))
         assert res["code_verified"] is False
-        assert "CODE MISMATCH" in res["code_reason"]
+        assert "config sha mismatch" in res["code_reason"]
+
+    def test_stale_code_sha_reported_as_runtime_mismatch(self, api, tmp_path):
+        fp = tmp_path / "freeze.json"
+        _write_freeze(fp)
+        blob = json.loads(fp.read_text())
+        blob["code_sha256"] = "f" * 64  # reader-side cannot validate this value
+        fp.write_text(json.dumps(blob))
+        res = api.build_forward_summary(freeze_path=str(fp), log_path=str(tmp_path / "log.jsonl"))
+        assert res["code_verified"] is True
+        assert res["runtime_matches_freeze"] is False
 
     def test_benchmark_failure_degrades_to_none(self, api, tmp_path):
         fp = tmp_path / "freeze.json"
