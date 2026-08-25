@@ -3,30 +3,52 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Paper Trading Bot — Monitor</title>
+<title>Paper Trading Bot — Frozen Forward Test</title>
 <style>
   :root {
     --bg: #0d1117; --panel: #161b22; --border: #30363d;
     --text: #e6edf3; --muted: #8b949e; --green: #3fb950; --red: #f85149; --blue: #58a6ff;
+    --accent: #d29922; --research-dim: #6e7681;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; padding: 24px; }
-  .wrap { max-width: 980px; margin: 0 auto; }
-  h1 { font-size: 22px; font-weight: 600; }
-  h1 .tag { font-size: 11px; background: var(--border); border-radius: 10px; padding: 2px 10px; vertical-align: middle; margin-left: 8px; color: var(--muted); }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 21px; font-weight: 700; letter-spacing: .02em; }
+  h1 .tag { font-size: 11px; background: rgba(63,185,80,.15); color: var(--green); border: 1px solid var(--green); border-radius: 10px; padding: 2px 10px; vertical-align: middle; margin-left: 10px; }
   .sub { color: var(--muted); margin: 6px 0 20px; }
+
+  /* ---- forward hero ---- */
+  .hero { background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; padding: 20px; margin-bottom: 14px; }
+  .hero .status { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile { background: #0d1117; border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .tile .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  .tile .value { font-size: 21px; font-weight: 650; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .tile .note { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .pos { color: var(--green); } .neg { color: var(--red); }
+  .verified { color: var(--green); }
+  .unverified { color: var(--red); }
+  .seal { display: inline-block; margin-top: 10px; font-size: 12px; color: var(--green); }
+  .seal.warn { color: var(--red); }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+  .panel h2 { font-size: 15px; margin-bottom: 10px; font-weight: 600; }
+  .panel .note { color: var(--muted); font-size: 13px; }
+  svg { width: 100%; height: 220px; display: block; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+
+  /* ---- research divider: impossible to miss ---- */
+  .divider { margin: 34px 0 16px; border-top: 2px dashed var(--research-dim); padding-top: 14px; }
+  .divider .badge { display: inline-block; background: var(--research-dim); color: var(--bg); font-weight: 700; font-size: 13px; letter-spacing: .08em; padding: 4px 12px; border-radius: 6px; }
+  .divider .why { color: var(--muted); font-size: 13px; margin-top: 8px; max-width: 70ch; }
+  .research-section { opacity: .88; }
+  .research-section h1, .research-section .card .label { color: var(--research-dim) !important; }
+
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
   .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
   .card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
-  .pos { color: var(--green); } .neg { color: var(--red); }
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 20px; }
-  .panel h2 { font-size: 15px; margin-bottom: 10px; font-weight: 600; }
-  .panel .note { color: var(--muted); font-size: 13px; }
-  svg { width: 100%; height: 260px; display: block; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
   .banner { display: none; background: #21262d; border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 20px; font-size: 13px; color: var(--muted); }
   footer { color: var(--muted); font-size: 12px; margin-top: 24px; border-top: 1px solid var(--border); padding-top: 12px; }
   a { color: var(--blue); text-decoration: none; }
@@ -34,36 +56,78 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>Paper Trading Bot <span class="tag">PAPER ONLY</span></h1>
-  <p class="sub">Fixed RiskEnsemble strategy, walk-forward out-of-sample track record under realistic frictions (next-open execution, 20bp round-trip). No real orders are ever placed.</p>
+  <h1>TRADING BOT V1 — FROZEN FORWARD TEST <span class="tag">PAPER ONLY</span></h1>
+  <p class="sub">Evidence generated AFTER the algorithm was frozen and sealed. The forward runner trades the frozen commit only; code identity is re-verified on every request.</p>
 
   <div id="banner" class="banner"></div>
 
-  <div class="cards">
-    <div class="card"><div class="label">BTC price (live)</div><div class="value" id="price">—</div></div>
-    <div class="card"><div class="label">Trend vs 50d SMA</div><div class="value" id="trend">—</div></div>
-    <div class="card"><div class="label">Target weight now</div><div class="value" id="weight">—</div></div>
-    <div class="card"><div class="label">OOS Sharpe</div><div class="value" id="sharpe">—</div></div>
-    <div class="card"><div class="label">OOS max drawdown</div><div class="value" id="mdd">—</div></div>
+  <!-- ================= EVIDENCE-FIRST: PROSPECTIVE ================= -->
+  <div class="hero" id="forward-hero">
+    <div class="status">
+      <span id="f-status-line" style="font-size:15px;font-weight:650;">Loading forward record…</span>
+    </div>
+    <div class="tiles">
+      <div class="tile"><div class="label">Frozen</div><div class="value" id="f-frozen">—</div><div class="note">manifest date</div></div>
+      <div class="tile"><div class="label">Code</div><div class="value" id="f-code">—</div><div class="note" id="f-code-note">verification</div></div>
+      <div class="tile"><div class="label">Days untouched</div><div class="value" id="f-days">—</div><div class="note">since freeze</div></div>
+      <div class="tile"><div class="label">Parameter changes</div><div class="value" id="f-params">—</div><div class="note">hash-sealed</div></div>
+      <div class="tile"><div class="label">Forward return</div><div class="value" id="f-return">—</div></div>
+      <div class="tile"><div class="label">Forward Sharpe</div><div class="value" id="f-sharpe">—</div></div>
+      <div class="tile"><div class="label" id="f-bench-label">Risk-matched benchmark</div><div class="value" id="f-bench">—</div><div class="note">same window</div></div>
+      <div class="tile"><div class="label">Max drawdown</div><div class="value" id="f-mdd">—</div></div>
+      <div class="tile"><div class="label">Data outages</div><div class="value" id="f-outages">—</div></div>
+      <div class="tile"><div class="label">Missed fills</div><div class="value" id="f-missed">—</div></div>
+    </div>
+    <div class="seal" id="f-seal"></div>
+    <div class="panel" style="margin:16px 0 0;">
+      <h2>Forward equity curve — growth of $1 since freeze</h2>
+      <p class="note" id="f-curve-note">Loading…</p>
+      <svg id="f-chart" viewBox="0 0 900 220" preserveAspectRatio="none"></svg>
+    </div>
   </div>
 
-  <div class="panel">
-    <h2>Out-of-sample equity curve — growth of $1</h2>
-    <p class="note" id="curve-note">Loading from /api/summary…</p>
-    <svg id="chart" viewBox="0 0 900 260" preserveAspectRatio="none"></svg>
+  <!-- ================= RESEARCH: NOT LIVE EVIDENCE ================= -->
+  <div class="divider">
+    <span class="badge">RESEARCH / HISTORICAL ONLY</span>
+    <div class="why">
+      Everything below this line was produced by the research pipeline
+      (<b>2019–2026 walk-forward results</b>) BEFORE any prospective testing began.
+      It is development evidence — subject to selection effects disclosed in the README —
+      and must not be read as evidence of live edge. Evidence above the line is what the
+      frozen system has done since it was sealed.
+    </div>
   </div>
 
-  <div class="panel">
-    <h2>Summary</h2>
-    <table>
-      <tr><th>Metric</th><th>Value</th></tr>
-      <tr><td>Strategy</td><td id="m-strategy">—</td></tr>
-      <tr><td>Out-of-sample window</td><td id="m-window">—</td></tr>
-      <tr><td>CAGR</td><td id="m-cagr">—</td></tr>
-      <tr><td>Growth of $1</td><td id="m-final">—</td></tr>
-      <tr><td>Average exposure</td><td id="m-exp">—</td></tr>
-      <tr><td>Generated at (UTC)</td><td id="m-gen">—</td></tr>
-    </table>
+  <div class="research-section">
+    <h1>HISTORICAL RESEARCH RESULTS <span class="tag">PRE-FREEZE</span></h1>
+    <p class="sub">Walk-forward out-of-sample track record under realistic frictions (next-open execution, 20bp round-trip).</p>
+
+    <div class="cards">
+      <div class="card"><div class="label">BTC price (live)</div><div class="value" id="price">—</div></div>
+      <div class="card"><div class="label">Trend vs 50d SMA</div><div class="value" id="trend">—</div></div>
+      <div class="card"><div class="label">Target weight now</div><div class="value" id="weight">—</div></div>
+      <div class="card"><div class="label">Historical Sharpe</div><div class="value" id="sharpe">—</div></div>
+      <div class="card"><div class="label">Historical max DD</div><div class="value" id="mdd">—</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Historical equity curve — growth of $1 (research window)</h2>
+      <p class="note" id="curve-note">Loading from /api/summary…</p>
+      <svg id="chart" viewBox="0 0 900 260" preserveAspectRatio="none"></svg>
+    </div>
+
+    <div class="panel">
+      <h2>Research summary</h2>
+      <table>
+        <tr><th>Metric</th><th>Value</th></tr>
+        <tr><td>Strategy</td><td id="m-strategy">—</td></tr>
+        <tr><td>Research window</td><td id="m-window">—</td></tr>
+        <tr><td>CAGR (historical)</td><td id="m-cagr">—</td></tr>
+        <tr><td>Growth of $1</td><td id="m-final">—</td></tr>
+        <tr><td>Average exposure</td><td id="m-exp">—</td></tr>
+        <tr><td>Generated at (UTC)</td><td id="m-gen">—</td></tr>
+      </table>
+    </div>
   </div>
 
   <footer>
@@ -82,11 +146,10 @@ function setVal(id, text, cls) {
   el.className = "value" + (cls ? " " + cls : "");
 }
 
-// ---- equity curve (hand-rolled SVG, no dependencies) ----
-function drawCurve(points) {
-  const svg = $("chart");
+function drawCurve(svgId, points, stroke) {
+  const svg = $(svgId);
   if (!points || points.length < 2) { svg.innerHTML = ""; return; }
-  const W = 900, H = 260, padL = 8, padB = 22, padT = 8;
+  const W = 900, H = svg.getAttribute("viewBox").split(" ")[3] * 1, padL = 8, padB = 22, padT = 8;
   const vs = points.map(p => p.v);
   const vMin = Math.min(...vs, 1), vMax = Math.max(...vs, 1);
   const x = (i) => padL + (i / (points.length - 1)) * (W - 2*padL);
@@ -95,35 +158,82 @@ function drawCurve(points) {
   const baseline = y(1).toFixed(1);
   svg.innerHTML =
     '<line x1="'+padL+'" y1="'+baseline+'" x2="'+(W-padL)+'" y2="'+baseline+'" stroke="#30363d" stroke-dasharray="4 4"/>' +
-    '<path d="'+d+'" fill="none" stroke="#3fb950" stroke-width="2"/>' +
-    '<text x="'+padL+'" y="'+(H-6)+'" fill="#8b949e" font-size="11">'+new Date(points[0].t).toISOString().slice(0,10)+'</text>' +
-    '<text x="'+(W-padL)+'" y="'+(H-6)+'" fill="#8b949e" font-size="11" text-anchor="end">'+new Date(points[points.length-1].t).toISOString().slice(0,10)+'</text>' +
-    '<text x="'+padL+'" y="'+(padT+10)+'" fill="#8b949e" font-size="11">'+vMax.toFixed(2)+'x</text>' +
-    '<text x="'+padL+'" y="'+(H-padB-2)+'" fill="#8b949e" font-size="11">'+vMin.toFixed(2)+'x</text>';
+    '<path d="'+d+'" fill="none" stroke="'+stroke+'" stroke-width="2"/>' +
+    '<text x="'+padL+'" y="'+(H-6)+'" fill="#8b949e" font-size="11">'+points[0].t+'</text>' +
+    '<text x="'+(W-padL)+'" y="'+(H-6)+'" fill="#8b949e" font-size="11" text-anchor="end">'+points[points.length-1].t+'</text>';
 }
 
-// ---- authoritative summary from the Python serverless function ----
+// ---- EVIDENCE-FIRST: the frozen forward record ----
+async function loadForward() {
+  try {
+    const res = await fetch("/api/summary");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const s = await res.json();
+    const f = s.forward;
+    if (!f || f.available === false) {
+      $("f-status-line").textContent = "NO FREEZE YET — the prospective test has not started";
+      $("f-status-line").style.color = "var(--muted)";
+      setVal("f-days", "—"); setVal("f-return", "—");
+      $("f-curve-note").textContent = f && f.reason ? f.reason : "";
+      return;
+    }
+    $("f-status-line").textContent = f.started ? "FORWARD TEST IN PROGRESS" : "FROZEN — AWAITING FIRST DAY";
+    $("f-frozen").textContent = f.frozen_date || "—";
+    $("f-code").textContent = f.code ? f.code.slice(0, 7) : "—";
+    $("f-code-note").innerHTML = f.code_verified
+      ? '<span class="verified">verified ✓</span>'
+      : '<span class="unverified">' + (f.code_reason || "unverified") + '</span>';
+    setVal("f-days", f.days_untouched == null ? "—" : f.days_untouched);
+    setVal("f-params", String(f.parameter_changes));
+    if (f.started) {
+      setVal("f-return", pct(f.forward_return, 2), f.forward_return >= 0 ? "pos" : "neg");
+      setVal("f-sharpe", f.forward_sharpe == null ? "—" : f.forward_sharpe.toFixed(2));
+      setVal("f-mdd", pct(f.max_drawdown, 1), "neg");
+      setVal("f-outages", String(f.data_outages));
+      setVal("f-missed", String(f.missed_fills));
+      $("f-curve-note").textContent = f.n_days_recorded + " recorded days (" + f.first_day + " → " + f.last_day + ")";
+      drawCurve("f-chart", f.curve, "#d29922");
+    } else {
+      $("f-curve-note").textContent = f.reason || "";
+    }
+    $("f-bench").innerHTML = f.benchmark_return == null
+      ? "—"
+      : '<span class="' + (f.benchmark_return >= 0 ? "pos" : "neg") + '">' + pct(f.benchmark_return, 2) + "</span>";
+    $("f-bench-label").textContent = f.benchmark_label || "Benchmark";
+    $("f-seal").innerHTML = f.code_verified
+      ? '🔒 config sha ' + (f.config_sha256 || "?") + ' · code sha ' + (f.code_sha256 || "?") +
+        ' · parameter changes proven 0 by seal'
+      : ('⚠️ SEAL BROKEN: ' + (f.code_reason || ""));
+    $("f-seal").className = "seal" + (f.code_verified ? "" : " warn");
+  } catch (e) {
+    $("f-status-line").textContent = "Forward record unavailable (" + e.message + ")";
+    $("f-status-line").style.color = "var(--red)";
+  }
+}
+
+// ---- RESEARCH section (historical, below the fold) ----
 async function loadSummary() {
   try {
     const res = await fetch("/api/summary");
     if (!res.ok) throw new Error("HTTP " + res.status);
     const s = await res.json();
-    if (s.error) throw new Error(s.error);
-    setVal("sharpe", s.oos.sharpe.toFixed(2));
-    setVal("mdd", pct(s.oos.max_drawdown), "neg");
-    setVal("weight", s.live.weight_now.toFixed(2));
-    $("m-strategy").textContent = s.strategy + " on " + s.symbol;
-    $("m-window").textContent = s.oos.first_day + " → " + s.oos.last_day + " (yearly walk-forward folds)";
-    setVal("m-cagr", pct(s.oos.cagr), s.oos.cagr >= 0 ? "pos" : "neg");
-    $("m-final").textContent = s.oos.final.toFixed(2) + "x";
-    $("m-exp").textContent = (s.oos.exposure*100).toFixed(0) + "% invested";
-    $("m-gen").textContent = s.generated_at.replace("T", " ").slice(0, 19);
-    $("curve-note").textContent = "Fixed rule, strictly out-of-sample: strategy re-picked yearly on prior data only. " +
-      s.folds.length + " folds, " + s.folds.filter(f => f === s.folds[0]).length + "× " + s.folds[0] + ".";
-    drawCurve(s.curve);
+    const r = s.research;
+    if (!r || r.error) throw new Error(r ? r.error : "no research payload");
+    setVal("sharpe", r.oos.sharpe.toFixed(2));
+    setVal("mdd", pct(r.oos.max_drawdown), "neg");
+    setVal("weight", r.live.weight_now.toFixed(2));
+    $("m-strategy").textContent = r.strategy + " on " + r.symbol;
+    $("m-window").textContent = r.oos.first_day + " → " + r.oos.last_day + " (yearly walk-forward folds)";
+    setVal("m-cagr", pct(r.oos.cagr), r.oos.cagr >= 0 ? "pos" : "neg");
+    $("m-final").textContent = r.oos.final.toFixed(2) + "x";
+    $("m-exp").textContent = (r.oos.exposure*100).toFixed(0) + "% invested";
+    $("m-gen").textContent = r.generated_at.replace("T", " ").slice(0, 19);
+    $("curve-note").textContent = "Pre-freeze research run: strategy re-picked yearly on prior data only. " +
+      r.folds.length + " folds.";
+    drawCurve("chart", r.curve, "#58a6ff");
   } catch (e) {
     $("banner").style.display = "block";
-    $("banner").textContent = "Python API unavailable (" + e.message + ") — showing the client-side live monitor only. The full summary returns when /api/summary warms up.";
+    $("banner").textContent = "Python API unavailable (" + e.message + ") — research panels need /api/summary.";
     $("curve-note").textContent = "Equity curve requires the /api/summary endpoint.";
   }
 }
@@ -146,6 +256,7 @@ async function loadLive() {
 
 loadLive();
 setInterval(loadLive, 60000);
+loadForward();
 loadSummary();
 </script>
 </body>

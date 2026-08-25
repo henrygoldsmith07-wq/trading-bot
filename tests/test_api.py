@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -60,10 +61,13 @@ def test_asgi_app_serves_json(monkeypatch, api):
     headers = dict((k.decode(), v.decode()) for k, v in start["headers"])
     assert headers["content-type"] == "application/json"
     payload = json.loads(body["body"])
-    assert "oos" in payload and "curve" in payload
+    # evidence-first shape: forward block always present, research nested below
+    assert "forward" in payload and "research" in payload
+    assert payload["research"].get("evidence_label", "").startswith("RESEARCH / HISTORICAL ONLY")
+    assert "oos" in payload["research"]
 
 
-def test_asgi_app_clean_error_on_failure(monkeypatch, api):
+def test_asgi_app_research_failure_degrades_not_500(monkeypatch, api):
     def boom(symbol):
         raise RuntimeError("network down")
 
@@ -78,6 +82,117 @@ def test_asgi_app_clean_error_on_failure(monkeypatch, api):
 
     asyncio.run(api.app({"type": "http", "method": "GET", "path": "/api/summary"}, receive, send))
     start = [m for m in sent if m["type"] == "http.response.start"][0]
-    body = [m for m in sent if m["type"] == "http.response.body"][0]
-    assert start["status"] == 502
-    assert "network down" in json.loads(body["body"])["error"]
+    assert start["status"] == 200  # forward evidence still served
+    payload = json.loads([m for m in sent if m["type"] == "http.response.body"][0]["body"])
+    assert "network down" in payload["research"]["error"]
+    assert payload["forward"]["available"] is False  # no freeze committed in repo root yet
+
+
+# ---------------------------------------------------------------------------
+# forward (evidence-first) summary
+# ---------------------------------------------------------------------------
+
+FREEZE_TS = "2026-08-23T09:00:00+00:00"
+
+
+def _write_freeze(path: Path, frozen_date="2026-08-23", commit="6d6606dabc"):
+    from bot.identity import code_fingerprint
+
+    config = {"assets": [{"symbol": "BTCUSDT"}], "frictions": {"fee": 0.001}}
+    import hashlib
+
+    cfg_sha = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+    path.write_text(json.dumps({
+        "frozen_at": FREEZE_TS,
+        "frozen_at_date": frozen_date,
+        "git_commit_at_freeze": commit,
+        "config": config,
+        "config_sha256": cfg_sha,
+        "code_fingerprint_algo": "sha256-lf-v1",
+        "code_sha256": code_fingerprint(),
+    }))
+
+
+def _write_log(path: Path, days=10, first="2026-08-24", ret=0.001):
+    from datetime import timedelta
+
+    d0 = datetime.fromisoformat(first)
+    with open(path, "w") as f:
+        for i in range(days):
+            f.write(json.dumps({
+                "date": (d0 + timedelta(days=i)).date().isoformat(),
+                "port_ret": ret * (-1 if i % 5 == 4 else 1),
+                "outages": [{"p": 1}] if i == 3 else [],
+                "missed_fills": [{"s": 1}] if i == 6 else [],
+            }) + "\n")
+
+
+class TestForwardSummary:
+    def test_unavailable_without_freeze(self, api, tmp_path):
+        res = api.build_forward_summary(freeze_path=str(tmp_path / "none.json"))
+        assert res["available"] is False
+        assert "freeze" in res["reason"]
+
+    def test_started_false_before_first_day(self, api, tmp_path):
+        fp = tmp_path / "freeze.json"
+        _write_freeze(fp)
+        res = api.build_forward_summary(freeze_path=str(fp), log_path=str(tmp_path / "log.jsonl"))
+        assert res["available"] and not res["started"]
+        assert res["parameter_changes"] == 0
+        assert res["days_untouched"] is None
+
+    def test_full_metrics_from_log(self, api, tmp_path):
+        fp = tmp_path / "freeze.json"
+        _write_freeze(fp)
+        lp = tmp_path / "log.jsonl"
+        _write_log(lp, days=12)
+        today = datetime(2026, 9, 20, tzinfo=UTC)  # 28 days after freeze
+        res = api.build_forward_summary(
+            freeze_path=str(fp), log_path=str(lp),
+            benchmark_fetch=lambda: [
+                {"date": "2026-08-24", "close": 5000.0},
+                {"date": "2026-09-04", "close": 5150.0},
+            ],
+            today=today,
+        )
+        assert res["available"] and res["started"]
+        assert res["frozen_date"] == "2026-08-23"
+        assert res["code_verified"] is True
+        assert res["days_untouched"] == 28
+        assert res["parameter_changes"] == 0
+        assert res["n_days_recorded"] == 12
+        assert res["data_outages"] == 1
+        assert res["missed_fills"] == 1
+        assert res["benchmark_return"] == pytest.approx(0.03)
+        assert -1.0 <= res["max_drawdown"] <= 0.0
+        assert len(res["curve"]) == 12
+        # compounding check
+        eq = 1.0
+        for c in res["curve"]:
+            eq *= 1 + 0.001 * (-1 if res["curve"].index(c) % 5 == 4 else 1)
+        assert res["forward_return"] == pytest.approx(eq - 1, abs=1e-3)
+
+    def test_code_tamper_surfaces_not_verified(self, api, tmp_path):
+        fp = tmp_path / "freeze.json"
+        _write_freeze(fp)
+        blob = json.loads(fp.read_text())
+        blob["code_sha256"] = "f" * 64
+        fp.write_text(json.dumps(blob))
+        lp = tmp_path / "log.jsonl"
+        _write_log(lp, days=3)
+        res = api.build_forward_summary(freeze_path=str(fp), log_path=str(lp))
+        assert res["code_verified"] is False
+        assert "CODE MISMATCH" in res["code_reason"]
+
+    def test_benchmark_failure_degrades_to_none(self, api, tmp_path):
+        fp = tmp_path / "freeze.json"
+        _write_freeze(fp)
+        lp = tmp_path / "log.jsonl"
+        _write_log(lp, days=3)
+
+        def boom():
+            raise RuntimeError("fred down")
+
+        res = api.build_forward_summary(freeze_path=str(fp), log_path=str(lp),
+                                        benchmark_fetch=boom)
+        assert res["benchmark_return"] is None

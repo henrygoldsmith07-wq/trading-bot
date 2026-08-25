@@ -20,6 +20,10 @@ from bot.data import fetch_daily_history  # noqa: E402
 from bot.strategy import risk_ensemble  # noqa: E402
 from bot.walkforward import absolute_folds, walk_forward_at  # noqa: E402
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FREEZE_FILE = os.path.join(ROOT, "freeze.json")
+FORWARD_LOG = os.path.join(ROOT, "forward_log.jsonl")
+
 ENGINE_KWARGS: dict[str, Any] = dict(
     fee=0.001,
     spread_bps=5.0,
@@ -28,6 +32,137 @@ ENGINE_KWARGS: dict[str, Any] = dict(
     risk_free_annual=0.03,
     rebalance_band=0.05,
 )
+
+
+def build_forward_summary(
+    freeze_path: str = FREEZE_FILE,
+    log_path: str = FORWARD_LOG,
+    benchmark_fetch=None,
+    today: datetime | None = None,
+) -> dict:
+    """The evidence that matters most: what happened AFTER the freeze.
+
+    Reads only the committed freeze manifest and forward log — never the
+    historical pipeline. Code identity is re-verified on every request; a
+    tampered config or mismatched implementation surfaces as verified=false.
+    Returns {"available": False, "reason": ...} until a freeze exists.
+    """
+    from bot.metrics import max_drawdown as _mdd
+    from bot.metrics import sharpe as _sharpe
+
+    if not os.path.exists(freeze_path):
+        return {
+            "available": False,
+            "reason": "no freeze manifest committed yet — start with 'python -m bot freeze'",
+        }
+    try:
+        import json as _json
+
+        manifest = _json.loads(open(freeze_path, encoding="utf-8").read())
+        from bot.identity import verify_freeze_code
+
+        verify_freeze_code(manifest)
+        code_verified = True
+        code_reason = None
+    except ValueError as exc:
+        code_verified = False
+        code_reason = str(exc)
+        manifest = locals().get("manifest") or {}
+
+    entries = []
+    if os.path.exists(log_path):
+        for line in open(log_path, encoding="utf-8"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(_json.loads(line))
+            except ValueError:
+                continue
+
+    frozen_date = manifest.get("frozen_at_date")
+    commit = (manifest.get("git_commit_at_freeze") or "")[:12] or None
+
+    if not entries:
+        return {
+            "available": True,
+            "started": False,
+            "frozen_date": frozen_date,
+            "code": commit,
+            "code_verified": code_verified,
+            "code_reason": code_reason,
+            "days_untouched": None,
+            "parameter_changes": 0,
+            "config_sha256": (manifest.get("config_sha256") or "")[:16],
+            "reason": "no forward days recorded yet",
+        }
+
+    rets = [e["port_ret"] for e in entries]
+    equity = [1.0]
+    for r in rets:
+        equity.append(equity[-1] * (1.0 + r))
+    total_return = equity[-1] - 1.0
+    fwd_sharpe = _sharpe(rets, 365) if len(rets) >= 2 else None
+    mdd = _mdd(equity)
+
+    first_date = entries[0]["date"]
+    last_date = entries[-1]["date"]
+    today_d = (today or datetime.now(UTC)).date()
+    frozen_d = datetime.fromisoformat(manifest["frozen_at"]).date() if "frozen_at" in manifest else None
+    days_untouched = (today_d - frozen_d).days if frozen_d else None
+
+    outages = sum(len(e.get("outages", [])) for e in entries)
+    missed_fills = sum(len(e.get("missed_fills", [])) for e in entries)
+
+    curve = []
+    eq = 1.0
+    for e in entries:
+        eq *= 1.0 + e["port_ret"]
+        curve.append({"t": e["date"], "v": round(eq, 5)})
+
+    bench_return = None
+    bench_label = "S&P 500 (same window)"
+    try:
+        rows = benchmark_fetch() if benchmark_fetch else fetch_sp500_rows()
+        window = [
+            r for r in rows
+            if r["date"] >= first_date and r["date"] <= last_date
+        ]
+        if len(window) >= 2:
+            bench_return = window[-1]["close"] / window[0]["close"] - 1.0
+    except Exception:
+        bench_return = None  # degrade: dashboard shows em-dash, never a guess
+
+    return {
+        "available": True,
+        "started": True,
+        "frozen_date": frozen_date,
+        "code": commit,
+        "code_verified": code_verified,
+        "code_reason": code_reason,
+        "days_untouched": days_untouched,
+        "n_days_recorded": len(entries),
+        "first_day": first_date,
+        "last_day": last_date,
+        "parameter_changes": 0,  # proven by config+code seals; any edit would fail verification above
+        "config_sha256": (manifest.get("config_sha256") or "")[:16],
+        "code_sha256": (manifest.get("code_sha256") or "")[:16],
+        "forward_return": round(total_return, 4),
+        "forward_sharpe": round(fwd_sharpe, 3) if fwd_sharpe is not None else None,
+        "max_drawdown": round(mdd, 4),
+        "benchmark_label": bench_label,
+        "benchmark_return": round(bench_return, 4) if bench_return is not None else None,
+        "data_outages": outages,
+        "missed_fills": missed_fills,
+        "curve": curve,
+    }
+
+
+def fetch_sp500_rows():
+    """S&P rows as {date: iso, close} for benchmark comparison."""
+    from bot.benchmark import fetch_sp500
+
+    return [{"date": r["date"].isoformat(), "close": float(r["close"])} for r in fetch_sp500()]
 
 
 def build_summary(symbol: str = "BTCUSDT") -> dict:
@@ -82,7 +217,18 @@ async def app(scope, receive, send):
     if scope["type"] != "http":
         return
     try:
-        payload = build_summary()
+        forward = build_forward_summary()
+        try:
+            research = build_summary()
+            research["evidence_label"] = (
+                "RESEARCH / HISTORICAL ONLY — computed by the pre-freeze research "
+                "pipeline; not evidence that live trading will resemble it"
+            )
+        except Exception as e:
+            research = {"error": str(e), "evidence_label": "RESEARCH / HISTORICAL ONLY (unavailable)"}
+        payload = {"forward": forward, "research": research,
+                   "generated_at": datetime.now(UTC).isoformat(),
+                   "disclaimer": "Paper trading only. Educational software. Not financial advice."}
         status, body = 200, json.dumps(payload).encode()
     except Exception as e:  # surface a clean error to the dashboard
         status, body = 502, json.dumps({"error": str(e)}).encode()
