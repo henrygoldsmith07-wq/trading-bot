@@ -23,7 +23,6 @@ import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from .cost_calibration import OBSERVATIONS_LOG as OBSERVATIONS_DEFAULT
 from .cost_calibration import (
     append_observation as append_observation_fn,
 )
