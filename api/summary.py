@@ -23,6 +23,7 @@ from bot.walkforward import absolute_folds, walk_forward_at  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FREEZE_FILE = os.path.join(ROOT, "freeze.json")
 FORWARD_LOG = os.path.join(ROOT, "forward_log.jsonl")
+CANONICAL_RUN = os.path.join(ROOT, "runs", "canonical-v1", "run.json")
 
 ENGINE_KWARGS: dict[str, Any] = dict(
     fee=0.001,
@@ -165,6 +166,32 @@ def fetch_sp500_rows():
     return [{"date": r["date"].isoformat(), "close": float(r["close"])} for r in fetch_sp500()]
 
 
+def _canonical_overlay(summary: dict) -> dict:
+    """Override historical headline METRICS from the committed canonical run
+    record (runs/canonical-v1/run.json) when present. Curve/live/folds remain
+    computed live (cheap, single-symbol); the authoritative NUMBERS come from
+    the sealed record — same source as the README table."""
+    try:
+        with open(CANONICAL_RUN, encoding="utf-8") as f:
+            record = json.load(f)
+        iv = record["results"]["metrics"]["inv_vol_rm"]
+        oos = summary["oos"]
+        oos["cagr"] = iv["cagr"]
+        oos["sharpe"] = iv["sharpe"]
+        oos["max_drawdown"] = iv["max_drawdown"]
+        oos["final"] = iv["final"]
+        win = record["results"]["metrics"].get("window") or {}
+        if win.get("start"):
+            oos["first_day"], oos["last_day"] = win["start"], win["end"]
+        summary["strategy"] = "RiskEnsemble pool walk-forward — CANONICAL post-PIT record"
+        summary["canonical_run_id"] = record["run_id"]
+        summary["canonical_record_sha256"] = record.get("record_sha256")
+        summary["rules_table"] = record["results"]["metrics"].get("rules", [])
+    except (OSError, KeyError, ValueError):
+        pass
+    return summary
+
+
 def build_summary(symbol: str = "BTCUSDT") -> dict:
     candles = fetch_daily_history(symbol)
     folds = absolute_folds(candles, train_days=1095, test_days=365)
@@ -187,7 +214,7 @@ def build_summary(symbol: str = "BTCUSDT") -> dict:
     ]
 
     strategy = risk_ensemble()
-    return {
+    summary = {
         "symbol": symbol,
         "strategy": "RiskEnsemble (fixed, a-priori)",
         "generated_at": datetime.now(UTC).isoformat(),
@@ -211,6 +238,7 @@ def build_summary(symbol: str = "BTCUSDT") -> dict:
         },
         "disclaimer": "Paper trading only. Educational software. Not financial advice.",
     }
+    return _canonical_overlay(summary)
 
 
 async def app(scope, receive, send):

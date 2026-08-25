@@ -21,6 +21,8 @@ jobs:
         run: mypy
       - name: Tests + coverage gate
         run: pytest --cov=bot --cov-report=term-missing
+      - name: README headline block derives from canonical run
+        run: python scripts/derive_canonical_readme.py --check
 
   docker:
     runs-on: ubuntu-latest

@@ -20,42 +20,37 @@ vercel            # deploy from the repo root; accept defaults
 
 `python -m bot compare` trades a universe of top-volume crypto pairs **plus SPY, GLD, and TLT** (equity/gold/bonds), re-picks the best of 74 strategies per asset **every year using only prior data**, equal-weights the result with a fixed denominator, applies a trailing-volatility risk overlay (25% target, no lookahead), and compares against the actual S&P 500 over the same window (2020-08 → 2026-08). Defaults include **next-open execution, 10bp fee + 5bp spread + 5bp slippage per unit turnover, 3% cash yield on idle capital, excess-of-cash Sharpe everywhere**:
 
+<!-- CANONICAL:BEGIN — generated from runs/canonical-v1/run.json; do not edit by hand -->
+Out-of-sample window: 2020-08-16 → 2026-08-14 (6 yearly folds, 13 assets, point-in-time denominators).
+
 ```
                      Bot inv-vol    Bot equal  Bot raw eq     S&P 500    BTC b&h
-CAGR                       19.9%        26.9%       38.0%       14.9%      32.1%
-Volatility                 15.5%        19.7%       23.7%       16.7%      57.3%
-Sharpe (excess)             1.05         1.15        1.35        0.74       0.72
-Max drawdown              -16.5%       -23.1%      -25.8%      -25.4%     -76.6%
-Sortino                     1.82         1.79        2.13        1.06       1.07
-Calmar                      1.21         1.16        1.47        0.59       0.42
-ES 95% (1d)                -1.7%        -2.3%       -2.7%       -2.4%      -6.9%
-Growth of $1                2.97         4.17        6.89        2.30       5.32
+--------------------------------------------------------------------------------
+CAGR                       10.8%        25.7%       32.4%       14.9%      32.1%
+Volatility                 11.2%        21.3%       24.6%       16.7%      57.3%
+Sharpe (excess)             0.70         1.04        1.14        0.74       0.72
+Max drawdown              -12.2%       -23.2%      -26.5%      -25.4%     -76.6%
+Sortino                     1.25         1.58        1.76        1.06       1.07
+Calmar                      0.88         1.11        1.22        0.59       0.42
+ES 95% (1d)                -1.2%        -2.5%       -2.9%       -2.4%      -6.9%
+Growth of $1                1.85         3.95        5.39        2.30       5.32
 ```
 
-Two algorithms now report side by side: **equal-weight** (higher return) and **inverse-volatility weighted** (each asset's sleeve sized by 1/trailing-vol, capped at 2x equal weight) — the latter runs at 15.5% volatility with a -16.5% max drawdown, roughly two-thirds of the S&P's drawdown while still beating its CAGR. The candidate pool grew to 85 strategies with three new families: time-series momentum (`TSMom`), multi-horizon `DualMomentum`, and `RiskEnsemble`.
+risk-managed portfolio OOS CAGR BEATS S&P 500 (25.7% vs 14.9%); Sharpe beats (1.04 vs 0.74); max drawdown better (-23.2% vs -25.4%)
 
-On top of the fixed rules, two a-priori portfolio overlays (`bot/portfolio_rules.py`) improve the diversified portfolio without any selection or tuning:
+**Fixed portfolio rules** (a-priori overlays; all risk-managed to 25% vol):
 
-| Fixed rule (risk-managed) | CAGR | Sharpe | maxDD | ES95 | Calmar |
-|---|---|---|---|---|---|
-| inv-vol | 19.9% | 1.05 | -16.5% | -1.7% | 1.21 |
-| inv-vol + XS-momentum tilt | 20.8% | 1.10 | -16.9% | -1.7% | 1.23 |
-| inv-vol + tilt + crisis de-risk | **21.0%** | **1.12** | -16.9% | -1.7% | **1.24** |
+| Rule | CAGR | Sharpe | maxDD | ES95 | Calmar | PSR | DSR |
+|---|---|---|---|---|---|---|---|
+| inv-vol (selected underlying) | 10.8% | 0.70 | -12.2% | -1.2% | 0.88 | 0.997 | 0.997 |
+| + tilt + crisis de-risk | 10.2% | 0.71 | -11.6% | -1.2% | 0.87 | 0.995 | 0.995 |
+| + drawdown throttle | 9.0% | 0.64 | -11.1% | -1.2% | 0.81 | 0.992 | 0.992 |
+| + tilt + crisis, banded 5% rebalance | 10.0% | 0.75 | -9.7% | -1.1% | 1.02 | 0.997 | 0.997 |
+| fully-fixed: RiskEnsemble everywhere, banded, all overlays | 5.2% | 0.38 | -7.6% | -0.7% | 0.68 | 0.985 | 0.985 |
 
-The **cross-sectional momentum tilt** ranks assets by trailing 90d return and tilts sleeves within a ±50% band (gross exposure preserved); the **crisis de-risk** cuts exposure 40% when average pairwise correlation exceeds 0.6 (diversification breakdown). Both use strictly trailing data.
+*Provenance: reproduced from `canonical-v1/run.json` — commit `bc3102b06b720e5bc20c15e7752b485e698caad9`, code sha `e52484df5b44…`, strategy defs `0ac46902cd73…`, portfolio rules `ef09419e658a…`, universe `a7bd616f574a…`. Verify with `python -m bot reproduce canonical-v1` (frozen cache required).*
 
-Two later refinements, measured honestly:
-
-| Variant (risk-managed) | CAGR | Sharpe | maxDD | Verdict |
-|---|---|---|---|---|
-| inv-vol + tilt + crisis | 21.0% | 1.12 | -16.9% | previous best |
-| **+ 5% rebalance band** (trade only when the weight moves >5%) | **22.0%** | **1.23** | -16.9% | **new best — pure cost reduction, DSR 1.000** |
-| + drawdown throttle (halve exposure past -10% DD) | 16.5% | 0.94 | **-13.2%** | trades ~5pp CAGR for drawdown; available, not default |
-| fully-fixed (RiskEnsemble on every asset, no selection anywhere) | 6.3% | 0.44 | -9.8% | the only *strictly* N=1 pipeline; much weaker — the per-asset selection genuinely adds value across 15 assets |
-
-The honest statistical note: rows 1-2 sit on selection-based per-asset streams (the 85-trial caveat applies and is printed); only the last row is trial-count-1 end to end. The banded variant is the headline configuration.
-
-Beats the S&P 500 on CAGR, excess Sharpe, and max drawdown simultaneously — with the frictions of real trading priced in.
+<!-- CANONICAL:END -->
 
 ## Backtesting-quality checklist
 

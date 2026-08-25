@@ -1,0 +1,461 @@
+{
+  "run_id": "canonical-v1",
+  "created_at": "2026-08-25T09:51:56.143126+00:00",
+  "results": {
+    "exit_code": 0,
+    "verdict": "risk-managed portfolio OOS CAGR BEATS S&P 500 (25.7% vs 14.9%); Sharpe beats (1.04 vs 0.74); max drawdown better (-23.2% vs -25.4%)",
+    "metrics": {
+      "rules": [
+        {
+          "name": "inv-vol (selected underlying)",
+          "cagr": 0.1075096065056278,
+          "sharpe": 0.6959933982035144,
+          "max_drawdown": -0.12237587437267916,
+          "es95": -0.012120767008865715,
+          "calmar": 0.8785196188116445,
+          "final": 1.8453766106428457,
+          "psr": 0.997,
+          "dsr": 0.997
+        },
+        {
+          "name": "+ tilt + crisis de-risk",
+          "cagr": 0.10167530847778261,
+          "sharpe": 0.7142614192818638,
+          "max_drawdown": -0.11635804517678106,
+          "es95": -0.012467518059192545,
+          "calmar": 0.8738141683568921,
+          "final": 1.7878113700806757,
+          "psr": 0.995,
+          "dsr": 0.995
+        },
+        {
+          "name": "+ drawdown throttle",
+          "cagr": 0.0901156719661027,
+          "sharpe": 0.6367144261086498,
+          "max_drawdown": -0.11058893339807996,
+          "es95": -0.01178731491513721,
+          "calmar": 0.8148706131536602,
+          "final": 1.6781682481333333,
+          "psr": 0.992,
+          "dsr": 0.992
+        },
+        {
+          "name": "+ tilt + crisis, banded 5% rebalance",
+          "cagr": 0.09962251256155397,
+          "sharpe": 0.7466580719837262,
+          "max_drawdown": -0.09746068609208769,
+          "es95": -0.010964672592969927,
+          "calmar": 1.022181523198222,
+          "final": 1.767916444244239,
+          "psr": 0.997,
+          "dsr": 0.997
+        },
+        {
+          "name": "fully-fixed: RiskEnsemble everywhere, banded, all overlays",
+          "cagr": 0.05159493704964513,
+          "sharpe": 0.3796165379660046,
+          "max_drawdown": -0.07611396332102804,
+          "es95": -0.007326916812472138,
+          "calmar": 0.6778642813806933,
+          "final": 1.352355647679248,
+          "psr": 0.985,
+          "dsr": 0.985
+        }
+      ],
+      "window": {
+        "start": "2020-08-16",
+        "end": "2026-08-14"
+      },
+      "equal_raw": {
+        "final": 5.393249586594017,
+        "cagr": 0.32426556584709787,
+        "vol": 0.2458187939599598,
+        "sharpe": 1.143257012946627,
+        "sortino": 1.7553585956678026,
+        "calmar": 1.2243178923117761,
+        "max_drawdown": -0.264854061092593,
+        "var95": -0.018279581780187713,
+        "es95": -0.028934385725878663
+      },
+      "inv_vol_rm": {
+        "final": 1.8453766106428457,
+        "cagr": 0.1075096065056278,
+        "vol": 0.11244543453841326,
+        "sharpe": 0.6959933982035144,
+        "sortino": 1.2504485674737473,
+        "calmar": 0.8785196188116445,
+        "max_drawdown": -0.12237587437267916,
+        "var95": -0.006866977384962003,
+        "es95": -0.012120767008865715
+      },
+      "equal_rm": {
+        "final": 3.953296241778548,
+        "cagr": 0.2574572424904402,
+        "vol": 0.21321217322417818,
+        "sharpe": 1.0403687525271326,
+        "sortino": 1.576411879973664,
+        "calmar": 1.1116685372520791,
+        "max_drawdown": -0.2315953306790942,
+        "var95": -0.016657330866235737,
+        "es95": -0.025166261731861782
+      },
+      "full_rm": {
+        "final": 1.7878113700806757,
+        "cagr": 0.10167530847778261,
+        "vol": 0.10062809510493109,
+        "sharpe": 0.7142614192818638,
+        "sortino": 1.1164242235449684,
+        "calmar": 0.8738141683568921,
+        "max_drawdown": -0.11635804517678106,
+        "var95": -0.006886068793536529,
+        "es95": -0.012467518059192545
+      },
+      "throttle_rm": {
+        "final": 1.6781682481333333,
+        "cagr": 0.0901156719661027,
+        "vol": 0.09552840780591233,
+        "sharpe": 0.6367144261086498,
+        "sortino": 0.9984450114804624,
+        "calmar": 0.8148706131536602,
+        "max_drawdown": -0.11058893339807996,
+        "var95": -0.006230235479482494,
+        "es95": -0.01178731491513721
+      },
+      "banded_rm": {
+        "final": 1.767916444244239,
+        "cagr": 0.09962251256155397,
+        "vol": 0.09272801693280805,
+        "sharpe": 0.7466580719837262,
+        "sortino": 1.2184913364285435,
+        "calmar": 1.022181523198222,
+        "max_drawdown": -0.09746068609208769,
+        "var95": -0.005998595102070935,
+        "es95": -0.010964672592969927
+      },
+      "fixed_rm": {
+        "final": 1.352355647679248,
+        "cagr": 0.05159493704964513,
+        "vol": 0.05792135669648661,
+        "sharpe": 0.3796165379660046,
+        "sortino": 0.5478016422613597,
+        "calmar": 0.6778642813806933,
+        "max_drawdown": -0.07611396332102804,
+        "var95": -0.0036851073943224974,
+        "es95": -0.007326916812472138
+      },
+      "spx": {
+        "cagr": 0.14923792965925076,
+        "vol": 0.16713975213400395,
+        "sharpe": 0.7395524972284694,
+        "sortino": 1.0576137847794866,
+        "calmar": 0.5869709510109418,
+        "max_drawdown": -0.25425096319028706,
+        "var95": -0.01634736474159748,
+        "es95": -0.024392602124408472,
+        "final": 2.3021238974686438
+      },
+      "btc_bh": {
+        "final": 5.319054368735442,
+        "cagr": 0.32121168168573777,
+        "vol": 0.5734623545741055,
+        "sharpe": 0.719870399814721,
+        "sortino": 1.0671096940913063,
+        "calmar": 0.41917631138522515,
+        "max_drawdown": -0.7662925431645936,
+        "var95": -0.045377249516900364,
+        "es95": -0.06866262588040084
+      }
+    },
+    "per_asset": [
+      {
+        "symbol": "SOLUSDT",
+        "cagr": 0.6196150715363435,
+        "sharpe": 1.0090094377023684,
+        "max_drawdown": -0.6814801635259274
+      },
+      {
+        "symbol": "BNBUSDT",
+        "cagr": 0.6211950693192234,
+        "sharpe": 0.9563396869697993,
+        "max_drawdown": -0.7091844366047051
+      },
+      {
+        "symbol": "XRPUSDT",
+        "cagr": 0.613053625841669,
+        "sharpe": 0.9541096548381891,
+        "max_drawdown": -0.7415780213865876
+      },
+      {
+        "symbol": "BTCUSDT",
+        "cagr": 0.1936443941520034,
+        "sharpe": 0.9488014923778044,
+        "max_drawdown": -0.27390577783090786
+      },
+      {
+        "symbol": "ETHUSDT",
+        "cagr": 0.24798264045872798,
+        "sharpe": 0.9389380918766999,
+        "max_drawdown": -0.2984172365782263
+      },
+      {
+        "symbol": "ZECUSDT",
+        "cagr": 0.2770971854984894,
+        "sharpe": 0.7807263516612569,
+        "max_drawdown": -0.4777210861895226
+      },
+      {
+        "symbol": "DOGEUSDT",
+        "cagr": 0.42235031312400517,
+        "sharpe": 0.759018181142076,
+        "max_drawdown": -0.4363124308676314
+      },
+      {
+        "symbol": "SPY",
+        "cagr": 0.11342138419309689,
+        "sharpe": 0.5609169157379277,
+        "max_drawdown": -0.24910152494045013
+      },
+      {
+        "symbol": "NEARUSDT",
+        "cagr": 0.18136896690922955,
+        "sharpe": 0.5165228201426308,
+        "max_drawdown": -0.6522076508466348
+      },
+      {
+        "symbol": "GLD",
+        "cagr": 0.08629189487829891,
+        "sharpe": 0.49711083072090057,
+        "max_drawdown": -0.19512873672482023
+      },
+      {
+        "symbol": "LINKUSDT",
+        "cagr": 0.005325875661200685,
+        "sharpe": 0.2895397681928787,
+        "max_drawdown": -0.7353598909749146
+      },
+      {
+        "symbol": "AAVEUSDT",
+        "cagr": -0.40037280878398906,
+        "sharpe": -0.25614422489594424,
+        "max_drawdown": -0.9456144079757346
+      },
+      {
+        "symbol": "TLT",
+        "cagr": -0.02964644019444662,
+        "sharpe": -0.7131039028286916,
+        "max_drawdown": -0.2088695490245014
+      }
+    ],
+    "picks_counter": {
+      "TrendVol(25,0.25)": 1,
+      "TrendVol(50,0.25)": 2,
+      "TrendVol(50,0.20)": 6,
+      "Ensemble(TrendVol(25,0.40),TrendVol(50,0.40),TrendVol(100,0.40))": 2,
+      "TrendVol(75,0.20)": 1,
+      "TrendVol(25,0.50)": 7,
+      "TrendVol(25,0.20)": 1,
+      "SmaCross(10,50)": 12,
+      "Ensemble(TrendVol(50,0.25),RsiDipBuy(3,60,150),MacdTrend(8,21,5))": 3,
+      "TSMom(126,0.45)": 2,
+      "MacdTrend(12,26,9)": 1,
+      "MacdTrend(16,32,9)": 15,
+      "BuyHold": 9,
+      "TSMom(126,0.30)": 1,
+      "TrendVol(25,0.40)": 3,
+      "TrendVol(50,0.40)": 2,
+      "TrendVol(200,0.20)": 2,
+      "SmaCross(50,150)": 2,
+      "SmaCross(20,100)": 4
+    },
+    "datasets": {
+      "BTCUSDT": {
+        "sha256": "5cb87b9adf36e3ae99f72c897848be9dda7c3669947c6e4a4b3f023e6dc3313b",
+        "provider": "binance",
+        "downloaded_at": 1787648482.046902,
+        "start": 1502928000000,
+        "end": 1787616000000
+      },
+      "ETHUSDT": {
+        "sha256": "9d6e5567da8e8e5ac5a3b1624e31e86074c87a4cc9831bdadf4187c9a764f198",
+        "provider": "binance",
+        "downloaded_at": 1787648496.8277588,
+        "start": 1502928000000,
+        "end": 1787616000000
+      },
+      "SOLUSDT": {
+        "sha256": "99f0bcfc1d63b3b5c6eb1f452c41cd695d34fc4a47d53e82575b8c6360ff9d06",
+        "provider": "binance",
+        "downloaded_at": 1787648509.296715,
+        "start": 1597104000000,
+        "end": 1787616000000
+      },
+      "XRPUSDT": {
+        "sha256": "ac57e9508f79d740a8161b26cae7324640c195c2ca0e85d4cc9732af64f34ca2",
+        "provider": "binance",
+        "downloaded_at": 1787648516.015482,
+        "start": 1525392000000,
+        "end": 1787616000000
+      },
+      "ZECUSDT": {
+        "sha256": "d4661ccd1d8fb98ac8115d6ff7dd6ea4fb1cbe9aba47a96d26883ec9513eab1b",
+        "provider": "binance",
+        "downloaded_at": 1787648527.3180609,
+        "start": 1553126400000,
+        "end": 1787616000000
+      },
+      "BNBUSDT": {
+        "sha256": "01774b7e2da20b977409872d4f7fc97d9b8ecf6b58cbd24efeeb01dc1268ef5f",
+        "provider": "binance",
+        "downloaded_at": 1787648539.2919636,
+        "start": 1509926400000,
+        "end": 1787616000000
+      },
+      "DOGEUSDT": {
+        "sha256": "416c412be2f0f3b8d9f2dc38fec3c78f244671ff66c8cd93a831c15b0c963c15",
+        "provider": "binance",
+        "downloaded_at": 1787648553.4141505,
+        "start": 1562284800000,
+        "end": 1787616000000
+      },
+      "NEARUSDT": {
+        "sha256": "7ef85fb9138e38da8c821f596830157ef8d51676b2ca59af209e7b7c67a91adc",
+        "provider": "binance",
+        "downloaded_at": 1787650360.3908558,
+        "start": 1602633600000,
+        "end": 1787616000000
+      },
+      "LINKUSDT": {
+        "sha256": "4ff9d4549d7b2ddb77116e69761090ddd6ee7c778f7a62aa4616b8a948ce630b",
+        "provider": "binance",
+        "downloaded_at": 1787650362.1657803,
+        "start": 1547596800000,
+        "end": 1787616000000
+      },
+      "AAVEUSDT": {
+        "sha256": "4ada0cc00f4f1f1bf84546cb5d21e12ae0d4ff04470ae12a6ab1711f9daaf8f4",
+        "provider": "binance",
+        "downloaded_at": 1787650364.1461058,
+        "start": 1602720000000,
+        "end": 1787616000000
+      },
+      "SPY": {
+        "sha256": "78a3fa7cbffc41712de6e5a072bea695e8006e23d0dd899daff522295dc508c2",
+        "provider": "yahoo",
+        "downloaded_at": 1787648563.5871484,
+        "start": 1472131800000,
+        "end": 1787578200000
+      },
+      "GLD": {
+        "sha256": "5ee1cd3a51b2aa5d848ff8cbfe78d58129a0188650d277aaef77667685b51b55",
+        "provider": "yahoo",
+        "downloaded_at": 1787648573.914145,
+        "start": 1472131800000,
+        "end": 1787578200000
+      },
+      "TLT": {
+        "sha256": "5d7d1f47fe82c21a42ae626bb07c99587cca1bb48e10086e0f5b966314d2c59a",
+        "provider": "yahoo",
+        "downloaded_at": 1787648585.2323244,
+        "start": 1472131800000,
+        "end": 1787578200000
+      },
+      "SP500": {
+        "sha256": "5f424434921c48c427c50f2de40856f3185fe7003056a30ef1e4e27dcb4b8131",
+        "provider": "fred",
+        "downloaded_at": 1787650727.8164585,
+        "start": "2020-08-17",
+        "end": "2026-08-14"
+      }
+    },
+    "oos_window": {
+      "start": "2020-08-16",
+      "end": "2026-08-14"
+    },
+    "n_folds": 6,
+    "n_assets_selected": 13,
+    "universe": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT",
+      "ZECUSDT",
+      "BNBUSDT",
+      "DOGEUSDT",
+      "SUIUSDT",
+      "PEPEUSDT",
+      "TUTUSDT",
+      "REUSDT",
+      "ENAUSDT",
+      "PUMPUSDT",
+      "TRUMPUSDT",
+      "NEARUSDT",
+      "RLUSDUSDT",
+      "LINKUSDT",
+      "SNDKBUSDT",
+      "AAVEUSDT",
+      "ADAUSDT"
+    ],
+    "pit_eligibility": {
+      "min": 9,
+      "median": 13,
+      "max": 13
+    },
+    "environment": {
+      "python": "3.12.10",
+      "git_commit": "bc3102b06b720e5bc20c15e7752b485e698caad9",
+      "code_fingerprint": {
+        "algo": "sha256-lf-v1",
+        "sha256": "e52484df5b44a41c3fd2cdf5518f923bc6ae1533c55bc1d1a90c03d22f01bf18"
+      },
+      "strategy_definitions_hash": {
+        "files": {
+          "bot/strategy.py": "e78538a822fca6700e9b6ec4f37e7c41262af882b933475f937b0105799c0a6e"
+        },
+        "combined": "0ac46902cd738bac85807b4c512b0d66df541c9c5a8a71329738b8d64c8e0914"
+      },
+      "portfolio_rules_hash": {
+        "files": {
+          "bot/portfolio_rules.py": "23d5f8e6eb493af8f6bcde3f9468be0f666dbef07650255893ef7961f79d93b3"
+        },
+        "combined": "ef09419e658a345e6327de2fbf01fb7709f341089bd52f2d9ba6b01f17336011"
+      },
+      "universe_hash": {
+        "files": {
+          "bot/universe.py": "2bf091e7fbda6e98ca13ecb9b813cdc8fe3b877b7bc13c16cfb6aa5935785c6b",
+          "bot/universe_pit.py": "081557a9decdb9833ff30846811cf7949342149c77274149ed706375efe25284"
+        },
+        "combined": "a7bd616f574a5fd74cdc049abefc7afc608e21bf3629c6b2f9cb6fa264fd591d"
+      }
+    },
+    "seeds": {
+      "seed": 42,
+      "note": "compare pipeline is deterministic; seed reserved"
+    },
+    "parameters": {
+      "command": "compare",
+      "assets": 20,
+      "train_days": 1095,
+      "test_days": 365,
+      "fee": 0.001,
+      "spread_bps": 5.0,
+      "slippage_bps": 5.0,
+      "latency_days": 0,
+      "execution": "next_open",
+      "risk_free": 0.03,
+      "portfolio_vol": 0.25,
+      "seed": 42,
+      "cache_only": true,
+      "run_id": "canonical-v1"
+    },
+    "timing_s": {
+      "fetch_cache": 0.646,
+      "walk_forward": 225.755,
+      "total": 260.243
+    }
+  },
+  "tolerance": {
+    "rel": 1e-12,
+    "abs": 1e-12
+  },
+  "record_sha256": "aa9ea31c352691f827e7fa8a649a9788107cdab397f49fd4829158418f7fa218"
+}

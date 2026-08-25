@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time as _time
 from datetime import UTC, datetime
@@ -281,6 +282,18 @@ def compute_compare_results(args, fetch=None, log=print, save_run=True):
 
     from .metrics import sharpe as _sharpe_ann
     from .stats_validation import dsr, psr
+    from .stats_validation import dsr as _dsr_pre
+    from .stats_validation import psr as _psr_pre
+
+    rule_stats = []
+    for name, m, r_ in rules:
+        _p1 = _psr_pre(r_)
+        _d1 = _dsr_pre(r_, [_sharpe_ann(r_, 365)], 1)
+        rule_stats.append({"name": name, "cagr": m["cagr"], "sharpe": m["sharpe"],
+                           "max_drawdown": m["max_drawdown"], "es95": m["es95"],
+                           "calmar": m["calmar"], "final": m["final"],
+                           "psr": round(_p1, 3), "dsr": round(_d1, 3)})
+    # attached to metrics after its construction below
 
     log("\nStatistical standing (trial count 1 for the fixed rows; selected underlying carries the 85-trial caveat):")
     for name, _, rets in rules:
@@ -298,7 +311,7 @@ def compute_compare_results(args, fetch=None, log=print, save_run=True):
     _print_regimes(btc, timeline, port_returns, sp_window, args)
 
     log(f"\nTiming: fetch/cache {t_fetch - t_start:.1f}s, walk-forward compute {t_compute - t_fetch:.1f}s, total {_time.perf_counter() - t_start:.1f}s")
-    log("Survivorship note: universe is today's top-volume list (point-in-time constituents are not freely available); missing days are held in cash, not redistributed.")
+    log("Survivorship control: per-day denominators come from POINT-IN-TIME eligibility (listing age + trailing dollar volume, bot/universe_pit.py), and daily snapshots accumulate in universe_log.jsonl. Residual: symbols purged from Binance before first fetch remain invisible.")
 
     beats_cagr = port_rm["cagr"] > spx["cagr"]
     beats_sharpe = port_rm["sharpe"] > spx["sharpe"]
@@ -337,6 +350,8 @@ def compute_compare_results(args, fetch=None, log=print, save_run=True):
 
     params = {k: v for k, v in vars(args).items()}
     metrics = {
+        "rules": rule_stats,
+        "window": {"start": _d(oos_start_ms).isoformat(), "end": _d(oos_end_ms - DAY_MS).isoformat()},
         "equal_raw": port, "inv_vol_rm": iv_rm, "equal_rm": port_rm,
         "full_rm": full_rm, "throttle_rm": throttle_rm,
         "banded_rm": banded_rm, "fixed_rm": fixed_rm,
@@ -374,7 +389,7 @@ def compute_compare_results(args, fetch=None, log=print, save_run=True):
     if save_run:
         from .runs import save_run_record
 
-        run_id = save_run_record(results)
+        run_id = save_run_record(results, run_id=getattr(args, "run_id", None))
         log(f"run saved: runs/{run_id}/run.json")
         results["run_id"] = run_id
     return results
@@ -937,18 +952,39 @@ def manifest_date() -> str:
 
 
 def _research_context() -> dict | None:
-    """Pin the research ledger at freeze time: how much was searched, sealed."""
+    """Pin the research ledger AND the canonical benchmark at freeze time."""
+    import hashlib as _hl
+    import pathlib as _pl
+
     from .research_ledger import ledger_fingerprint, recommended_trial_count
+    from .runs import RUNS_DIR
 
     fp = ledger_fingerprint()
-    if fp is None:
-        return None
-    n_entries, sha = fp
-    return {
-        "ledger_entries": n_entries,
-        "ledger_sha256": sha,
-        "recommended_trial_count": recommended_trial_count(),
-    }
+    ctx: dict = {}
+    if fp is not None:
+        n_entries, sha = fp
+        ctx.update(
+            {
+                "ledger_entries": n_entries,
+                "ledger_sha256": sha,
+                "recommended_trial_count": recommended_trial_count(),
+            }
+        )
+    canonical = _pl.Path(RUNS_DIR) / "canonical-v1" / "run.json"
+    if canonical.exists():
+        raw = canonical.read_bytes()
+        try:
+            rec = json.loads(raw)
+            run_id = rec.get("run_id")
+            record_sha = rec.get("record_sha256")
+        except json.JSONDecodeError:
+            run_id, record_sha = None, None
+        ctx["canonical_run"] = {
+            "run_id": run_id,
+            "record_sha256": record_sha,
+            "file_sha256": _hl.sha256(raw).hexdigest(),
+        }
+    return ctx or None
 
 
 def run_reproduce(args) -> int:
@@ -1164,6 +1200,7 @@ def main():
     cmp.add_argument("--portfolio-vol", type=float, default=0.25, help="risk-managed overlay target vol")
     cmp.add_argument("--seed", type=int, default=42, help="recorded for reproducibility (pipeline is deterministic)")
     cmp.add_argument("--cache-only", action="store_true", help="never refresh datasets from the network")
+    cmp.add_argument("--run-id", default=None, help='name the saved run record (e.g. "canonical-v1")')
 
     sen = sub.add_parser("sensitivity", help="Backtesting-quality sensitivity sweeps")
     sen.add_argument("--symbol", default="BTCUSDT")

@@ -28,7 +28,9 @@ def _fake_candles(n=1600, start=100.0):
     return out
 
 
-def test_build_summary_shape(monkeypatch, api):
+def test_build_summary_shape(monkeypatch, api, tmp_path):
+    # isolate from the committed canonical record so legacy shape holds
+    monkeypatch.setattr(api, "CANONICAL_RUN", str(tmp_path / "missing" / "run.json"))
     monkeypatch.setattr(api, "fetch_daily_history", lambda symbol: _fake_candles())
     s = api.build_summary("BTCUSDT")
     assert s["symbol"] == "BTCUSDT"
@@ -40,6 +42,24 @@ def test_build_summary_shape(monkeypatch, api):
     assert "paper" in s["disclaimer"].lower()
     ts = [p["t"] for p in s["curve"]]
     assert ts == sorted(ts)
+
+
+def test_build_summary_prefers_canonical_record(api):
+    """When runs/canonical-v1 exists, headline NUMBERS come from the sealed
+    record — same source as the README table — while curve/live stay live."""
+    import os
+
+    if not os.path.exists(api.CANONICAL_RUN):
+        pytest.skip("canonical run not generated yet")
+    s = api.build_summary("BTCUSDT")
+    record = json.loads(open(api.CANONICAL_RUN, encoding="utf-8").read())
+    iv = record["results"]["metrics"]["inv_vol_rm"]
+    assert s["oos"]["sharpe"] == pytest.approx(iv["sharpe"], abs=1e-6)
+    assert s["oos"]["cagr"] == pytest.approx(iv["cagr"], abs=1e-9)
+    assert "canonical-v1" in s["canonical_run_id"]
+    assert len(s.get("rules_table", [])) >= 1
+    # curve remains the live-computed research curve (may differ from record)
+    assert len(s["curve"]) >= 2
 
 
 def test_asgi_app_serves_json(monkeypatch, api):

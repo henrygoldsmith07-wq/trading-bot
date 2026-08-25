@@ -38,13 +38,14 @@ def run_record_hash(record: dict) -> str:
     return hashlib.sha256(_canonical(body).encode()).hexdigest()
 
 
-def save_run_record(results: dict, runs_dir: str | Path = RUNS_DIR) -> str:
-    """Persist results as runs/<id>/run.json. The id embeds a UTC timestamp
-    so consecutive runs never collide."""
+def save_run_record(results: dict, runs_dir: str | Path = RUNS_DIR, run_id: str | None = None) -> str:
+    """Persist results as runs/<id>/run.json. Auto ids embed a UTC timestamp;
+    an explicit `run_id` (e.g. "canonical-v1") names an authoritative record."""
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     assets = len(results.get("universe", []))
     mode = "compare"
-    run_id = f"{ts}-{mode}-{assets}a"
+    if run_id is None:
+        run_id = f"{ts}-{mode}-{assets}a"
     record = {
         "run_id": run_id,
         "created_at": _now(),

@@ -1,0 +1,79 @@
+﻿python : Traceback (most recent call last):
+At line:1 char:1
++ python -m bot compare --assets 20 --run-id canonical-v1 --cache-only  ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "C:\Users\henry\trading-bot\bot\__main__.py", line 1339, in <module>
+    main()
+  File "C:\Users\henry\trading-bot\bot\__main__.py", line 1311, in main
+    raise SystemExit(run_compare(args))
+                     ^^^^^^^^^^^^^^^^^
+  File "C:\Users\henry\trading-bot\bot\__main__.py", line 412, in run_compare
+    res = compute_compare_results(args)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\henry\trading-bot\bot\__main__.py", line 295, in compute_compare_results
+    metrics["rules"] = rule_stats
+    ^^^^^^^
+UnboundLocalError: cannot access local variable 'metrics' where it is not associated with a value
+Universe: 20 crypto pairs by quote volume + 3 cross-class ETFs
+  (paper-only validation; no live orders are ever placed)
+  BTCUSDT    [crypto          ] 3296 candles since 2017-08-17
+  ETHUSDT    [crypto          ] 3296 candles since 2017-08-17
+  SOLUSDT    [crypto          ] 2206 candles since 2020-08-11
+  XRPUSDT    [crypto          ] 3036 candles since 2018-05-04
+  ZECUSDT    [crypto          ] 2715 candles since 2019-03-21
+  BNBUSDT    [crypto          ] 3215 candles since 2017-11-06
+  DOGEUSDT   [crypto          ] 2609 candles since 2019-07-05
+  NEARUSDT   [crypto          ] 2142 candles since 2020-10-14
+  LINKUSDT   [crypto          ] 2779 candles since 2019-01-16
+  AAVEUSDT   [crypto          ] 2141 candles since 2020-10-15
+  SPY        [US equity ETF   ] 2512 candles since 2016-08-25
+  GLD        [Gold ETF        ] 2512 candles since 2016-08-25
+  TLT        [20y Treasury ETF] 2512 candles since 2016-08-25
+  SUIUSDT    skipped: only 1211 candles (<1640)
+  PEPEUSDT   skipped: only 1209 candles (<1640)
+  TUTUSDT    skipped: only 517 candles (<1640)
+  REUSDT     skipped: only 69 candles (<1640)
+  ENAUSDT    skipped: only 876 candles (<1640)
+  PYTHUSDT   skipped: only 936 candles (<1640)
+  PUMPUSDT   skipped: only 349 candles (<1640)
+  TRUMPUSDT  skipped: only 584 candles (<1640)
+  RLUSDUSDT  skipped: only 216 candles (<1640)
+  SNDKBUSDT  skipped: only 76 candles (<1640)
+
+Point-in-time eligibility (listed+aged+liquid at each date): min 9, median 13, max 13 of 13 fetched
+  denominators scale by eligible-per-day ÔÇö today's winners cannot join 2020 early
+
+Fetching S&P 500 daily history (FRED)...
+
+Out-of-sample window: 2020-08-16 -> 2026-08-14 (6 yearly folds, 13 assets)
+Most-picked strategies across all folds and assets:
+  MacdTrend(16,32,9) x15
+  SmaCross(10,50) x12
+  BuyHold x9
+  TrendVol(25,0.50) x7
+  TrendVol(50,0.20) x6
+
+                     Bot inv-vol    Bot equal  Bot raw eq     S&P 500    BTC b&h
+--------------------------------------------------------------------------------
+CAGR                       10.8%        25.7%       32.4%       14.9%      32.1%
+Volatility                 11.2%        21.3%       24.6%       16.7%      57.3%
+Sharpe (excess)             0.70         1.04        1.14        0.74       0.72
+Max drawdown              -12.2%       -23.2%      -26.5%      -25.4%     -76.6%
+Sortino                     1.25         1.58        1.76        1.06       1.07
+Calmar                      0.88         1.11        1.22        0.59       0.42
+ES 95% (1d)                -1.2%        -2.5%       -2.9%       -2.4%      -6.9%
+Growth of $1                1.85         3.95        5.39        2.30       5.32
+
+Fixed portfolio rules (a-priori overlays, all risk-managed):
+  rule                                                          CAGR  Sharpe   maxDD   ES95  Calmar
+  -------------------------------------------------------------------------------------------------
+  inv-vol (selected underlying)                                10.8%    0.70  -12.2%  -1.2%    0.88
+  + tilt + crisis de-risk                                      10.2%    0.71  -11.6%  -1.2%    0.87
+  + drawdown throttle                                           9.0%    0.64  -11.1%  -1.2%    0.81
+  + tilt + crisis, banded 5% rebalance                         10.0%    0.75   -9.7%  -1.1%    1.02
+  fully-fixed: RiskEnsemble everywhere, banded, all overlays    5.2%    0.38   -7.6%  -0.7%    0.68
