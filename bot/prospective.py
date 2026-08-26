@@ -251,6 +251,11 @@ def _session_pending(session: str, now: datetime, candles: list[dict]) -> bool:
     return False
 
 
+def _run_id_for(now: datetime) -> str:
+    """Run identity for cost observations: the step's UTC date + hour bucket."""
+    return f"fwd-{now.astimezone(UTC).strftime('%Y%m%dT%H')}"
+
+
 def run_step(
     manifest: dict,
     fetcher,
@@ -434,7 +439,7 @@ def run_step(
         # submission → fill → resulting position. Holds are not orders.
         if abs(w_eff - prev_w) > 1e-9:
             signal_ts = datetime.fromtimestamp(
-                completed[-1]["open_time"] / 1000 + 86_399_000, tz=UTC
+                completed[-1]["open_time"] / 1000 + 86_399.0, tz=UTC
             ).isoformat()
             orders.append({
                 "symbol": sym,
@@ -464,7 +469,7 @@ def run_step(
             predicted_cost_bps = cost_rate * 10_000.0
             side = "BUY" if w_eff > prev_w else ("SELL" if w_eff < prev_w else "FLAT")
             signal_ts = datetime.fromtimestamp(
-                completed[-1]["open_time"] / 1000 + 86_399_000, tz=UTC
+                completed[-1]["open_time"] / 1000 + 86_399.0, tz=UTC
             ).isoformat()
             obs = build_observation_fn(
                 symbol=sym,
@@ -483,6 +488,16 @@ def run_step(
                 signal_ts=signal_ts,
                 ts=now.isoformat(),
             )
+            # forward-evidence purity: full provenance stamped at write time
+            from .evidence import EVIDENCE_FORWARD_PAPER, new_observation_meta
+
+            obs.update(new_observation_meta(
+                freeze_manifest=manifest,
+                run_id=_run_id_for(now),
+                simulated_execution_at=now.isoformat(),
+            ))
+            obs["evidenceClass"] = EVIDENCE_FORWARD_PAPER
+            obs["simulatedExecutionAt"] = now.isoformat()
             cost_observations.append(obs)
             append_observation_fn(obs, path=cost_observation_path)
 
@@ -530,6 +545,22 @@ def run_step(
     prev_overlay = prev_entries[-1].get("overlay_weight", 1.0) if prev_entries else 1.0
     overlay_fee = ov["fee_on_turnover"]
     port_ret = overlay_w * rule_ret - overlay_fee * abs(overlay_w - prev_overlay)
+    # dayStatus: every scheduled day is recorded, interesting or not
+    n_pending = sum(1 for d in asset_details.values() if d.get("note") == "session_pending")
+    n_outage_assets = sum(
+        1 for d in asset_details.values()
+        if isinstance(d.get("note"), str) and d["note"] not in ("session_pending",)
+    )
+    if len(outages) == n_assets and n_assets > 0:
+        day_status = "data_outage"
+    elif not orders and n_pending == len(asset_details) and n_pending > 0:
+        day_status = "session_pending"
+    elif not orders and n_outage_assets > 0:
+        day_status = "partial_outage"
+    elif not orders:
+        day_status = "no_signal"
+    else:
+        day_status = "traded"
     entry = {
         "ts": now.isoformat(),
         "date": today,
@@ -539,9 +570,10 @@ def run_step(
         "overlay_weight": overlay_w,
         "exposure": exposure,
         "throttled": throttled_new,
+        "dayStatus": day_status,
+        "orders": orders,
         "outages": outages,
         "missed_fills": missed_fills,
-        "orders": orders,
     }
     if alerts:
         entry["alerts"] = alerts

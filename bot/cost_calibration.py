@@ -134,7 +134,15 @@ def calibrate(
     observations: list[dict],
     v1_frictions: dict,
     min_observations: int = 30,
+    freeze_manifest: dict | None = None,
+    now: datetime | None = None,
 ) -> dict:
+    from bot.evidence import verified_forward_rows
+
+    if freeze_manifest is not None:
+        observations, exclusions = verified_forward_rows(observations, freeze_manifest, now=now)
+    else:
+        exclusions = {}
     """Predicted-vs-observed friction accounting and a V2 proposal.
 
     v1_frictions: {"fee","spread_bps","slippage_bps"} — the frozen baseline.
@@ -182,6 +190,7 @@ def calibrate(
     }
 
     return {
+        "evidence_exclusions": exclusions,
         "n_turnover_events": n,
         "min_observations": min_observations,
         "sufficient": not insufficient,

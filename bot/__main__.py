@@ -1050,6 +1050,7 @@ def run_verdict(args) -> int:
     import json as _json
     import pathlib as _pl
 
+    from .prospective import load_freeze
     from .research_ledger import load_entries, recommended_trial_count
     from .runs import RUNS_DIR, load_run_record
     from .verdict import build_verdict, format_verdict
@@ -1074,9 +1075,16 @@ def run_verdict(args) -> int:
     from .cost_calibration import calibrate, load_observations
 
     obs = load_observations("cost_observations.jsonl")
-    cost_report = calibrate(obs, v1_frictions=record["results"]["parameters"].get(
+    v1_frictions = record["results"]["parameters"].get(
         "frictions", {"fee": 0.001, "spread_bps": 5.0, "slippage_bps": 5.0}
-    )) if obs else None
+    )
+    freeze_manifest = None
+    try:
+        freeze_manifest = load_freeze("freeze.json", verify_code=False)
+    except (OSError, ValueError):
+        freeze_manifest = None
+    cost_report = calibrate(obs, v1_frictions=v1_frictions,
+                            freeze_manifest=freeze_manifest) if obs else None
 
     from api.summary import build_forward_summary  # noqa: E402
 
@@ -1096,6 +1104,37 @@ def run_verdict(args) -> int:
         print(_json.dumps(v, indent=2))
     else:
         print(format_verdict(v))
+    return 0
+
+
+def run_quarantine_costs(args) -> int:
+    """Classify the legacy mixed cost tape; preserve every byte."""
+    import pathlib as _pl
+
+    from .evidence import quarantine_archive
+    from .prospective import load_freeze
+
+    if not _pl.Path(args.src).exists():
+        print(f"No tape at {args.src} — nothing to quarantine")
+        return 2
+    manifest = load_freeze(args.freeze_file, verify_code=False)
+    # verify_code=False is correct here: quarantine is a BOOKKEEPING migration
+    # that executes no strategy code. The forward study stays pinned to its
+    # frozen commit — the CI runner re-verifies before every step.
+    report = quarantine_archive(
+        args.src,
+        archive_path=args.archive,
+        quarantine_path=args.quarantine,
+        keep_path=args.keep,
+        freeze_manifest=manifest,
+    )
+    print(f"quarantined {report['rows_total']} rows from {args.src}")
+    print(f"  kept forward-paper : {report['kept_forward_paper']}")
+    for reason, count in sorted(report["excluded"].items()):
+        print(f"  excluded {reason:16}: {count}")
+    print(f"archive    : {report['archive_path']}  (original bytes)")
+    print(f"audit copy : {report['quarantine_path']}")
+    print(f"pure tape  : {report['keep_path']}  <- production reads this")
     return 0
 
 
@@ -1224,7 +1263,7 @@ def run_forward(args) -> int:
 
     obs = _loadobs("cost_observations.jsonl")
     if obs:
-        rep = _cal(obs, v1_frictions=manifest["config"]["frictions"], min_observations=30)
+        rep = _cal(obs, v1_frictions=manifest["config"]["frictions"], freeze_manifest=manifest)
         print("\n" + _fmt(rep))
 
     months = monthly_returns(entries)
@@ -1390,6 +1429,13 @@ def main():
     rep.add_argument("run_id", help="run id, or 'list' to enumerate saved runs")
     rep.add_argument("--runs-dir", default="runs")
 
+    q = sub.add_parser("quarantine-costs", help="Classify legacy cost observations; preserve every byte")
+    q.add_argument("--src", default="cost_observations.jsonl")
+    q.add_argument("--archive", default="archive/cost_observations.pre-purity.jsonl")
+    q.add_argument("--quarantine", default="cost_observations_quarantine.jsonl")
+    q.add_argument("--keep", default=None, help="pure forward-paper tape (default: overwrite --src)")
+    q.add_argument("--freeze-file", default="freeze.json")
+
     fwd = sub.add_parser("forward", help="Prospective paper trading: --step one day, --report checkpoints")
     fwd.add_argument("--step", action="store_true", help="execute one forward day from the freeze")
     fwd.add_argument("--report", action="store_true", help="print the checkpoint report")
@@ -1448,6 +1494,10 @@ def main():
         raise SystemExit(run_calibrate_costs(args))
     elif args.command == "reproduce":
         raise SystemExit(run_reproduce(args))
+    elif args.command == "quarantine-costs":
+        if args.keep is None:
+            args.keep = args.src  # production tape replaced by verified-only rows
+        raise SystemExit(run_quarantine_costs(args))
     elif args.command == "forward":
         if not (args.step or args.report):
             print("use --step and/or --report")
