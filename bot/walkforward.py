@@ -112,6 +112,15 @@ def walk_forward_at(
         if selection_fn is not None:
             best = selection_fn(candidates, selection_slice, engine_kwargs)
             best_sharpe = float("nan")
+            # A custom selector must stay auditable. If it publishes the
+            # trial Sharpes it evaluated, deflation (DSR / Reality Check)
+            # remains computable; without this, a run using a robust
+            # selector would report an empty trial record and its Sharpe
+            # could not be deflated at all — which would make the "more
+            # robust" rule also the less checkable one.
+            published = getattr(selection_fn, "last_trial_sharpes", None)
+            if published:
+                trial_sharpes.extend(published)
         else:
             best = None
             best_sharpe = float("-inf")

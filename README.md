@@ -115,6 +115,84 @@ Runs the full inferential battery on the walk-forward record (`bot/stats_validat
 
 **The fix the statistics point at (`validate` section 8):** running the a-priori `RiskEnsemble` — a fixed blend of trend, momentum, and dip-buying chosen *before* looking at anything, so the trial count is 1 — yields a lower raw Sharpe (0.51) but **DSR = 0.961**: it clears the statistical bar precisely because nothing was searched. The selected stream (Sharpe 1.03, DSR 0.138 across 85 trials) cannot make the same claim. The honest conclusion: the defensible edge is the fixed rule plus diversification, not the per-fold search — and the repo now ships both so you can watch which one the forward test (below) vindicates.
 
+## Robust selection (`bot/selection.py`) — and what it is actually worth
+
+The deflation finding above is really a finding about *how the winner is
+chosen*. `argmax` over in-sample Sharpe is the maximally overfit rule: it
+picks whichever candidate got lucky in the training window, and it spends
+the entire multiple-testing budget doing so. `bot/selection.py` implements
+three alternatives and measures them.
+
+**The rules**, each a drop-in replacement for `selection_fn` in
+`walk_forward_at`:
+
+- **one-SE** (Breiman, from CART pruning) — instead of taking the single
+  best candidate, keep every candidate within one standard error of the
+  winner's Sharpe (SE via Lo 2002, with skew/kurtosis correction), then
+  choose among *those* by robustness rather than by raw performance.
+  Candidates that are statistically indistinguishable are not meaningfully
+  ranked, so preferring one on a 0.01 Sharpe edge is fitting noise.
+- **minimax tie-break** — among the survivors, take the one whose *worst*
+  contiguous sub-window Sharpe is best. This targets the repo's own
+  documented failure directly: trimming 180 days cut single-asset CAGR
+  from 26.5% to 7.3%, which is what a strategy that was brilliant in one
+  regime and mediocre elsewhere looks like.
+- **credibility shrinkage** — blend the pick with the a-priori prior at
+  `alpha = gap / (gap + SE)`, where `gap` is how far the pick beat the
+  prior and `SE` is the noise it had to beat it by. When the search found
+  nothing beyond noise, `alpha -> 0` and the bot trades the prior.
+
+**Two new strategy families** (`build_candidates(extended=True)`, 85 → 119
+candidates), chosen to be *structurally* new rather than more lookbacks on
+the same grid, because clustering showed the 85 collapse to ~22 families:
+
+- `ChannelBreakout` — Donchian range position, `(close - lo) / (hi - lo)`.
+  The only scale-invariant family: unchanged if every price is multiplied
+  by a constant, where the SMA and momentum families carry the asset's
+  price scale into the decision.
+- `MeanReversionZ` — z-score dislocation, `(close - SMA) / stdev`, gated
+  behind a long-term trend filter. The only family that structurally
+  *buys weakness*: TrendVol/TSMom/DualMomentum all buy strength and
+  RsiDipBuy only buys shallow pullbacks inside an uptrend.
+
+The default pool is deliberately left at 85 so `candidate_pool_version` and
+every existing backtest stay valid; the extended pool is opt-in.
+
+**Measured** (`scripts/measure_selection.py`, 9 assets, walk-forward,
+6 folds each, next-open execution, 10bp fee + 5bp spread + 5bp slippage,
+3% cash yield, extended pool):
+
+| rule | mean OOS Sharpe | median | mean CAGR | mean maxDD | mean DSR |
+|---|---|---|---|---|---|
+| `argmax` (current behaviour) | 0.681 | 0.622 | +27.6% | -38.0% | 0.202 |
+| `one_se_worst` | 0.691 | 0.711 | +28.0% | -35.6% | 0.200 |
+| `one_se_turnover` | 0.350 | 0.332 | +15.1% | -41.5% | 0.083 |
+| `robust_shrunk` | 0.605 | 0.690 | +17.7% | **-24.6%** | 0.193 |
+
+**The honest reading**, which is not uniformly flattering:
+
+- `one_se_worst` beats `argmax` by **0.010 mean Sharpe** across 9 assets.
+  That is a wash, far inside the noise of a 9-asset sample. It is not
+  evidence that the rule adds return.
+- `one_se_turnover` is **clearly worse** (-0.33 Sharpe, deeper drawdowns).
+  The parsimony tie-break Breiman's original rule would pick does not
+  transfer to this problem: here the cheap-to-trade candidates are cheap
+  because they are barely invested.
+- `robust_shrunk` **gives up** Sharpe (-0.076) and buys a large risk
+  reduction: mean max drawdown **-38.0% → -24.6%**. That is the one
+  result large enough to take seriously, and it is a risk result, not a
+  return result.
+- **DSR barely moves for any of them** (0.202 → 0.193-0.200). This is
+  expected and is stated in the module docstring: shrinkage reduces the
+  *variance* of the pick, not the *trial count*, and DSR is a function of
+  the trial count. Any claim that these rules fix the deflation problem
+  would be false.
+
+The measurement is per-asset and unpaired. A portfolio-level comparison
+with bootstrap confidence intervals is the obvious next step and is not
+yet done, so none of the Sharpe differences above should be treated as
+statistically established.
+
 ## Research-methodology battery (`python -m bot research`)
 
 A second, deeper battery (`bot/research.py`, `bot/clustering.py`, `bot/ablation.py`) that interrogates the *research process itself*:
@@ -299,7 +377,10 @@ python -m bot trade --symbol BTCUSDT,ETHUSDT --once     # one cycle + daily audi
 
 ```
 bot/
-  strategy.py    # 85-candidate strategy pool + prefix-sum indicator cache
+  strategy.py    # 85-candidate strategy pool (+ 34 more via extended=True)
+                 # and the prefix-sum / monotonic-deque indicator cache
+  selection.py   # robustness-aware selection: one-SE rule, minimax
+                 # sub-window tie-break, credibility shrinkage to a prior
   engine.py      # daily-bar engine: next-open execution, spread/slippage/
                  # latency, fee-on-turnover, cash accrual, rebalance banding,
                  # optional vol-dependent costs & square-root impact

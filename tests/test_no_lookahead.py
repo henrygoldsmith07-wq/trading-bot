@@ -21,7 +21,18 @@ import pytest
 from bot.algorithm import build_algorithm
 from bot.engine import run_strategy
 from bot.prospective import create_freeze, load_log, run_step
-from bot.strategy import BuyHold, MacdTrend, RsiDipBuy, SmaCrossover, TrendVol, build_candidates
+from bot.strategy import (
+    Blend,
+    BuyHold,
+    ChannelBreakout,
+    MacdTrend,
+    MeanReversionZ,
+    RsiDipBuy,
+    SmaCrossover,
+    TrendVol,
+    build_candidates,
+    risk_ensemble,
+)
 
 
 def _candles(n=260):
@@ -60,8 +71,18 @@ def _corrupt_after(candles, last_valid_index):
     return out
 
 
+# The two families added for the extended pool are listed explicitly rather
+# than relied on appearing in `build_candidates()`: they are deliberately NOT
+# in the default pool (so the shipped candidate_pool_version is unchanged),
+# which means a canary that only swept the default pool would silently stop
+# covering them the moment they were selected via `extended=True`.
 CANDIDATES = [BuyHold(), TrendVol(50, 20, 0.3), SmaCrossover(10, 40),
-              RsiDipBuy(2, 60, 150), MacdTrend()]
+              RsiDipBuy(2, 60, 150), MacdTrend(),
+              ChannelBreakout(), MeanReversionZ(),
+              # A Blend is what a shrunk selection actually returns, so its
+              # own weight_at path needs the same guarantee.
+              Blend([TrendVol(50, 20, 0.3), BuyHold()], [0.4, 0.6]),
+              risk_ensemble()]
 
 
 class TestEngineNoLookahead:
@@ -102,11 +123,17 @@ class TestStrategyPool:
             poisoned = _corrupt_after(data, i)
             assert candidate.weight_at(poisoned, i) == pytest.approx(w_clean), repr(candidate)
 
-    def test_full_pool_prefix_equivalence(self):
-        """Every candidate in the shipped pool: weight_at(i) on data[:i+1]
-        equals weight_at(i) on the full series."""
+    @pytest.mark.parametrize("extended", [False, True], ids=["default_pool", "extended_pool"])
+    def test_full_pool_prefix_equivalence(self, extended):
+        """Every selectable candidate: weight_at(i) on data[:i+1] equals
+        weight_at(i) on the full series.
+
+        Swept for BOTH pools. The extended pool is the one a robustness run
+        actually searches, and it is not a subset of the default pool, so
+        covering only the default would leave the new families unchecked.
+        """
         data = _candles(280)
-        for cand in build_candidates():
+        for cand in build_candidates(extended=extended):
             for i in (100, 200, 279):
                 assert cand.weight_at(data[: i + 1], i) == pytest.approx(
                     cand.weight_at(data, i)
