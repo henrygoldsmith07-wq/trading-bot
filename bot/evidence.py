@@ -279,8 +279,16 @@ def verified_forward_rows(rows: list[dict], freeze_manifest: dict, now: datetime
         excluded[reason] = excluded.get(reason, 0) + 1
 
     for row in rows:
-        if row.get("evidenceClass") not in (None, EVIDENCE_FORWARD_PAPER):
-            bump(EXCL_FIXTURE_TEST if row["evidenceClass"] == EVIDENCE_FIXTURE else "other_class")
+        # A row must AFFIRMATIVELY be classified forward-paper. An absent
+        # stamp is not evidence of provenance, it is absence of it: every
+        # genuine forward-paper row is stamped at write time
+        # (prospective.run_step) and every legacy row is stamped by
+        # classify_legacy_row, so `None` here means "never classified".
+        # Admitting unclassified rows into a "verified-only" calibration
+        # made the gate decorative — fixture and unstamped rows alike
+        # sailed through simply for lacking the field.
+        if row.get("evidenceClass") != EVIDENCE_FORWARD_PAPER:
+            bump(EXCL_FIXTURE_TEST if row.get("evidenceClass") == EVIDENCE_FIXTURE else "other_class")
             continue
         if row.get("freezeId") not in (None, freeze_id):
             bump(EXCL_WRONG_FREEZE)

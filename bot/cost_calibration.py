@@ -137,18 +137,24 @@ def calibrate(
     freeze_manifest: dict | None = None,
     now: datetime | None = None,
 ) -> dict:
+    """Predicted-vs-observed friction accounting and a V2 proposal.
+
+    v1_frictions: {"fee","spread_bps","slippage_bps"} — the frozen baseline.
+    Only turnover events with a usable proxy are measured; the count is
+    reported so sample size can never be faked.
+
+    With a `freeze_manifest` supplied, rows are first filtered down to
+    VERIFIED forward-paper observations. Without one, every row is measured
+    and `evidence_exclusions` is empty — the caller is relying on the tape
+    having been filtered upstream.
+    """
     from bot.evidence import verified_forward_rows
 
     if freeze_manifest is not None:
         observations, exclusions = verified_forward_rows(observations, freeze_manifest, now=now)
     else:
         exclusions = {}
-    """Predicted-vs-observed friction accounting and a V2 proposal.
 
-    v1_frictions: {"fee","spread_bps","slippage_bps"} — the frozen baseline.
-    Only turnover events with a usable proxy are measured; the count is
-    reported so sample size can never be faked.
-    """
     fee_bps = float(v1_frictions.get("fee", 0.0)) * 10_000.0
     spread_bps = float(v1_frictions.get("spread_bps", 0.0))
     slip_bps = float(v1_frictions.get("slippage_bps", 0.0))
