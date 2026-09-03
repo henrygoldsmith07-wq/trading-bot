@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Paper Trading Bot — Frozen Forward Test</title>
+<title>Paper Trading Bot — is the frozen rule holding up?</title>
 <style>
   :root {
     --bg: #0d1117; --panel: #161b22; --border: #30363d;
@@ -11,25 +11,65 @@
     --accent: #d29922; --research-dim: #6e7681;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  [hidden] { display: none !important; }
   body { background: var(--bg); color: var(--text); font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; padding: 24px; }
   .wrap { max-width: 1080px; margin: 0 auto; }
   h1 { font-size: 21px; font-weight: 700; letter-spacing: .02em; }
   h1 .tag { font-size: 11px; background: rgba(63,185,80,.15); color: var(--green); border: 1px solid var(--green); border-radius: 10px; padding: 2px 10px; vertical-align: middle; margin-left: 10px; }
-  .sub { color: var(--muted); margin: 6px 0 20px; }
+  .sub { color: var(--muted); margin: 6px 0 20px; max-width: 78ch; }
+  a { color: var(--blue); text-decoration: none; border-bottom: 1px solid rgba(88,166,255,.35); }
+  a:hover { border-bottom-color: var(--blue); }
 
-  /* ---- forward hero ---- */
+  /* ---- the three evidence labels, and only these three ---- */
+  .pill { display: inline-block; font-size: 10px; font-weight: 800; letter-spacing: .09em;
+          text-transform: uppercase; border-radius: 4px; padding: 2px 7px; vertical-align: middle; white-space: nowrap; }
+  .pill-forward  { background: rgba(210,153,34,.16); color: var(--accent); border: 1px solid var(--accent); }
+  .pill-oos      { background: rgba(88,166,255,.14); color: var(--blue);   border: 1px solid var(--blue); }
+  .pill-research { background: rgba(110,118,129,.20); color: #a3abb4;       border: 1px solid var(--research-dim); }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin: 0 0 18px; }
+  .legend span { margin-right: 6px; }
+
+  /* ---- big red education banner: always on, never an error message ---- */
+  .edu { background: rgba(248,81,73,.10); border: 2px solid var(--red); border-radius: 10px; padding: 14px 18px; margin-bottom: 18px; }
+  .edu h2 { color: var(--red); font-size: 12px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 8px; }
+  .edu p { font-size: 13px; margin-bottom: 6px; }
+  .edu .dsr { background: rgba(248,81,73,.08); border-left: 3px solid var(--red); border-radius: 0 6px 6px 0;
+              padding: 9px 12px; margin-top: 10px; font-size: 13px; }
+  .edu .dsr b { color: var(--red); }
+  .edu .rec { font-size: 12px; color: var(--muted); margin-top: 9px; }
+
+  /* ---- hero: forward paper days + verdict ---- */
   .hero { background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; padding: 20px; margin-bottom: 14px; }
-  .hero .status { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+  .hero-top { display: flex; gap: 28px; flex-wrap: wrap; align-items: flex-start; }
+  .hero-block { flex: 1 1 260px; min-width: 240px; }
+  .hero-cap { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
+  .hero-number { font-size: 62px; font-weight: 700; line-height: 1.02; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .hero-number .unit { font-size: 15px; font-weight: 500; color: var(--muted); letter-spacing: 0; margin-left: 8px; }
+  .hero-sub { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .verdict-value { font-size: 27px; font-weight: 700; line-height: 1.15; }
+  .verdict-detail { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .v-invalidated { color: var(--red); }
+  .v-validated { color: var(--green); }
+  .v-provisional { color: var(--accent); }
+  .v-unknown { color: var(--muted); }
+
+  .integrity { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+  .integrity .ok { color: var(--green); }
+  .integrity .bad { color: var(--red); }
+
+  /* ---- demoted forward detail: only when the evidence earns it ---- */
+  .section-head { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; margin: 18px 0 10px; }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
   .tile { background: #0d1117; border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
   .tile .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
   .tile .value { font-size: 21px; font-weight: 650; margin-top: 4px; font-variant-numeric: tabular-nums; }
   .tile .note { color: var(--muted); font-size: 11px; margin-top: 2px; }
   .pos { color: var(--green); } .neg { color: var(--red); }
-  .verified { color: var(--green); }
-  .unverified { color: var(--red); }
-  .seal { display: inline-block; margin-top: 10px; font-size: 12px; color: var(--green); }
-  .seal.warn { color: var(--red); }
+
+  .quiet-note { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+                border-radius: 0 8px 8px 0; padding: 12px 14px; font-size: 13px; color: var(--muted); margin-bottom: 18px; }
+  .quiet-note b { color: var(--text); font-weight: 600; }
+
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 20px; }
   .panel h2 { font-size: 15px; margin-bottom: 10px; font-weight: 600; }
   .panel .note { color: var(--muted); font-size: 13px; }
@@ -38,102 +78,159 @@
   td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
   th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
 
-  /* ---- research divider: impossible to miss ---- */
+  /* ---- research: below the line, dimmed, foldable ---- */
   .divider { margin: 34px 0 16px; border-top: 2px dashed var(--research-dim); padding-top: 14px; }
-  .divider .badge { display: inline-block; background: var(--research-dim); color: var(--bg); font-weight: 700; font-size: 13px; letter-spacing: .08em; padding: 4px 12px; border-radius: 6px; }
   .divider .why { color: var(--muted); font-size: 13px; margin-top: 8px; max-width: 70ch; }
-  .research-section { opacity: .88; }
+  details.research-fold { opacity: .88; }
+  details.research-fold > summary { cursor: pointer; list-style: none; }
+  details.research-fold > summary::-webkit-details-marker { display: none; }
+  details.research-fold > summary h1 { display: inline-block; }
+  details.research-fold > summary .chev { color: var(--research-dim); margin-right: 8px; font-size: 13px; }
+  details.research-fold[open] > summary .chev { transform: rotate(90deg); display: inline-block; }
   .research-section h1, .research-section .card .label { color: var(--research-dim) !important; }
 
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
   .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
   .card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
-  .banner { display: none; background: #21262d; border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 20px; font-size: 13px; color: var(--muted); }
-  footer { color: var(--muted); font-size: 12px; margin-top: 24px; border-top: 1px solid var(--border); padding-top: 12px; }
-  a { color: var(--blue); text-decoration: none; }
+  .card .note { color: var(--muted); font-size: 11px; margin-top: 3px; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 24px; border-top: 1px solid var(--border); padding-top: 12px; max-width: 80ch; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>TRADING BOT V1 — FROZEN FORWARD TEST <span class="tag">PAPER ONLY</span></h1>
-  <p class="sub">Evidence generated AFTER the algorithm was frozen and sealed. The forward runner trades the frozen commit only; code identity is re-verified on every request.</p>
+  <p class="sub">The question this page answers is narrow: <b>is the rule that was frozen on paper still holding up?</b>
+     It is not a performance page, and it is not here to show that the system beats anything.</p>
 
-  <div id="banner" class="banner"></div>
+  <div class="legend">
+    <span><span class="pill pill-forward">forward</span> produced after the freeze, by the frozen commit</span>
+    <span><span class="pill pill-oos">out-of-sample</span> walk-forward folds, never trained on</span>
+    <span><span class="pill pill-research">research</span> development work, subject to selection effects</span>
+  </div>
 
-  <!-- ================= EVIDENCE-FIRST: PROSPECTIVE ================= -->
+  <!-- ===================== BIG RED EDUCATION BANNER ===================== -->
+  <div class="edu" id="edu">
+    <h2>Educational software — not a broker, not a signal service</h2>
+    <p>This page records <b>paper</b> trades produced by a frozen algorithm. No money is deposited here,
+       no exchange keys are accepted, and there is no button on this page that starts trading.
+       Nothing here is financial advice.</p>
+
+    <div class="dsr">
+      <p><b>Before you read any number on this page, read this one.</b>
+         The 25.7% CAGR in the research table below was <i>selected</i> from roughly 85 candidate rules.
+         Corrected for that search, the selected stream's deflated Sharpe ratio is <b>0.138</b> — it does
+         not clear the conventional 0.95 bar. The fixed rule, chosen before looking at anything, earns a
+         lower raw Sharpe (0.51) but a <b>DSR of 0.961</b>, because nothing was searched. A backtest that
+         was picked cannot be used as evidence that the pick was skilful.</p>
+      <p class="rec">Recommended reading — the only one on this page:
+         <a href="https://github.com/henrygoldsmith07-wq/trading-bot#statistical-validation-python--m-bot-validate"
+            target="_blank" rel="noopener">Deflated Sharpe caveat, "Statistical validation" section of the README</a>.
+         Read it before treating any figure here as established.</p>
+    </div>
+  </div>
+
+  <!-- ===================== HERO: FORWARD DAYS + VERDICT ===================== -->
   <div class="hero" id="forward-hero">
-    <div class="status">
-      <span id="f-status-line" style="font-size:15px;font-weight:650;">Loading forward record…</span>
+    <div class="hero-top">
+      <div class="hero-block">
+        <div class="hero-cap"><span class="pill pill-forward">forward</span> &nbsp;Forward paper days since freeze</div>
+        <div class="hero-number" id="f-days">—<span class="unit">days</span></div>
+        <div class="hero-sub" id="f-days-sub">Loading forward record…</div>
+      </div>
+      <div class="hero-block">
+        <div class="hero-cap">Current verdict</div>
+        <div class="verdict-value v-unknown" id="f-verdict">—</div>
+        <div class="verdict-detail" id="f-verdict-detail">—</div>
+      </div>
     </div>
+    <div class="integrity" id="f-integrity">—</div>
+  </div>
+
+  <div class="quiet-note" id="quiet-note" hidden>
+    <b>Why this page is showing so little.</b> <span id="quiet-note-text"></span>
+  </div>
+
+  <!-- Revealed only when forward evidence is thick enough to read. -->
+  <div id="forward-detail" hidden>
+    <div class="section-head">Forward record — descriptive only, not a claim of outperformance</div>
     <div class="tiles">
-      <div class="tile"><div class="label">Frozen</div><div class="value" id="f-frozen">—</div><div class="note">manifest date</div></div>
-      <div class="tile"><div class="label">Code</div><div class="value" id="f-code">—</div><div class="note" id="f-code-note">verification</div></div>
-      <div class="tile"><div class="label">Days untouched</div><div class="value" id="f-days">—</div><div class="note">since freeze</div></div>
-      <div class="tile"><div class="label">Parameter changes</div><div class="value" id="f-params">—</div><div class="note">hash-sealed</div></div>
-      <div class="tile"><div class="label">Forward return</div><div class="value" id="f-return">—</div></div>
-      <div class="tile"><div class="label">Forward Sharpe</div><div class="value" id="f-sharpe">—</div></div>
-      <div class="tile"><div class="label" id="f-bench-label">Risk-matched benchmark</div><div class="value" id="f-bench">—</div><div class="note">same window</div></div>
+      <div class="tile"><div class="label">Forward return</div><div class="value" id="f-return">—</div>
+        <div class="note">since freeze</div></div>
+      <div class="tile"><div class="label">Forward Sharpe</div><div class="value" id="f-sharpe">—</div>
+        <div class="note">excess of cash</div></div>
       <div class="tile"><div class="label">Max drawdown</div><div class="value" id="f-mdd">—</div></div>
-      <div class="tile"><div class="label">Data outages</div><div class="value" id="f-outages">—</div></div>
-      <div class="tile"><div class="label">Missed fills</div><div class="value" id="f-missed">—</div></div>
-    </div>
-    <div class="seal" id="f-seal"></div>
-    <div class="panel" style="margin:16px 0 0;">
-      <h2>Forward equity curve — growth of $1 since freeze</h2>
-      <p class="note" id="f-curve-note">Loading…</p>
-      <svg id="f-chart" viewBox="0 0 900 220" preserveAspectRatio="none"></svg>
+      <div class="tile"><div class="label">Data outages</div><div class="value" id="f-outages">—</div>
+        <div class="note">reliability, not return</div></div>
+      <div class="tile"><div class="label">Missed fills</div><div class="value" id="f-missed">—</div>
+        <div class="note">reliability, not return</div></div>
+      <div class="tile"><div class="label" id="f-bench-label">Reference index</div><div class="value" id="f-bench">—</div>
+        <div class="note">context only — no gap is drawn, no comparison claimed</div></div>
     </div>
   </div>
 
-  <!-- ================= RESEARCH: NOT LIVE EVIDENCE ================= -->
+  <div class="panel" id="forward-curve-panel" hidden style="margin-top:18px;">
+    <h2>Forward equity curve — growth of $1 since the freeze</h2>
+    <p class="note" id="f-curve-note">Loading…</p>
+    <svg id="f-chart" viewBox="0 0 900 220" preserveAspectRatio="none"></svg>
+  </div>
+
+  <!-- ===================== RESEARCH: NOT FORWARD EVIDENCE ===================== -->
   <div class="divider">
-    <span class="badge">RESEARCH / HISTORICAL ONLY</span>
+    <span class="pill pill-research">research</span>
     <div class="why">
-      Everything below this line was produced by the research pipeline
-      (<b>2019–2026 walk-forward results</b>) BEFORE any prospective testing began.
-      It is development evidence — subject to selection effects disclosed in the README —
-      and must not be read as evidence of live edge. Evidence above the line is what the
-      frozen system has done since it was sealed.
+      Everything below this line was produced <b>before</b> the freeze by the research pipeline. It is
+      development evidence, subject to the selection effects linked in the banner above, and it carries
+      no weight in the verdict. The verdict is driven by the forward record above the line.
     </div>
   </div>
 
-  <div class="research-section">
-    <h1>HISTORICAL RESEARCH RESULTS <span class="tag">PRE-FREEZE</span></h1>
-    <p class="sub">Walk-forward out-of-sample track record under realistic frictions (next-open execution, 20bp round-trip).</p>
+  <details class="research-fold" id="research-fold" open>
+    <summary>
+      <span class="chev">▶</span><h1>HISTORICAL RESEARCH RESULTS <span class="tag">PRE-FREEZE</span></h1>
+    </summary>
+    <div class="research-section">
+      <p class="sub">Walk-forward out-of-sample track record under realistic frictions (next-open execution, 20bp round-trip).</p>
 
-    <div class="cards">
-      <div class="card"><div class="label">BTC price (live)</div><div class="value" id="price">—</div></div>
-      <div class="card"><div class="label">Trend vs 50d SMA</div><div class="value" id="trend">—</div></div>
-      <div class="card"><div class="label">Target weight now</div><div class="value" id="weight">—</div></div>
-      <div class="card"><div class="label">Historical Sharpe</div><div class="value" id="sharpe">—</div></div>
-      <div class="card"><div class="label">Historical max DD</div><div class="value" id="mdd">—</div></div>
-    </div>
+      <div class="cards">
+        <div class="card"><div class="label">BTC close</div><div class="value" id="price">—</div><div class="note" id="price-date">—</div></div>
+        <div class="card"><div class="label">Trend vs 50d SMA</div><div class="value" id="trend">—</div></div>
+        <div class="card"><div class="label">Target weight</div><div class="value" id="weight">—</div>
+          <div class="note">research rule, current reading</div></div>
+        <div class="card"><div class="label">Out-of-sample Sharpe</div><div class="value" id="sharpe">—</div></div>
+        <div class="card"><div class="label">Out-of-sample max DD</div><div class="value" id="mdd">—</div></div>
+      </div>
 
-    <div class="panel">
-      <h2>Historical equity curve — growth of $1 (research window)</h2>
-      <p class="note" id="curve-note">Loading from /api/summary…</p>
-      <svg id="chart" viewBox="0 0 900 260" preserveAspectRatio="none"></svg>
-    </div>
+      <div class="panel">
+        <h2>Research equity curve — growth of $1 (research window)</h2>
+        <p class="note" id="curve-note">Loading from /api/summary…</p>
+        <svg id="chart" viewBox="0 0 900 260" preserveAspectRatio="none"></svg>
+      </div>
 
-    <div class="panel">
-      <h2>Research summary</h2>
-      <table>
-        <tr><th>Metric</th><th>Value</th></tr>
-        <tr><td>Strategy</td><td id="m-strategy">—</td></tr>
-        <tr><td>Research window</td><td id="m-window">—</td></tr>
-        <tr><td>CAGR (historical)</td><td id="m-cagr">—</td></tr>
-        <tr><td>Growth of $1</td><td id="m-final">—</td></tr>
-        <tr><td>Average exposure</td><td id="m-exp">—</td></tr>
-        <tr><td>Generated at (UTC)</td><td id="m-gen">—</td></tr>
-      </table>
+      <div class="panel">
+        <h2>Research summary <span class="pill pill-oos">out-of-sample</span></h2>
+        <table>
+          <tr><th>Metric</th><th>Value</th></tr>
+          <tr><td>Strategy</td><td id="m-strategy">—</td></tr>
+          <tr><td>Research window</td><td id="m-window">—</td></tr>
+          <tr><td>CAGR (research)</td><td id="m-cagr">—</td></tr>
+          <tr><td>Growth of $1</td><td id="m-final">—</td></tr>
+          <tr><td>Average exposure</td><td id="m-exp">—</td></tr>
+          <tr><td>Generated at (UTC)</td><td id="m-gen">—</td></tr>
+        </table>
+        <p class="note" style="margin-top:10px;">
+          The CAGR in this table is a research figure. It was produced by a search over ~85 candidates and
+          is <b>not</b> corrected for that search — see the deflated Sharpe caveat in the banner above.
+        </p>
+      </div>
     </div>
-  </div>
+  </details>
 
   <footer>
-    Backtest ≠ future performance. The deflated Sharpe ratio of selected strategies is disclosed in the
-    <a href="https://github.com/henrygoldsmith07-wq/trading-bot" target="_blank" rel="noopener">repository README</a> — read it before taking any number here seriously.
-    Educational software. Not financial advice.
+    Educational software. Not financial advice. Paper trading only — no money is deposited, no exchange
+    keys are accepted, and no part of this page starts, offers, or recommends trading.
+    Verdicts on this page are graded by <code>bot/verdict.py</code>; the forward grade is driven by the
+    number of trading days recorded since the freeze and is void if the code seal is broken.
   </footer>
 </div>
 
@@ -141,10 +238,9 @@
 const $ = (id) => document.getElementById(id);
 const pct = (x, d=1) => (x*100).toFixed(d) + "%";
 
-function setVal(id, text, cls) {
-  const el = $(id); el.textContent = text;
-  el.className = "value" + (cls ? " " + cls : "");
-}
+// Volume of the page. The rule: thin or broken forward evidence makes the page
+// QUIETER — fewer numbers, less prominence, and never a new strategy in response.
+const SILENT = 0, QUIET = 1, FULL = 2;
 
 function drawCurve(svgId, points, stroke) {
   const svg = $(svgId);
@@ -163,101 +259,174 @@ function drawCurve(svgId, points, stroke) {
     '<text x="'+(W-padL)+'" y="'+(H-6)+'" fill="#8b949e" font-size="11" text-anchor="end">'+points[points.length-1].t+'</text>';
 }
 
-// ---- EVIDENCE-FIRST: the frozen forward record ----
-async function loadForward() {
+function assess(f, v) {
+  if (!f || f.available === false)
+    return {mode: SILENT, why: "No freeze has been committed yet, so there is no forward record to read."};
+  if (f.code_verified === false)
+    return {mode: SILENT, why: "The seal is broken (" + (f.code_reason || "code identity unverified") +
+      "). Forward evidence is void, so only the integrity record is shown."};
+  if ((f.parameter_changes | 0) !== 0)
+    return {mode: SILENT, why: "Parameters changed after the freeze. Forward evidence is void."};
+  if (!f.started)
+    return {mode: SILENT, why: "The rule is frozen, but no forward days have been recorded yet."};
+
+  const n = f.n_days_recorded | 0, outages = f.data_outages | 0;
+  if (n < 30)
+    return {mode: QUIET, why: n + " forward paper days recorded — below the 30 the verdict needs before " +
+      "any return figure on this page can mean anything."};
+  if (outages / n > 0.2)
+    return {mode: QUIET, why: "Data outages cover more than 20% of forward days, so the forward grade is " +
+      "downgraded and the return figures are withheld."};
+
+  const overall = v && v.verdict ? v.verdict.overall : null;
+  if (overall === "INVALIDATED" || overall === "not established")
+    return {mode: QUIET, why: "The overall verdict is \u201c" + overall + "\u201d."};
+  return {mode: FULL, why: ""};
+}
+
+function applyVolume(mode, why) {
+  const rich = mode === FULL;
+  $("forward-detail").hidden = !rich;
+  $("forward-curve-panel").hidden = !rich;
+
+  const note = $("quiet-note");
+  if (rich) {
+    note.hidden = true;
+    $("research-fold").open = true;
+  } else {
+    note.hidden = false;
+    $("research-fold").open = false;
+    $("quiet-note-text").textContent = why + (mode === QUIET
+      ? "  This page is deliberately showing less, not more: no return figures, no comparison, and no new strategy offered in response to that result."
+      : "");
+  }
+}
+
+function verdictClass(overall) {
+  if (overall === "INVALIDATED") return "v-invalidated";
+  if (overall === "validated (provisional)") return "v-validated";
+  if (overall === "partially supported" || overall === "promising, not validated") return "v-provisional";
+  return "v-unknown";
+}
+
+function renderIntegrity(f) {
+  const el = $("f-integrity");
+  if (f.code_verified === false) {
+    el.innerHTML = '<span class="bad">Seal broken — ' + (f.code_reason || "code identity unverified") +
+      '.</span> Forward evidence is void until the frozen commit is restored.';
+    return;
+  }
+  const parts = [
+    '<span class="ok">\u2713 code identity verified</span>',
+    '<span class="ok">\u2713 parameter changes proven 0 by seal</span>',
+    "frozen " + (f.frozen_date || "\u2014") + " \u00b7 " + (f.code || "\u2014"),
+    "config sha " + (f.config_sha256 || "?") + " \u00b7 code sha " + (f.code_sha256 || "?"),
+  ];
+  if (f.days_untouched != null) parts.push(f.days_untouched + " calendar days since freeze");
+  if (f.runtime_matches_freeze === false) parts.push("viewer runtime differs from frozen code");
+  el.innerHTML = parts.join(" \u00b7 ");
+}
+
+function renderForward(f, v) {
+  const n = f && f.started ? (f.n_days_recorded | 0) : 0;
+  $("f-days").innerHTML = n + '<span class="unit">days</span>';
+  $("f-days-sub").textContent = (f && f.started)
+    ? "forward paper days \u00b7 frozen " + (f.frozen_date || "\u2014") + " \u00b7 " + f.first_day + " \u2192 " + f.last_day
+    : "no forward paper days recorded yet";
+
+  const overall = v && v.verdict ? v.verdict.overall : null;
+  const vel = $("f-verdict");
+  if (overall) {
+    vel.textContent = overall;
+    vel.className = "verdict-value " + verdictClass(overall);
+  } else {
+    vel.textContent = "verdict unavailable";
+    vel.className = "verdict-value v-unknown";
+  }
+  const fwdLabel = v && v.verdict ? v.verdict.prospective_forward_evidence : null;
+  const fwdReason = v && v.details && v.details.forward ? v.details.forward.reason : null;
+  $("f-verdict-detail").textContent = fwdLabel
+    ? "forward evidence: " + fwdLabel + (fwdReason ? " \u00b7 " + fwdReason : "")
+    : "the verdict could not be computed for this request";
+
+  if (f && f.available) {
+    renderIntegrity(f);
+  } else {
+    $("f-integrity").textContent = "No freeze manifest has been committed, so there is no seal to verify yet.";
+  }
+  if (f && f.started) {
+    $("f-return").textContent = pct(f.forward_return, 2);
+    $("f-return").className = "value " + (f.forward_return >= 0 ? "pos" : "neg");
+    $("f-sharpe").textContent = f.forward_sharpe == null ? "\u2014" : f.forward_sharpe.toFixed(2);
+    $("f-mdd").textContent = pct(f.max_drawdown, 1);
+    $("f-mdd").className = "value neg";
+    $("f-outages").textContent = String(f.data_outages);
+    $("f-missed").textContent = String(f.missed_fills);
+    $("f-bench").textContent = f.benchmark_return == null ? "\u2014" : pct(f.benchmark_return, 2);
+    $("f-bench-label").textContent = f.benchmark_label || "Reference index";
+    $("f-curve-note").textContent = f.n_days_recorded + " recorded days (" + f.first_day + " \u2192 " + f.last_day + ")";
+    drawCurve("f-chart", f.curve, "#d29922");
+  }
+}
+
+function renderResearch(r) {
+  if (!r || r.error) {
+    $("curve-note").textContent = "Research panels unavailable: " + ((r && r.error) || "no payload");
+    return;
+  }
+  const now = r.now || {};
+  $("price").textContent = now.price == null ? "\u2014" : "$" + now.price.toLocaleString(undefined, {maximumFractionDigits: 0});
+  $("price-date").textContent = now.price_date ? "close of " + now.price_date : "\u2014";
+  const up = now.price != null && now.trend_up === true;
+  $("trend").textContent = now.trend_up == null ? "\u2014" : (up ? "UP" : "DOWN");
+  $("trend").className = "value " + (now.trend_up == null ? "" : (up ? "pos" : "neg"));
+  $("weight").textContent = now.weight_now == null ? "\u2014" : now.weight_now.toFixed(2);
+
+  $("sharpe").textContent = r.oos.sharpe.toFixed(2);
+  $("mdd").textContent = pct(r.oos.max_drawdown);
+  $("mdd").className = "value neg";
+  $("m-strategy").textContent = r.strategy + " on " + r.symbol;
+  $("m-window").textContent = r.oos.first_day + " \u2192 " + r.oos.last_day + " (yearly walk-forward folds)";
+  $("m-cagr").textContent = pct(r.oos.cagr);
+  $("m-cagr").className = r.oos.cagr >= 0 ? "pos" : "neg";
+  $("m-final").textContent = r.oos.final.toFixed(2) + "x";
+  $("m-exp").textContent = (r.oos.exposure * 100).toFixed(0) + "% invested";
+  $("m-gen").textContent = r.generated_at.replace("T", " ").slice(0, 19);
+  $("curve-note").textContent = "Pre-freeze research run: strategy re-picked yearly on prior data only. " + r.folds.length + " folds.";
+  drawCurve("chart", r.curve, "#58a6ff");
+}
+
+async function load() {
+  const fwd = $("f-verdict");
   try {
     const res = await fetch("/api/summary");
     if (!res.ok) throw new Error("HTTP " + res.status);
     const s = await res.json();
-    const f = s.forward;
-    if (!f || f.available === false) {
-      $("f-status-line").textContent = "NO FREEZE YET — the prospective test has not started";
-      $("f-status-line").style.color = "var(--muted)";
-      setVal("f-days", "—"); setVal("f-return", "—");
-      $("f-curve-note").textContent = f && f.reason ? f.reason : "";
-      return;
+    const f = s.forward, v = s.verdict;
+    const a = assess(f, v);
+    renderForward(f || {}, v);
+    try {
+      renderResearch(s.research);
+    } catch (re) {
+      // Research sits below the line. It must never be able to take the
+      // forward evidence down with it.
+      $("curve-note").textContent = "Research panels unavailable: " + re.message;
     }
-    $("f-status-line").textContent = f.started ? "FORWARD TEST IN PROGRESS" : "FROZEN — AWAITING FIRST DAY";
-    $("f-frozen").textContent = f.frozen_date || "—";
-    $("f-code").textContent = f.code ? f.code.slice(0, 7) : "—";
-    $("f-code-note").innerHTML = f.code_verified
-      ? '<span class="verified">verified ✓</span>'
-      : '<span class="unverified">' + (f.code_reason || "unverified") + '</span>';
-    setVal("f-days", f.days_untouched == null ? "—" : f.days_untouched);
-    setVal("f-params", String(f.parameter_changes));
-    if (f.started) {
-      setVal("f-return", pct(f.forward_return, 2), f.forward_return >= 0 ? "pos" : "neg");
-      setVal("f-sharpe", f.forward_sharpe == null ? "—" : f.forward_sharpe.toFixed(2));
-      setVal("f-mdd", pct(f.max_drawdown, 1), "neg");
-      setVal("f-outages", String(f.data_outages));
-      setVal("f-missed", String(f.missed_fills));
-      $("f-curve-note").textContent = f.n_days_recorded + " recorded days (" + f.first_day + " → " + f.last_day + ")";
-      drawCurve("f-chart", f.curve, "#d29922");
-    } else {
-      $("f-curve-note").textContent = f.reason || "";
-    }
-    $("f-bench").innerHTML = f.benchmark_return == null
-      ? "—"
-      : '<span class="' + (f.benchmark_return >= 0 ? "pos" : "neg") + '">' + pct(f.benchmark_return, 2) + "</span>";
-    $("f-bench-label").textContent = f.benchmark_label || "Benchmark";
-    $("f-seal").innerHTML = f.code_verified
-      ? '🔒 config sha ' + (f.config_sha256 || "?") + ' · code sha ' + (f.code_sha256 || "?") +
-        ' · parameter changes proven 0 by seal'
-      : ('⚠️ SEAL BROKEN: ' + (f.code_reason || ""));
-    $("f-seal").className = "seal" + (f.code_verified ? "" : " warn");
+    applyVolume(a.mode, a.why);
   } catch (e) {
-    $("f-status-line").textContent = "Forward record unavailable (" + e.message + ")";
-    $("f-status-line").style.color = "var(--red)";
+    // Degrade to the quietest state rather than inventing numbers.
+    $("f-days").innerHTML = "\u2014";
+    $("f-days-sub").textContent = "Forward record unavailable (" + e.message + ")";
+    fwd.textContent = "verdict unavailable";
+    fwd.className = "verdict-value v-unknown";
+    $("f-verdict-detail").textContent = "nothing is graded while the forward record cannot be read";
+    $("f-integrity").textContent = "\u2014";
+    $("curve-note").textContent = "Research panels need the /api/summary endpoint.";
+    applyVolume(SILENT, "The forward record could not be read, so this page shows nothing rather than guessing.");
   }
 }
 
-// ---- RESEARCH section (historical, below the fold) ----
-async function loadSummary() {
-  try {
-    const res = await fetch("/api/summary");
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const s = await res.json();
-    const r = s.research;
-    if (!r || r.error) throw new Error(r ? r.error : "no research payload");
-    setVal("sharpe", r.oos.sharpe.toFixed(2));
-    setVal("mdd", pct(r.oos.max_drawdown), "neg");
-    setVal("weight", r.live.weight_now.toFixed(2));
-    $("m-strategy").textContent = r.strategy + " on " + r.symbol;
-    $("m-window").textContent = r.oos.first_day + " → " + r.oos.last_day + " (yearly walk-forward folds)";
-    setVal("m-cagr", pct(r.oos.cagr), r.oos.cagr >= 0 ? "pos" : "neg");
-    $("m-final").textContent = r.oos.final.toFixed(2) + "x";
-    $("m-exp").textContent = (r.oos.exposure*100).toFixed(0) + "% invested";
-    $("m-gen").textContent = r.generated_at.replace("T", " ").slice(0, 19);
-    $("curve-note").textContent = "Pre-freeze research run: strategy re-picked yearly on prior data only. " +
-      r.folds.length + " folds.";
-    drawCurve("chart", r.curve, "#58a6ff");
-  } catch (e) {
-    $("banner").style.display = "block";
-    $("banner").textContent = "Python API unavailable (" + e.message + ") — research panels need /api/summary.";
-    $("curve-note").textContent = "Equity curve requires the /api/summary endpoint.";
-  }
-}
-
-// ---- client-side live monitor (works even without the API) ----
-async function loadLive() {
-  try {
-    const res = await fetch("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=60");
-    const rows = await res.json();
-    const closes = rows.map(k => parseFloat(k[4]));
-    const price = closes[closes.length - 1];
-    setVal("price", "$" + price.toLocaleString(undefined, {maximumFractionDigits: 0}));
-    const sma50approx = closes.slice(-50).reduce((a, b) => a + b, 0) / Math.min(50, closes.length);
-    const up = price >= sma50approx;
-    setVal("trend", up ? "UP" : "DOWN", up ? "pos" : "neg");
-  } catch (e) {
-    setVal("price", "unavailable");
-  }
-}
-
-loadLive();
-setInterval(loadLive, 60000);
-loadForward();
-loadSummary();
+load();
 </script>
 </body>
 </html>

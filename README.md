@@ -29,8 +29,27 @@ npm i -g vercel   # once
 vercel            # deploy from the repo root; accept defaults
 ```
 
-- **`/`** — the dashboard: live BTC price and trend monitor (client-side, always works), plus the authoritative out-of-sample summary and equity curve from `/api/summary`. If the Python function is cold or unavailable, the page degrades gracefully to the client-side monitor.
-- **`/api/summary`** — pure-stdlib ASGI function that imports the `bot` package and computes the fixed-rule walk-forward live (BTC, realistic frictions, ~4s cold). No third-party Python dependencies.
+- **`/`** — the dashboard. Its one job is to show whether the frozen paper rule is still holding up, so the hero number is **forward paper days since the freeze plus the current verdict** — never the backtest CAGR. The page carries a permanent red education banner, accepts no deposits and no keys, and has no button that starts trading.
+- **`/api/summary`** — pure-stdlib ASGI function returning three blocks in descending evidentiary weight: `verdict` (graded by `bot/verdict.py`), `forward` (evidence produced after the freeze), and `research` (pre-freeze development evidence). No third-party Python dependencies.
+
+### Dashboard rules (enforced by `tests/test_dashboard_copy.py`)
+
+The dashboard is a measurement instrument, not a funnel. Four rules are pinned by tests, because they are exactly the ones that erode:
+
+| Rule | Why it is tested |
+|---|---|
+| Three evidence labels only — `research` / `out-of-sample` / `forward`. The word "live" appears nowhere in `public/index.html`. | A fourth label would imply the system trades real money. |
+| No inputs, buttons or forms; no browser-side exchange calls. | Nothing on the page may let a visitor deposit, paste keys, or start trading. |
+| Hero = forward paper days + verdict; the forward day count is the largest type on the page and CAGR never reaches the hero. | The headline must be the evidence quantity, not the most flattering backtest figure. |
+| Exactly one recommended reading: the deflated-Sharpe caveat, not the 25.7% line. | The search-corrected number is the one that decides whether anything here is real. |
+
+**The page gets quieter as the evidence gets worse.** `assess()` assigns one of three volumes — silent, quiet, full — from the forward record alone:
+
+- seal broken, parameters changed, or no freeze → **silent**: integrity record only
+- fewer than 30 forward days, outages above 20% of days, or an overall verdict of `INVALIDATED` / `not established` → **quiet**: days, verdict and reliability counters; return, Sharpe, benchmark and the equity curve are withheld, and the research section folds shut
+- 30+ clean days → **full**: everything, still with research folded below the line
+
+Bad forward results therefore reduce the number of figures on the page. They never add a strategy, a variant, or a "try this instead" — the quiet-state copy says so explicitly.
 
 ## Headline result (real data, out-of-sample, realistic frictions)
 

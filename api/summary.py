@@ -1,8 +1,11 @@
 """Vercel serverless endpoint: /api/summary
 
-Serves the authoritative out-of-sample summary computed by the Python bot
-package: a fixed-rule (RiskEnsemble) walk-forward on BTC daily data under
-realistic frictions, plus the current live weight recommendation.
+Serves three things, in descending order of evidentiary weight:
+
+  1. ``verdict``  — the graded answer to "is the frozen rule holding up?"
+                    (``bot/verdict.py``). This drives the dashboard hero.
+  2. ``forward``  — evidence produced AFTER the freeze, by the frozen commit.
+  3. ``research`` — pre-freeze development evidence, never the headline.
 
 Zero third-party dependencies — a pure-stdlib ASGI app, which Vercel's
 Python runtime detects automatically. Deployed with the repo's classic
@@ -187,11 +190,83 @@ def fetch_sp500_rows():
     return [{"date": r["date"].isoformat(), "close": float(r["close"])} for r in fetch_sp500()]
 
 
+def build_verdict_payload(forward: dict | None) -> dict | None:
+    """Grade the evidence behind the frozen rule (`bot/verdict.py`).
+
+    The verdict is the product: it is what the dashboard hero shows. It is
+    assembled from the sealed canonical record, the research ledger, the cost
+    tape, and the forward log — never from ad-hoc numbers.
+
+    Degrades to None rather than raising. Every input here is a file that may
+    legitimately be absent on a cold serverless start, and a missing verdict
+    must make the dashboard go QUIET, not fall back to a guess.
+    """
+    try:
+        from bot.runs import load_run_record
+        from bot.verdict import build_verdict
+
+        record = load_run_record("canonical-v1", runs_dir=os.path.join(ROOT, "runs"))
+    except Exception:
+        return None  # no sealed canonical record -> nothing can be graded
+
+    results = record.get("results", {})
+    metrics = results.get("metrics", {})
+
+    try:
+        from bot.strategy import build_candidates
+
+        pool_size = len(build_candidates())
+    except Exception:
+        pool_size = 85  # documented fallback: the canonical-era pool size
+
+    ledger_n = None
+    try:
+        from bot.research_ledger import load_entries, recommended_trial_count
+
+        ledger_path = os.path.join(ROOT, "research_ledger.jsonl")
+        if load_entries(ledger_path):
+            ledger_n = recommended_trial_count(ledger_path)
+    except Exception:
+        ledger_n = None
+
+    cost_report = None
+    try:
+        from bot.cost_calibration import calibrate, load_observations
+
+        obs = load_observations(os.path.join(ROOT, "cost_observations.jsonl"))
+        if obs:
+            default_frictions = {"fee": 0.001, "spread_bps": 5.0, "slippage_bps": 5.0}
+            frictions = results.get("parameters", {}).get("frictions", default_frictions)
+            try:
+                from bot.prospective import load_freeze
+
+                manifest = load_freeze(os.path.join(ROOT, "freeze.json"), verify_code=False)
+            except (OSError, ValueError):
+                manifest = None
+            cost_report = calibrate(obs, v1_frictions=frictions, freeze_manifest=manifest)
+    except Exception:
+        cost_report = None
+
+    try:
+        return build_verdict(
+            canonical_rule_stats=metrics.get("rules", []),
+            canonical_per_asset=results.get("per_asset", []),
+            canonical_n_folds=results.get("n_folds"),
+            pool_size=pool_size or 85,
+            ledger_search_n=ledger_n,
+            cost_report=cost_report,
+            forward=forward,
+        )
+    except Exception:
+        return None
+
+
 def _canonical_overlay(summary: dict) -> dict:
     """Override historical headline METRICS from the committed canonical run
-    record (runs/canonical-v1/run.json) when present. Curve/live/folds remain
-    computed live (cheap, single-symbol); the authoritative NUMBERS come from
-    the sealed record — same source as the README table."""
+    record (runs/canonical-v1/run.json) when present. The curve, the current
+    reading and the fold list are still computed per request (cheap,
+    single-symbol); the authoritative NUMBERS come from the sealed record —
+    same source as the README table."""
     try:
         with open(CANONICAL_RUN, encoding="utf-8") as f:
             record = json.load(f)
@@ -235,6 +310,9 @@ def build_summary(symbol: str = "BTCUSDT") -> dict:
     ]
 
     strategy = risk_ensemble()
+    closes = [c["close"] for c in candles]
+    window = closes[-50:]
+    sma50 = (sum(window) / len(window)) if window else None
     summary = {
         "symbol": symbol,
         "strategy": "RiskEnsemble (fixed, a-priori)",
@@ -252,10 +330,14 @@ def build_summary(symbol: str = "BTCUSDT") -> dict:
         },
         "folds": [p["strategy"] for p in wf["folds"]],
         "curve": points,
-        "live": {
+        # The frozen rule's current reading. Deliberately NOT called "live":
+        # nothing here executes orders, and the dashboard's only three
+        # evidence labels are research / out-of-sample / forward.
+        "now": {
             "price": candles[-1]["close"],
             "price_date": datetime.fromtimestamp(candles[-1]["open_time"] / 1000, tz=UTC).date().isoformat(),
             "weight_now": round(strategy.weight(candles), 3),
+            "trend_up": None if sma50 is None else bool(candles[-1]["close"] >= sma50),
         },
         "disclaimer": "Paper trading only. Educational software. Not financial advice.",
     }
@@ -267,15 +349,19 @@ async def app(scope, receive, send):
         return
     try:
         forward = build_forward_summary()
+        # The verdict is the headline. It is graded from the forward record
+        # first: how many paper days exist decides how loud the page is allowed
+        # to be. Research numbers never feed the grade.
+        verdict = build_verdict_payload(forward)
         try:
             research = build_summary()
             research["evidence_label"] = (
                 "RESEARCH / HISTORICAL ONLY — computed by the pre-freeze research "
-                "pipeline; not evidence that live trading will resemble it"
+                "pipeline; carries no weight in the verdict above"
             )
         except Exception as e:
             research = {"error": str(e), "evidence_label": "RESEARCH / HISTORICAL ONLY (unavailable)"}
-        payload = {"forward": forward, "research": research,
+        payload = {"verdict": verdict, "forward": forward, "research": research,
                    "generated_at": datetime.now(UTC).isoformat(),
                    "disclaimer": "Paper trading only. Educational software. Not financial advice."}
         status, body = 200, json.dumps(payload).encode()

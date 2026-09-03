@@ -36,7 +36,8 @@ def test_build_summary_shape(monkeypatch, api, tmp_path):
     assert s["symbol"] == "BTCUSDT"
     assert "RiskEnsemble" in s["strategy"]
     assert -1.0 <= s["oos"]["max_drawdown"] <= 0.0
-    assert 0.0 <= s["live"]["weight_now"] <= 1.0
+    assert 0.0 <= s["now"]["weight_now"] <= 1.0
+    assert isinstance(s["now"]["trend_up"], bool)
     assert 2 <= len(s["curve"]) <= 200
     assert s["curve"][-1]["v"] == pytest.approx(s["oos"]["final"], rel=1e-3)
     assert "paper" in s["disclaimer"].lower()
@@ -44,9 +45,19 @@ def test_build_summary_shape(monkeypatch, api, tmp_path):
     assert ts == sorted(ts)
 
 
+def test_payload_never_uses_the_word_live(monkeypatch, api):
+    """The UI taxonomy is research / out-of-sample / forward. A key or label
+    called 'live' would leak a fourth, unearned evidence class."""
+    monkeypatch.setattr(api, "CANONICAL_RUN", str(Path(__file__).resolve().parents[1] / "nope" / "run.json"))
+    monkeypatch.setattr(api, "fetch_daily_history", lambda symbol: _fake_candles())
+    s = api.build_summary("BTCUSDT")
+    assert "live" not in s
+    assert "live" not in json.dumps(s).lower()
+
+
 def test_build_summary_prefers_canonical_record(monkeypatch, api):
     """When runs/canonical-v1 exists, headline NUMBERS come from the sealed
-    record — same source as the README table — while curve/live stay live."""
+    record — same source as the README table — while curve/current stay fresh."""
     import os
 
     if not os.path.exists(api.CANONICAL_RUN):
@@ -245,3 +256,88 @@ class TestForwardSummary:
         res = api.build_forward_summary(freeze_path=str(fp), log_path=str(lp),
                                         benchmark_fetch=boom)
         assert res["benchmark_return"] is None
+
+
+# ---------------------------------------------------------------------------
+# verdict payload — what the dashboard hero renders
+# ---------------------------------------------------------------------------
+
+class TestVerdictPayload:
+    def test_degrades_to_none_without_canonical_record(self, monkeypatch, api, tmp_path):
+        """A missing sealed record must silence the verdict, not fake one."""
+        monkeypatch.setattr(api, "ROOT", str(tmp_path))
+        assert api.build_verdict_payload({"available": False}) is None
+
+    def test_never_raises(self, api):
+        """Every input file is optional on a cold start; none may 500 the page."""
+        for forward in (None, {}, {"available": False}, {"available": True, "started": True},
+                        {"available": True, "started": True, "n_days_recorded": 5,
+                         "code_verified": True, "parameter_changes": 0, "data_outages": 0}):
+            out = api.build_verdict_payload(forward)
+            assert out is None or isinstance(out, dict)
+
+    def test_shape(self, api):
+        import os
+
+        if not os.path.exists(os.path.join(api.ROOT, "runs", "canonical-v1", "run.json")):
+            pytest.skip("canonical run not generated yet")
+        v = api.build_verdict_payload(None)
+        assert v is not None, "a sealed canonical record exists, so a verdict must be gradeable"
+        vd = v["verdict"]
+        for key in ("historical_evidence", "walk_forward_robustness", "selection_bias_risk",
+                    "cost_robustness", "prospective_forward_evidence", "overall"):
+            assert key in vd
+        # the hero renders this string verbatim: "<grade> — <n> trading days"
+        assert "trading days" in vd["prospective_forward_evidence"]
+        assert vd["overall"] in ("INVALIDATED", "promising, not validated", "not established",
+                                 "validated (provisional)", "partially supported")
+
+    def test_broken_seal_forces_invalidated(self, api):
+        import os
+
+        if not os.path.exists(os.path.join(api.ROOT, "runs", "canonical-v1", "run.json")):
+            pytest.skip("canonical run not generated yet")
+        v = api.build_verdict_payload({
+            "available": True, "started": True, "code_verified": False,
+            "parameter_changes": 0, "n_days_recorded": 400, "data_outages": 0,
+        })
+        assert v is not None
+        assert v["verdict"]["overall"] == "INVALIDATED"
+        assert v["details"]["forward"]["grade"] == "COMPROMISED"
+
+    def test_forward_days_drive_the_forward_grade(self, api):
+        """The hero number and the verdict must move together."""
+        import os
+
+        if not os.path.exists(os.path.join(api.ROOT, "runs", "canonical-v1", "run.json")):
+            pytest.skip("canonical run not generated yet")
+        thin = api.build_verdict_payload({
+            "available": True, "started": True, "code_verified": True,
+            "parameter_changes": 0, "n_days_recorded": 12, "data_outages": 0,
+        })
+        thick = api.build_verdict_payload({
+            "available": True, "started": True, "code_verified": True,
+            "parameter_changes": 0, "n_days_recorded": 400, "data_outages": 0,
+        })
+        assert thin is not None and thick is not None
+        assert thin["details"]["forward"]["grade"] == "Insufficient"
+        assert thick["details"]["forward"]["grade"] == "Strong"
+        assert "12 trading days" in thin["verdict"]["prospective_forward_evidence"]
+        assert "400 trading days" in thick["verdict"]["prospective_forward_evidence"]
+
+
+def test_asgi_payload_carries_verdict(monkeypatch, api):
+    monkeypatch.setattr(api, "fetch_daily_history", lambda symbol: _fake_candles())
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(api.app({"type": "http", "method": "GET", "path": "/api/summary"}, receive, send))
+    payload = json.loads([m for m in sent if m["type"] == "http.response.body"][0]["body"])
+    # verdict may legitimately be null (no sealed record), but the key must exist
+    assert "verdict" in payload
+    assert payload["verdict"] is None or "overall" in payload["verdict"]["verdict"]
