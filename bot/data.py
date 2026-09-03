@@ -6,7 +6,21 @@ import math
 import time
 import urllib.request
 
-BINANCE_KLINES = "https://api.binance.com/api/v3/klines"
+# Public mirrors, tried in order. One hard-coded host is a single point of
+# failure FOR THE EVIDENCE ITSELF: when api.binance.com answers 451 to a whole
+# datacentre range (GitHub Actions runners included), every crypto sleeve
+# records an outage and the day is still counted as a forward trading day —
+# ten of thirteen sleeves dark, graded as though the portfolio were observed.
+# The mirrors serve the same candles, so falling back changes the transport,
+# never the experiment.
+BINANCE_KLINES_URLS: tuple[str, ...] = (
+    "https://api.binance.com/api/v3/klines",
+    "https://api1.binance.com/api/v3/klines",
+    "https://api2.binance.com/api/v3/klines",
+    "https://api3.binance.com/api/v3/klines",
+    "https://data-api.binance.vision/api/v3/klines",
+)
+BINANCE_KLINES = BINANCE_KLINES_URLS[0]
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval=1d"
 DAY_MS = 86_400_000
 
@@ -36,6 +50,29 @@ def _get(url: str, timeout: int = 15, attempts: int = 3) -> str:
     raise RuntimeError("unreachable")  # loop raises on final failed attempt
 
 
+def _get_any(urls: tuple[str, ...] | list[str], timeout: int = 15) -> str:
+    """Try each mirror once, in order; re-raise the LAST failure.
+
+    One attempt per host on purpose: the loop means "ask somewhere else", not
+    "wait". A 451 is deterministic for the client IP, so retrying the host that
+    just refused only burns the workflow's timeout. Re-raising the last error
+    (not the first) means the log shows why the final attempt failed.
+    """
+    last: Exception | None = None
+    for url in urls:
+        try:
+            return _get(url, timeout=timeout, attempts=1)
+        except Exception as exc:  # any refusal: move on to the next mirror
+            last = exc
+    assert last is not None
+    raise last
+
+
+def klines_urls(query: str) -> tuple[str, ...]:
+    """Every klines mirror with `query` (which must include the leading '?')."""
+    return tuple(url + query for url in BINANCE_KLINES_URLS)
+
+
 def _parse_klines(raw: str) -> list[dict]:
     candles = []
     for k in json.loads(raw):
@@ -62,8 +99,8 @@ def _parse_klines(raw: str) -> list[dict]:
 
 def fetch_candles(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 200) -> list[dict]:
     """Fetch the most recent OHLCV candles from Binance's public REST API."""
-    url = f"{BINANCE_KLINES}?symbol={symbol}&interval={interval}&limit={limit}"
-    return clean_candles(_parse_klines(_get(url)))
+    query = f"?symbol={symbol}&interval={interval}&limit={limit}"
+    return clean_candles(_parse_klines(_get_any(klines_urls(query))))
 
 
 def fetch_daily_history(symbol: str = "BTCUSDT", since_ms: int | None = None, max_candles: int = 4000) -> list[dict]:
@@ -75,10 +112,11 @@ def fetch_daily_history(symbol: str = "BTCUSDT", since_ms: int | None = None, ma
     out: list[dict] = []
     start = since_ms if since_ms is not None else 0
     while len(out) < max_candles:
-        url = f"{BINANCE_KLINES}?symbol={symbol}&interval=1d&limit=1000"
+        # mirrors are re-tried per page: a host can start refusing mid-history
+        query = f"?symbol={symbol}&interval=1d&limit=1000"
         if start is not None:
-            url += f"&startTime={start}"
-        batch = _parse_klines(_get(url))
+            query += f"&startTime={start}"
+        batch = _parse_klines(_get_any(klines_urls(query)))
         if not batch:
             break
         if out and batch[0]["open_time"] == out[-1]["open_time"]:

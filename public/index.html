@@ -270,7 +270,9 @@ function assess(f, v) {
   if (!f.started)
     return {mode: SILENT, why: "The rule is frozen, but no forward days have been recorded yet."};
 
-  const n = f.n_days_recorded | 0, outages = f.data_outages | 0;
+  // days_full, not scheduled days: the 30-day bar is about evidence, not
+  // calendar attendance. data_outage_days, not the asset-day event count.
+  const n = f.days_full | 0, outages = f.data_outage_days | 0;
   if (n < 30)
     return {mode: QUIET, why: n + " forward paper days recorded — below the 30 the verdict needs before " +
       "any return figure on this page can mean anything."};
@@ -328,11 +330,22 @@ function renderIntegrity(f) {
 }
 
 function renderForward(f, v) {
-  const n = f && f.started ? (f.n_days_recorded | 0) : 0;
+  // The hero counts days on which EVERY sleeve printed. A day with sleeves
+  // dark is a scheduled day, not a portfolio trading day; showing it as one
+  // would let an outage inflate the number this whole page is about.
+  const scheduled = f && f.started ? (f.n_days_recorded | 0) : 0;
+  const n = f && f.started ? (f.days_full | 0) : 0;
+  const thin = f && f.started ? ((f.days_partial | 0) + (f.days_dark | 0)) : 0;
   $("f-days").innerHTML = n + '<span class="unit">days</span>';
-  $("f-days-sub").textContent = (f && f.started)
-    ? "forward paper days \u00b7 frozen " + (f.frozen_date || "\u2014") + " \u00b7 " + f.first_day + " \u2192 " + f.last_day
+  let sub = (f && f.started)
+    ? "forward paper days fully observed \u00b7 frozen " + (f.frozen_date || "\u2014") +
+      " \u00b7 " + f.first_day + " \u2192 " + f.last_day
     : "no forward paper days recorded yet";
+  if (thin > 0) {
+    sub += " \u00b7 " + thin + " of " + scheduled +
+      " scheduled days were only partly observed, so they are not counted here";
+  }
+  $("f-days-sub").textContent = sub;
 
   const overall = v && v.verdict ? v.verdict.overall : null;
   const vel = $("f-verdict");

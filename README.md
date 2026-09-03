@@ -41,15 +41,28 @@ The dashboard is a measurement instrument, not a funnel. Four rules are pinned b
 | Three evidence labels only — `research` / `out-of-sample` / `forward`. The word "live" appears nowhere in `public/index.html`. | A fourth label would imply the system trades real money. |
 | No inputs, buttons or forms; no browser-side exchange calls. | Nothing on the page may let a visitor deposit, paste keys, or start trading. |
 | Hero = forward paper days + verdict; the forward day count is the largest type on the page and CAGR never reaches the hero. | The headline must be the evidence quantity, not the most flattering backtest figure. |
+| The hero counts days on which **every** sleeve printed, not scheduled days. | A day with sleeves dark is calendar attendance, not evidence. Counting it would let a broken feed manufacture the number the page exists to report. |
 | Exactly one recommended reading: the deflated-Sharpe caveat, not the 25.7% line. | The search-corrected number is the one that decides whether anything here is real. |
 
 **The page gets quieter as the evidence gets worse.** `assess()` assigns one of three volumes — silent, quiet, full — from the forward record alone:
 
 - seal broken, parameters changed, or no freeze → **silent**: integrity record only
-- fewer than 30 forward days, outages above 20% of days, or an overall verdict of `INVALIDATED` / `not established` → **quiet**: days, verdict and reliability counters; return, Sharpe, benchmark and the equity curve are withheld, and the research section folds shut
+- fewer than 30 fully-observed forward days, outages above 20% of days, or an overall verdict of `INVALIDATED` / `not established` → **quiet**: days, verdict and reliability counters; return, Sharpe, benchmark and the equity curve are withheld, and the research section folds shut
 - 30+ clean days → **full**: everything, still with research folded below the line
 
 Bad forward results therefore reduce the number of figures on the page. They never add a strategy, a variant, or a "try this instead" — the quiet-state copy says so explicitly.
+
+**What counts as a day.** `api/summary.py::classify_forward_days` splits each scheduled day by how much of the portfolio was actually observed:
+
+| | meaning |
+|---|---|
+| `days_full` | every sleeve printed — worth one unit of evidence, and the only number the hero shows |
+| `days_partial` | some sleeve was in outage or held `session_pending`; recorded, but not counted |
+| `days_dark` | no sleeve printed — zero information, and graded as none |
+
+`data_outages` in the payload counts **asset-day events**; `data_outage_days` counts **days**. They differ by up to the number of assets, and grading consumes the second — feeding it the first made the outage ratio meaningless.
+
+The consequence is deliberate: when a data source is unreachable the count stops, rather than climbing on days where nothing was measured.
 
 ## Headline result (real data, out-of-sample, realistic frictions)
 
@@ -274,6 +287,28 @@ levels:
    (detached), runs `python -m bot verify-freeze` as a hard gate, trades one
    forward day on that code, then returns to main to append ONLY the log —
    data flows back; code never changes mid-experiment.
+
+**Data sources use mirrors, because a refused host is not a market event.**
+Binance answers `HTTP 451` to whole datacentre ranges, GitHub Actions
+runner IPs included, and does so per endpoint: `/api/v3/ticker/24hr` and
+`/api/v3/klines` can refuse independently. Every Binance call therefore
+walks a mirror list (`api`, `api1`–`api3`, `data-api.binance.vision`),
+one attempt per host, re-raising the *last* error. `451` is in
+`NON_RETRYABLE_HTTP` — it is deterministic for a client IP, so retrying
+the host that just refused only burns the workflow's timeout.
+
+Two failure modes this defends against, both of which happened:
+
+- a refused ticker host failed the snapshot step, which **skipped** the
+  append step and discarded the forward day step 4 had already computed —
+  five consecutive runs, one recorded day;
+- a refused klines host left ten of thirteen sleeves in outage, so the day
+  was recorded and counted while most of the portfolio went unobserved.
+
+The forward step runs the **frozen** code, so a transport fix only takes
+effect at the next re-freeze. That is the seal working as designed: it
+refuses to let the experiment's data acquisition change underneath a
+forward test already in progress.
 
 **Backtest/forward parity is tested, not assumed.** The flagship identity
 test (`tests/test_backtest_forward_parity.py`) runs ONE fixed dataset two

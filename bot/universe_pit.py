@@ -51,12 +51,14 @@ def fetch_listing_dates(symbols: list[str], fetch_first_open=None) -> dict[str, 
         except (json.JSONDecodeError, OSError):
             pass
     if fetch_first_open is None:
-        from .data import _get
+        from .data import _get_any, klines_urls
 
         def fetch_first_open(sym: str) -> int | None:
-            url = f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=1d&startTime=0&limit=1"
+            # mirrors, not one host: a 451 here would otherwise leave every
+            # symbol undated and quietly drop assets from the eligible set
+            urls = klines_urls(f"?symbol={sym}&interval=1d&startTime=0&limit=1")
             try:
-                raw = _get(url)
+                raw = _get_any(urls)
                 rows = json.loads(raw)
                 return int(rows[0][0]) if rows else None
             except Exception:

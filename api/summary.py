@@ -38,6 +38,57 @@ ENGINE_KWARGS: dict[str, Any] = dict(
 )
 
 
+def classify_forward_days(entries: list[dict]) -> dict[str, int]:
+    """Split scheduled days by how much of the portfolio was ACTUALLY observed.
+
+    A day carries full evidence only when every sleeve printed — no outage, no
+    session held pending. `bot/prospective.py` computes its allocation from
+    exactly this set (`present = [sym for sym in assets if note is None]`), so
+    a day with ten of thirteen sleeves dark is a three-asset portfolio wearing
+    a thirteen-asset label.
+
+    Counting such a day as one whole forward trading day would let a broken
+    feed manufacture the very thing the forward test exists to measure: the
+    feed goes down, the count keeps climbing, and the hero number improves
+    while nothing is being observed.
+    """
+    full = partial = dark = 0
+    for e in entries:
+        assets = e.get("assets") or {}
+        if not assets:
+            dark += 1
+            continue
+        live = sum(1 for d in assets.values() if d.get("note") is None)
+        if live == len(assets):
+            full += 1
+        elif live:
+            partial += 1
+        else:
+            dark += 1
+    return {"full": full, "partial": partial, "dark": dark}
+
+
+def _graded_forward_view(forward: dict | None) -> dict | None:
+    """The view of the forward record that grading is allowed to see.
+
+    `bot/verdict.py` sits inside the code seal, so its semantics cannot change
+    without re-freezing. This translates the record into the units that module
+    already documents, instead of the ones it was being fed:
+
+      * `n_days_recorded` becomes days on which EVERY sleeve printed, not
+        `len(entries)` (which counts dark days one-for-one).
+      * `data_outages` becomes DAYS below that bar — the parameter is named
+        `outage_days` — not the raw asset-day event count, which is up to
+        `n_assets` times larger and made the ratio meaningless.
+    """
+    if not forward:
+        return forward
+    view = dict(forward)
+    view["n_days_recorded"] = int(forward.get("days_full", 0))
+    view["data_outages"] = int(forward.get("data_outage_days", 0))
+    return view
+
+
 def build_forward_summary(
     freeze_path: str = FREEZE_FILE,
     log_path: str = FORWARD_LOG,
@@ -135,8 +186,12 @@ def build_forward_summary(
     frozen_d = datetime.fromisoformat(manifest["frozen_at"]).date() if "frozen_at" in manifest else None
     days_untouched = (today_d - frozen_d).days if frozen_d else None
 
+    # `outages` counts ASSET-DAY EVENTS, not days: ten blocked sleeves on one
+    # day is ten. It is kept (and re-named downstream) so the distinction is
+    # impossible to re-collapse by accident.
     outages = sum(len(e.get("outages", [])) for e in entries)
     missed_fills = sum(len(e.get("missed_fills", [])) for e in entries)
+    days = classify_forward_days(entries)
 
     curve = []
     eq = 1.0
@@ -166,7 +221,15 @@ def build_forward_summary(
         "code_reason": code_reason,
         "runtime_matches_freeze": runtime_matches,
         "days_untouched": days_untouched,
+        # len(entries) is SCHEDULED days. days_full is what the evidence is
+        # actually worth: only those observed every sleeve. The hero shows the
+        # second; the first stays visible so the gap cannot be hidden.
         "n_days_recorded": len(entries),
+        "days_full": days["full"],
+        "days_partial": days["partial"],
+        "days_dark": days["dark"],
+        "data_outage_events": outages,
+        "data_outage_days": days["partial"] + days["dark"],
         "first_day": first_date,
         "last_day": last_date,
         "parameter_changes": 0,  # proven by config+code seals; any edit would fail verification above
@@ -255,7 +318,7 @@ def build_verdict_payload(forward: dict | None) -> dict | None:
             pool_size=pool_size or 85,
             ledger_search_n=ledger_n,
             cost_report=cost_report,
-            forward=forward,
+            forward=_graded_forward_view(forward),
         )
     except Exception:
         return None

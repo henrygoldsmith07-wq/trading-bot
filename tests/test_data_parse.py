@@ -111,3 +111,93 @@ class TestGetRetryPolicy:
         with pytest.raises(OSError):
             data._get("https://example.invalid", attempts=3)
         assert len(calls) == 3
+
+
+_ONE_CANDLE = json.dumps([[1722470400000, "100.5", "110.0", "95.0", "108.0", "42.5"]])
+
+
+class TestKlinesMirrorFallback:
+    """The forward EVIDENCE path must survive one host refusing.
+
+    api.binance.com answers 451 to GitHub Actions runner IPs. With a single
+    hard-coded host, ten of the thirteen frozen sleeves silently record an
+    outage every night — and the day is still counted as a forward trading
+    day, so a broken feed manufactures the evidence it never produced.
+    """
+
+    @staticmethod
+    def _stub(monkeypatch, behaviour):
+        """Replace _get so each mirror's fate is controlled; record every call."""
+        calls: list[dict] = []
+
+        def fake_get(url, timeout=15, attempts=3):
+            calls.append({"url": url, "attempts": attempts})
+            return behaviour(url)
+
+        monkeypatch.setattr(data, "_get", fake_get)
+        return calls
+
+    @staticmethod
+    def _refuse_primary(url):
+        if url.startswith("https://api.binance.com/"):
+            raise urllib.error.HTTPError(url, 451, "unavailable for legal reasons", {}, None)
+        return _ONE_CANDLE
+
+    def test_stops_at_the_first_host_that_answers(self, monkeypatch):
+        calls = self._stub(monkeypatch, lambda url: _ONE_CANDLE)
+        assert data._get_any(data.BINANCE_KLINES_URLS) == _ONE_CANDLE
+        assert len(calls) == 1
+        assert calls[0]["attempts"] == 1, "one try per host: ask elsewhere, don't wait"
+
+    def test_falls_back_past_a_451_primary(self, monkeypatch):
+        calls = self._stub(monkeypatch, self._refuse_primary)
+        assert data._get_any(data.BINANCE_KLINES_URLS) == _ONE_CANDLE
+        assert len(calls) == 2
+        assert calls[1]["url"].startswith("https://api1.binance.com/")
+
+    def test_raises_the_last_error_not_a_stale_first_one(self, monkeypatch):
+        def behaviour(url):
+            # note: data-api.binance.vision contains "api.binance", so match
+            # the primary by prefix, not substring
+            code = 451 if url.startswith("https://api.binance.com/") else 503
+            raise urllib.error.HTTPError(url, code, "nope", {}, None)
+
+        self._stub(monkeypatch, behaviour)
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            data._get_any(data.BINANCE_KLINES_URLS)
+        assert excinfo.value.code == 503, "the log must show why the FINAL attempt failed"
+
+    def test_exhausting_every_mirror_still_raises(self, monkeypatch):
+        def behaviour(url):
+            raise OSError("all mirrors down")
+
+        calls = self._stub(monkeypatch, behaviour)
+        with pytest.raises(OSError):
+            data._get_any(data.BINANCE_KLINES_URLS)
+        assert len(calls) == len(data.BINANCE_KLINES_URLS)
+
+    def test_fetch_candles_inherits_the_fallback(self, monkeypatch):
+        calls = self._stub(monkeypatch, self._refuse_primary)
+        out = data.fetch_candles("BTCUSDT", interval="1d", limit=1)
+        assert len(out) == 1
+        assert out[0]["close"] == 108.0
+        assert len(calls) == 2, "one refusal, then the next mirror"
+
+    def test_daily_history_retries_mirrors_on_every_page(self, monkeypatch):
+        """A host can start refusing mid-history, so each page re-tries."""
+        calls = self._stub(monkeypatch, self._refuse_primary)
+        out = data.fetch_daily_history("BTCUSDT", max_candles=1000)
+        assert out and out[0]["close"] == 108.0
+        assert len(calls) == 2
+
+    def test_every_mirror_is_a_unique_https_endpoint(self):
+        urls = data.BINANCE_KLINES_URLS
+        assert len(urls) == len(set(urls))
+        assert all(u.startswith("https://") for u in urls)
+        assert all(u.endswith("/api/v3/klines") for u in urls)
+
+    def test_klines_urls_appends_the_query_to_every_mirror(self):
+        urls = data.klines_urls("?symbol=BTCUSDT&interval=1d&limit=1000")
+        assert len(urls) == len(data.BINANCE_KLINES_URLS)
+        assert all(u.endswith("?symbol=BTCUSDT&interval=1d&limit=1000") for u in urls)
+        assert urls[0].startswith("https://api.binance.com/api/v3/klines?")

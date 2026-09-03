@@ -153,16 +153,38 @@ def _write_freeze(path: Path, frozen_date="2026-08-23", commit="6d6606dabc"):
     }))
 
 
-def _write_log(path: Path, days=10, first="2026-08-24", ret=0.001):
+def _write_log(path: Path, days=10, first="2026-08-24", ret=0.001,
+               n_assets=3, outage_day=3, pending_day=None, dark_day=None):
+    """Forward log with per-sleeve detail, so day classification is exercised.
+
+    Every day carries `assets`; a `note` on a sleeve means that sleeve did not
+    print (outage) or was held (session_pending). `dark_day` marks every sleeve
+    as noted — the zero-information case.
+    """
     from datetime import timedelta
 
     d0 = datetime.fromisoformat(first)
     with open(path, "w") as f:
         for i in range(days):
+            assets = {}
+            for a in range(n_assets):
+                sym = f"S{a}"
+                if dark_day is not None and i == dark_day:
+                    assets[sym] = {"note": "outage", "sleeve_ret": 0.0}
+                elif outage_day is not None and i == outage_day and a == 0:
+                    assets[sym] = {"note": "outage", "sleeve_ret": 0.0}
+                elif pending_day is not None and i == pending_day and a == 0:
+                    assets[sym] = {"note": "session_pending", "sleeve_ret": 0.0}
+                else:
+                    assets[sym] = {"sleeve_ret": 0.001}
+            outages = ([{"symbol": "S0"}] if outage_day is not None and i == outage_day else [])
+            if dark_day is not None and i == dark_day:
+                outages = [{"symbol": f"S{a}"} for a in range(n_assets)]
             f.write(json.dumps({
                 "date": (d0 + timedelta(days=i)).date().isoformat(),
                 "port_ret": ret * (-1 if i % 5 == 4 else 1),
-                "outages": [{"p": 1}] if i == 3 else [],
+                "assets": assets,
+                "outages": outages,
                 "missed_fills": [{"s": 1}] if i == 6 else [],
             }) + "\n")
 
@@ -202,6 +224,12 @@ class TestForwardSummary:
         assert res["parameter_changes"] == 0
         assert res["n_days_recorded"] == 12
         assert res["data_outages"] == 1
+        # one sleeve dark on day 3 -> 11 days fully observed, 1 partial
+        assert res["days_full"] == 11
+        assert res["days_partial"] == 1
+        assert res["days_dark"] == 0
+        assert res["data_outage_days"] == 1
+        assert res["data_outage_events"] == 1
         assert res["missed_fills"] == 1
         assert res["benchmark_return"] == pytest.approx(0.03)
         assert -1.0 <= res["max_drawdown"] <= 0.0
@@ -271,7 +299,7 @@ class TestVerdictPayload:
     def test_never_raises(self, api):
         """Every input file is optional on a cold start; none may 500 the page."""
         for forward in (None, {}, {"available": False}, {"available": True, "started": True},
-                        {"available": True, "started": True, "n_days_recorded": 5,
+                        {"available": True, "started": True, "days_full": 5,
                          "code_verified": True, "parameter_changes": 0, "data_outages": 0}):
             out = api.build_verdict_payload(forward)
             assert out is None or isinstance(out, dict)
@@ -299,7 +327,7 @@ class TestVerdictPayload:
             pytest.skip("canonical run not generated yet")
         v = api.build_verdict_payload({
             "available": True, "started": True, "code_verified": False,
-            "parameter_changes": 0, "n_days_recorded": 400, "data_outages": 0,
+            "parameter_changes": 0, "days_full": 400, "data_outages": 0,
         })
         assert v is not None
         assert v["verdict"]["overall"] == "INVALIDATED"
@@ -311,19 +339,105 @@ class TestVerdictPayload:
 
         if not os.path.exists(os.path.join(api.ROOT, "runs", "canonical-v1", "run.json")):
             pytest.skip("canonical run not generated yet")
+        # days_full, not len(entries): the grade must follow the days that were
+        # ACTUALLY observed, so a dark sleeve cannot advance the evidence.
         thin = api.build_verdict_payload({
             "available": True, "started": True, "code_verified": True,
-            "parameter_changes": 0, "n_days_recorded": 12, "data_outages": 0,
+            "parameter_changes": 0, "days_full": 12, "data_outage_days": 0,
         })
         thick = api.build_verdict_payload({
             "available": True, "started": True, "code_verified": True,
-            "parameter_changes": 0, "n_days_recorded": 400, "data_outages": 0,
+            "parameter_changes": 0, "days_full": 400, "data_outage_days": 0,
         })
         assert thin is not None and thick is not None
         assert thin["details"]["forward"]["grade"] == "Insufficient"
         assert thick["details"]["forward"]["grade"] == "Strong"
         assert "12 trading days" in thin["verdict"]["prospective_forward_evidence"]
         assert "400 trading days" in thick["verdict"]["prospective_forward_evidence"]
+
+    def test_dark_days_do_not_advance_the_grade(self, api):
+        """A feed outage must not manufacture forward evidence.
+
+        Thirty scheduled days with every sleeve dark are worth zero observed
+        days. Grading them as thirty would let the hero number improve while
+        nothing at all is being measured.
+        """
+        import os
+
+        if not os.path.exists(os.path.join(api.ROOT, "runs", "canonical-v1", "run.json")):
+            pytest.skip("canonical run not generated yet")
+        dark = api.build_verdict_payload({
+            "available": True, "started": True, "code_verified": True,
+            "parameter_changes": 0, "n_days_recorded": 30,
+            "days_full": 0, "data_outage_days": 30,
+        })
+        assert dark is not None
+        assert dark["details"]["forward"]["inputs"]["days_recorded"] == 0
+        assert dark["details"]["forward"]["grade"] == "Insufficient"
+        assert "0 trading days" in dark["verdict"]["prospective_forward_evidence"]
+
+    def test_outage_days_are_days_not_events(self, api):
+        """`data_outages` counts asset-day events; grading must see DAYS.
+
+        Ten blocked sleeves on each of three days is three outage days, not
+        thirty — the latter is 10x the denominator and made the ratio
+        meaningless.
+        """
+        view = api._graded_forward_view({
+            "n_days_recorded": 30, "days_full": 27,
+            "data_outages": 30, "data_outage_days": 3,
+        })
+        assert view["n_days_recorded"] == 27
+        assert view["data_outages"] == 3
+
+    def test_missing_day_split_grades_as_zero(self, api):
+        """Unknown observability is graded as none, never as the old count."""
+        view = api._graded_forward_view({"n_days_recorded": 400})
+        assert view["n_days_recorded"] == 0
+        assert view["data_outages"] == 0
+        assert api._graded_forward_view(None) is None
+
+
+class TestClassifyForwardDays:
+    """A day is worth one unit of evidence only when every sleeve printed."""
+
+    def _day(self, notes: dict[str, str | None]) -> dict:
+        return {"assets": {s: {"note": n} for s, n in notes.items()}}
+
+    def test_all_sleeves_live_is_a_full_day(self, api):
+        out = api.classify_forward_days([self._day({"A": None, "B": None})])
+        assert (out["full"], out["partial"], out["dark"]) == (1, 0, 0)
+
+    def test_one_dark_sleeve_makes_the_day_partial(self, api):
+        out = api.classify_forward_days([self._day({"A": None, "B": "outage"})])
+        assert (out["full"], out["partial"], out["dark"]) == (0, 1, 0)
+
+    def test_session_pending_is_not_observed_either(self, api):
+        """A sleeve held at its previous weight produced no return today."""
+        out = api.classify_forward_days([self._day({"A": None, "B": "session_pending"})])
+        assert (out["full"], out["partial"], out["dark"]) == (0, 1, 0)
+
+    def test_every_sleeve_dark_is_worth_nothing(self, api):
+        out = api.classify_forward_days([self._day({"A": "outage", "B": "outage"})])
+        assert (out["full"], out["partial"], out["dark"]) == (0, 0, 1)
+
+    def test_missing_assets_block_is_dark_not_full(self, api):
+        """Absent detail must never be read as 'everything printed'."""
+        out = api.classify_forward_days([{"port_ret": 0.0}, {}])
+        assert (out["full"], out["partial"], out["dark"]) == (0, 0, 2)
+
+    def test_mixed_run(self, api):
+        days = [
+            self._day({"A": None, "B": None}),          # full
+            self._day({"A": None, "B": "outage"}),      # partial
+            self._day({"A": "outage", "B": "outage"}),  # dark
+            self._day({"A": None, "B": None}),          # full
+        ]
+        out = api.classify_forward_days(days)
+        assert (out["full"], out["partial"], out["dark"]) == (2, 1, 1)
+
+    def test_empty_log(self, api):
+        assert api.classify_forward_days([]) == {"full": 0, "partial": 0, "dark": 0}
 
 
 def test_asgi_payload_carries_verdict(monkeypatch, api):
