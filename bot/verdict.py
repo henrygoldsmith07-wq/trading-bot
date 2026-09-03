@@ -43,6 +43,15 @@ def _at_least(grade: str, floor: str) -> bool:
     return GRADES.index(grade) >= GRADES.index(floor)
 
 
+def _days_phrase(n: int) -> str:
+    """'1 trading day' / '0 trading days'.
+
+    This string is rendered verbatim in the dashboard hero, so it has to read
+    like English rather than like a format string.
+    """
+    return f"{n} trading day" + ("" if n == 1 else "s")
+
+
 # ---------------------------------------------------------------------------
 # dimension graders — each returns {grade, inputs:{...}, reason:str}
 # ---------------------------------------------------------------------------
@@ -163,7 +172,7 @@ def grade_forward(
         grade = "Moderate"
     else:
         grade = "Strong"
-    reason = f"{days_recorded} trading days recorded"
+    reason = f"{_days_phrase(days_recorded)} recorded"
     if outage_ratio > 0.2 and grade in ("Moderate", "Strong"):
         grade = "Weak"  # downgrade one level: feed reliability question
         reason += f"; {outage_days} outage days exceeds 20%"
@@ -228,7 +237,7 @@ def build_verdict(
         )
         f_out = {"grade": f["grade"], "inputs": {**f["inputs"], "days_recorded": n_days},
                  "reason": f["reason"],
-                 "label": f"{f['grade']} — {n_days} trading days"}
+                 "label": f"{f['grade']} — {_days_phrase(n_days)}"}
     else:
         reason = (forward or {}).get("reason") or "no freeze/forward log"
         f_out = {"grade": "Insufficient", "inputs": {}, "reason": reason,

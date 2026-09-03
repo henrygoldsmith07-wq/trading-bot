@@ -149,6 +149,20 @@ class TestBuildVerdict:
         assert "STRATEGY VERDICT" in text
         assert "OVERALL: promising, not validated" in text
 
+    @pytest.mark.parametrize("n, phrase", [(0, "0 trading days"), (1, "1 trading day"),
+                                           (2, "2 trading days"), (200, "200 trading days")])
+    def test_forward_label_agrees_in_number(self, n, phrase):
+        """This label is rendered verbatim as the dashboard hero, so '1 trading
+        days' is a visible defect, not a cosmetic one."""
+        v = build_verdict(
+            canonical_rule_stats=RULES, canonical_per_asset=PER_ASSET,
+            canonical_n_folds=6, pool_size=85, ledger_search_n=29, cost_report=None,
+            forward={"available": True, "started": True, "n_days_recorded": n,
+                     "code_verified": True, "parameter_changes": 0, "data_outages": 0},
+        )
+        assert v["verdict"]["prospective_forward_evidence"].endswith(phrase)
+        assert phrase in v["details"]["forward"]["reason"]
+
     def test_compromised_forward_invalidates(self):
         v = build_verdict(
             canonical_rule_stats=RULES, canonical_per_asset=PER_ASSET,
