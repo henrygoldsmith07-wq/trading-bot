@@ -44,13 +44,19 @@ def test_build_summary_shape(monkeypatch, api, tmp_path):
     assert ts == sorted(ts)
 
 
-def test_build_summary_prefers_canonical_record(api):
+def test_build_summary_prefers_canonical_record(monkeypatch, api):
     """When runs/canonical-v1 exists, headline NUMBERS come from the sealed
     record — same source as the README table — while curve/live stay live."""
     import os
 
     if not os.path.exists(api.CANONICAL_RUN):
         pytest.skip("canonical run not generated yet")
+    # Stub the history fetch, as the neighbouring tests do. Every assertion
+    # below reads from the sealed record, so this changes nothing about what
+    # is being checked — but without it the test reaches out to a live
+    # external API, which returns HTTP 451 to CI runner IPs and turns the
+    # suite red for reasons that have nothing to do with the code.
+    monkeypatch.setattr(api, "fetch_daily_history", lambda symbol: _fake_candles())
     s = api.build_summary("BTCUSDT")
     record = json.loads(open(api.CANONICAL_RUN, encoding="utf-8").read())
     iv = record["results"]["metrics"]["inv_vol_rm"]
