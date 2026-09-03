@@ -14,7 +14,19 @@ from typing import TypedDict
 
 from .data import _get
 
-TICKER_URL = "https://api.binance.com/api/v3/ticker/24hr"
+# Binance answers HTTP 451 to some datacentre address ranges — GitHub Actions
+# runners among them — so a single hard-coded host makes the scheduled paper
+# run fail for reasons that have nothing to do with the strategy. These are the
+# public mirrors, tried in order; data-api.binance.vision is the one Binance
+# publishes for market data without the geo restriction.
+TICKER_URLS: tuple[str, ...] = (
+    "https://api.binance.com/api/v3/ticker/24hr",
+    "https://api1.binance.com/api/v3/ticker/24hr",
+    "https://api2.binance.com/api/v3/ticker/24hr",
+    "https://api3.binance.com/api/v3/ticker/24hr",
+    "https://data-api.binance.vision/api/v3/ticker/24hr",
+)
+TICKER_URL = TICKER_URLS[0]
 
 # Tokens that quote or track fiat, plus leveraged-token suffixes — not tradeable
 # trend-following candidates for this bot.
@@ -63,5 +75,24 @@ def parse_symbols(ticker_json: str, quote: str = "USDT", n: int = 10) -> list[st
     return [s for _, s in out[:n]]
 
 
+def fetch_ticker_json(urls: tuple[str, ...] = TICKER_URLS, timeout: int = 15) -> str:
+    """Fetch 24h ticker rows, falling back across mirror hosts.
+
+    Returns the raw JSON body on the first host that answers. If every host
+    fails, re-raises the LAST error rather than the first, so the log shows why
+    the final attempt failed instead of a stale reason from the primary.
+    """
+    last: Exception | None = None
+    for url in urls:
+        try:
+            # attempts=1: a mirror that refuses us will keep refusing, and the
+            # point of the loop is to try a DIFFERENT host, not to wait.
+            return _get(url, timeout=timeout, attempts=1)
+        except Exception as exc:  # any refusal: move on to the next mirror
+            last = exc
+    assert last is not None  # urls is non-empty, so the loop either returns or sets last
+    raise last
+
+
 def top_symbols(n: int = 10, quote: str = "USDT") -> list[str]:
-    return parse_symbols(_get(TICKER_URL), quote=quote, n=n)
+    return parse_symbols(fetch_ticker_json(), quote=quote, n=n)

@@ -11,12 +11,24 @@ YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=
 DAY_MS = 86_400_000
 
 
+# 4xx codes that are deterministic for a given client and will NOT clear on
+# retry. 429 is deliberately absent: rate limits do clear, so backing off is
+# worth it. 451 matters most here — it is how Binance refuses whole datacentre
+# ranges (GitHub Actions runners included). Retrying a 451 three times just
+# burns 45s of the workflow's timeout before failing anyway.
+NON_RETRYABLE_HTTP = frozenset({400, 401, 403, 404, 410, 451})
+
+
 def _get(url: str, timeout: int = 15, attempts: int = 3) -> str:
     for attempt in range(attempts):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read().decode()
+        except urllib.error.HTTPError as exc:
+            if exc.code in NON_RETRYABLE_HTTP or attempt == attempts - 1:
+                raise
+            time.sleep(2 ** attempt)
         except Exception:
             if attempt == attempts - 1:
                 raise

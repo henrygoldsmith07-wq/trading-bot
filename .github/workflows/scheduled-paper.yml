@@ -98,8 +98,15 @@ jobs:
       # ---- step 4b: record today's universe (point-in-time dataset) -------
       # Today's ranking recorded TODAY carries no survivorship bias; a year
       # of these snapshots is the dataset future backtests deserve.
+      #
+      # continue-on-error is load-bearing, not laziness. This step is a data
+      # collection nicety; without the flag, a snapshot failure skips step 5
+      # and the forward day step 4 already computed is silently discarded.
+      # That is exactly how five consecutive runs produced one recorded day.
+      # The forward log is the evidence — nothing auxiliary may hold it hostage.
       - name: Snapshot today's universe
         if: steps.pointer.outputs.commit != ''
+        continue-on-error: true
         run: python -m bot universe-snapshot --top 20 --log universe_log.jsonl
 
       # ---- step 5: return to main; append ONLY the log (data, not code) ----

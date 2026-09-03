@@ -789,20 +789,27 @@ def run_universe_snapshot(args) -> int:
     """Record TODAY's ranked universe — today's data recorded today is
     point-in-time by construction. Daily snapshots compound into the
     survivorship-free dataset future backtests deserve."""
-    from .universe import top_symbols
+    import json as _json
+
+    from .universe import fetch_ticker_json, parse_symbols
     from .universe_pit import record_snapshot
 
-    ranked_raw = top_symbols(args.top)
+    # ONE fetch, across mirrors. This used to fetch a second time straight from
+    # the primary host, which meant a 451 on that host failed the step even
+    # when the ranking itself had succeeded on a fallback mirror.
+    try:
+        raw = fetch_ticker_json()
+    except Exception as exc:
+        print(f"could not fetch Binance 24h ticker rankings from any mirror: {exc}")
+        return 2
+    ranked_raw = parse_symbols(raw, n=args.top)
     if not ranked_raw:
         print("could not fetch Binance 24h ticker rankings")
         return 2
-    # attach quote volumes for the snapshot (re-fetch with volumes)
-    import json as _json
-
-    from .data import _get
-    from .universe import TICKER_URL
-
-    rows = _json.loads(_get(TICKER_URL))
+    rows = _json.loads(raw)
+    if not isinstance(rows, list):
+        print(f"unexpected ticker payload: {type(rows).__name__}")
+        return 2
     vol_by_sym = {}
     for t in rows:
         sym = t.get("symbol", "")
