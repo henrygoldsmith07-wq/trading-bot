@@ -13,12 +13,18 @@ import urllib.request
 # ten of thirteen sleeves dark, graded as though the portfolio were observed.
 # The mirrors serve the same candles, so falling back changes the transport,
 # never the experiment.
+#
+# Order is measured, not guessed. Probed from a real GitHub Actions runner:
+# every *.binance.com host answered 451 and data-api.binance.vision answered
+# 200 — so the vision mirror goes FIRST, and the .com hosts remain as
+# fallbacks for the networks where they do answer. Putting it last meant every
+# fetch paid four dead requests before the one that worked.
 BINANCE_KLINES_URLS: tuple[str, ...] = (
+    "https://data-api.binance.vision/api/v3/klines",
     "https://api.binance.com/api/v3/klines",
     "https://api1.binance.com/api/v3/klines",
     "https://api2.binance.com/api/v3/klines",
     "https://api3.binance.com/api/v3/klines",
-    "https://data-api.binance.vision/api/v3/klines",
 )
 BINANCE_KLINES = BINANCE_KLINES_URLS[0]
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval=1d"

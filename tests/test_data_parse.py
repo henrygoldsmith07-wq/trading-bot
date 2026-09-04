@@ -138,10 +138,19 @@ class TestKlinesMirrorFallback:
         return calls
 
     @staticmethod
-    def _refuse_primary(url):
-        if url.startswith("https://api.binance.com/"):
-            raise urllib.error.HTTPError(url, 451, "unavailable for legal reasons", {}, None)
-        return _ONE_CANDLE
+    def _refuse_first(n, code=451):
+        """Refuse the first `n` mirrors, serve the rest.
+
+        Matched by origin, not equality: real calls carry a query string.
+        """
+        refused = [u.split("/api/v3")[0] for u in list(data.BINANCE_KLINES_URLS)[:n]]
+
+        def behaviour(url):
+            if any(url.startswith(prefix) for prefix in refused):
+                raise urllib.error.HTTPError(url, code, "unavailable for legal reasons", {}, None)
+            return _ONE_CANDLE
+
+        return behaviour
 
     def test_stops_at_the_first_host_that_answers(self, monkeypatch):
         calls = self._stub(monkeypatch, lambda url: _ONE_CANDLE)
@@ -149,17 +158,26 @@ class TestKlinesMirrorFallback:
         assert len(calls) == 1
         assert calls[0]["attempts"] == 1, "one try per host: ask elsewhere, don't wait"
 
-    def test_falls_back_past_a_451_primary(self, monkeypatch):
-        calls = self._stub(monkeypatch, self._refuse_primary)
+    def test_vision_mirror_is_tried_first(self):
+        """Measured on a runner: every *.binance.com host answers 451 there.
+
+        Only data-api.binance.vision returned 200, so it must lead. Putting it
+        last made every fetch pay four dead requests before the one that works.
+        """
+        assert data.BINANCE_KLINES_URLS[0].startswith("https://data-api.binance.vision/")
+
+    def test_falls_back_past_refusing_hosts(self, monkeypatch):
+        calls = self._stub(monkeypatch, self._refuse_first(3))
         assert data._get_any(data.BINANCE_KLINES_URLS) == _ONE_CANDLE
-        assert len(calls) == 2
-        assert calls[1]["url"].startswith("https://api1.binance.com/")
+        assert len(calls) == 4
+        # each refused host is tried exactly once before moving on
+        assert [c["attempts"] for c in calls[:3]] == [1, 1, 1]
 
     def test_raises_the_last_error_not_a_stale_first_one(self, monkeypatch):
+        first = data.BINANCE_KLINES_URLS[0].split("/api/v3")[0]
+
         def behaviour(url):
-            # note: data-api.binance.vision contains "api.binance", so match
-            # the primary by prefix, not substring
-            code = 451 if url.startswith("https://api.binance.com/") else 503
+            code = 451 if url.startswith(first) else 503
             raise urllib.error.HTTPError(url, code, "nope", {}, None)
 
         self._stub(monkeypatch, behaviour)
@@ -177,7 +195,7 @@ class TestKlinesMirrorFallback:
         assert len(calls) == len(data.BINANCE_KLINES_URLS)
 
     def test_fetch_candles_inherits_the_fallback(self, monkeypatch):
-        calls = self._stub(monkeypatch, self._refuse_primary)
+        calls = self._stub(monkeypatch, self._refuse_first(1))
         out = data.fetch_candles("BTCUSDT", interval="1d", limit=1)
         assert len(out) == 1
         assert out[0]["close"] == 108.0
@@ -185,7 +203,7 @@ class TestKlinesMirrorFallback:
 
     def test_daily_history_retries_mirrors_on_every_page(self, monkeypatch):
         """A host can start refusing mid-history, so each page re-tries."""
-        calls = self._stub(monkeypatch, self._refuse_primary)
+        calls = self._stub(monkeypatch, self._refuse_first(1))
         out = data.fetch_daily_history("BTCUSDT", max_candles=1000)
         assert out and out[0]["close"] == 108.0
         assert len(calls) == 2
@@ -200,4 +218,4 @@ class TestKlinesMirrorFallback:
         urls = data.klines_urls("?symbol=BTCUSDT&interval=1d&limit=1000")
         assert len(urls) == len(data.BINANCE_KLINES_URLS)
         assert all(u.endswith("?symbol=BTCUSDT&interval=1d&limit=1000") for u in urls)
-        assert urls[0].startswith("https://api.binance.com/api/v3/klines?")
+        assert urls[0].startswith("https://data-api.binance.vision/api/v3/klines?")

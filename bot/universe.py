@@ -19,12 +19,17 @@ from .data import _get
 # run fail for reasons that have nothing to do with the strategy. These are the
 # public mirrors, tried in order; data-api.binance.vision is the one Binance
 # publishes for market data without the geo restriction.
+#
+# Order is measured, not guessed: probed from a real GitHub Actions runner,
+# every *.binance.com host answered 451 and data-api.binance.vision answered
+# 200. Vision goes first so the scheduled run does not pay four dead requests
+# before the one that succeeds; the .com hosts stay as fallbacks.
 TICKER_URLS: tuple[str, ...] = (
+    "https://data-api.binance.vision/api/v3/ticker/24hr",
     "https://api.binance.com/api/v3/ticker/24hr",
     "https://api1.binance.com/api/v3/ticker/24hr",
     "https://api2.binance.com/api/v3/ticker/24hr",
     "https://api3.binance.com/api/v3/ticker/24hr",
-    "https://data-api.binance.vision/api/v3/ticker/24hr",
 )
 TICKER_URL = TICKER_URLS[0]
 

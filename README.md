@@ -297,6 +297,21 @@ one attempt per host, re-raising the *last* error. `451` is in
 `NON_RETRYABLE_HTTP` — it is deterministic for a client IP, so retrying
 the host that just refused only burns the workflow's timeout.
 
+The order is measured on a real runner rather than assumed. Probed there,
+**every** `*.binance.com` host answered `451`:
+
+| host | `/api/v3/klines` | `/api/v3/ticker/24hr` |
+|---|---|---|
+| `api.binance.com` | 451 | 451 |
+| `api1` / `api2` / `api3.binance.com` | 451 | 451 |
+| `data-api.binance.vision` | **200** | **200** |
+
+So `data-api.binance.vision` leads and the `.com` hosts stay as fallbacks
+for networks where they do answer — listing it last meant every fetch
+paid four dead requests before the one that worked. Closed candles are
+byte-identical across all five hosts (checked over 199 daily bars), so
+this is a transport decision and cannot change the experiment.
+
 Two failure modes this defends against, both of which happened:
 
 - a refused ticker host failed the snapshot step, which **skipped** the

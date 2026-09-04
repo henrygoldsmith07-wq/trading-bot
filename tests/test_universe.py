@@ -105,3 +105,12 @@ class TestTickerMirrorFallback:
         assert len(TICKER_URLS) >= 2
         assert all(u.startswith("https://") for u in TICKER_URLS)
         assert len(set(TICKER_URLS)) == len(TICKER_URLS), "duplicate mirror hosts"
+
+    def test_vision_mirror_is_tried_first(self):
+        """Measured on a real runner, not assumed.
+
+        Every *.binance.com host answered 451 there; only
+        data-api.binance.vision answered 200. It must therefore lead, or the
+        scheduled run pays four dead requests before the one that succeeds.
+        """
+        assert TICKER_URLS[0].startswith("https://data-api.binance.vision/")
