@@ -368,16 +368,29 @@ function renderForward(f, v) {
     $("f-integrity").textContent = "No freeze manifest has been committed, so there is no seal to verify yet.";
   }
   if (f && f.started) {
-    $("f-return").textContent = pct(f.forward_return, 2);
-    $("f-return").className = "value " + (f.forward_return >= 0 ? "pos" : "neg");
+    // null is "not measured", not "zero". `null >= 0` is true in JS and
+    // pct(null) is 0.00, so passing it through would print a reassuring green
+    // +0.00% on a page where nothing was ever observed — a dead feed reading
+    // as a flat market. Withhold the number instead.
+    const hasRet = f.forward_return != null;
+    $("f-return").textContent = hasRet ? pct(f.forward_return, 2) : "\u2014";
+    $("f-return").className = "value " + (hasRet ? (f.forward_return >= 0 ? "pos" : "neg") : "");
     $("f-sharpe").textContent = f.forward_sharpe == null ? "\u2014" : f.forward_sharpe.toFixed(2);
-    $("f-mdd").textContent = pct(f.max_drawdown, 1);
-    $("f-mdd").className = "value neg";
+    const hasMdd = f.max_drawdown != null;
+    $("f-mdd").textContent = hasMdd ? pct(f.max_drawdown, 1) : "\u2014";
+    $("f-mdd").className = "value " + (hasMdd ? "neg" : "");
     $("f-outages").textContent = String(f.data_outages);
     $("f-missed").textContent = String(f.missed_fills);
     $("f-bench").textContent = f.benchmark_return == null ? "\u2014" : pct(f.benchmark_return, 2);
     $("f-bench-label").textContent = f.benchmark_label || "Reference index";
-    $("f-curve-note").textContent = f.n_days_recorded + " recorded days (" + f.first_day + " \u2192 " + f.last_day + ")";
+    // Caption the curve that is actually drawn. It plots fully-observed days
+    // only, so counting scheduled days here would describe a line that is not
+    // on the screen — the same drift the day count was fixed to prevent.
+    const plotted = (f.curve || []).length;
+    $("f-curve-note").textContent = plotted
+      ? plotted + " fully-observed days plotted (" + f.first_day + " \u2192 " + f.last_day + ")"
+      : "No day has been fully observed yet, so there is no forward curve to plot. " +
+        (f.n_days_recorded | 0) + " scheduled days were recorded, none of them complete.";
     drawCurve("f-chart", f.curve, "#d29922");
   }
 }

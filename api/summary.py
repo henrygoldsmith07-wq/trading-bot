@@ -38,14 +38,27 @@ ENGINE_KWARGS: dict[str, Any] = dict(
 )
 
 
+def is_fully_observed(entry: dict) -> bool:
+    """True only when EVERY sleeve printed on this day.
+
+    `bot/prospective.py` builds the allocation from exactly this set
+    (`present = [sym for sym in assets if note is None]`), so a day with ten of
+    thirteen sleeves dark is a three-asset portfolio wearing a thirteen-asset
+    label. Both the day COUNT and the return SERIES are filtered through this
+    one predicate, so they can never drift apart.
+    """
+    assets = entry.get("assets") or {}
+    if not assets:
+        return False
+    return all(d.get("note") is None for d in assets.values())
+
+
 def classify_forward_days(entries: list[dict]) -> dict[str, int]:
     """Split scheduled days by how much of the portfolio was ACTUALLY observed.
 
     A day carries full evidence only when every sleeve printed — no outage, no
-    session held pending. `bot/prospective.py` computes its allocation from
-    exactly this set (`present = [sym for sym in assets if note is None]`), so
-    a day with ten of thirteen sleeves dark is a three-asset portfolio wearing
-    a thirteen-asset label.
+    session held pending. A day with ten of thirteen sleeves dark is a
+    three-asset portfolio wearing a thirteen-asset label.
 
     Counting such a day as one whole forward trading day would let a broken
     feed manufacture the very thing the forward test exists to measure: the
@@ -172,16 +185,28 @@ def build_forward_summary(
             "reason": "no forward days recorded yet",
         }
 
-    rets = [e["port_ret"] for e in entries]
+    # Returns are measured on FULLY-OBSERVED days only. A sleeve in outage or
+    # held pending contributes sleeve_ret = 0.0 while still carrying its
+    # weight, so a partly-observed day records a FRACTION of the portfolio's
+    # true move. Averaging those in would attenuate volatility and pull the
+    # Sharpe toward zero — a feed going quiet would read as a strategy getting
+    # calmer, which is a flattering artefact of broken plumbing. Partly
+    # observed days are disclosed as a COUNT; they never enter the series.
+    observed = [e for e in entries if is_fully_observed(e)]
+    rets = [e["port_ret"] for e in observed]
     equity = [1.0]
     for r in rets:
         equity.append(equity[-1] * (1.0 + r))
-    total_return = equity[-1] - 1.0
+    # Zero observed days means zero measured return — not a flat market.
+    # Reporting 0.0 would dress up "nothing was seen" as "nothing happened".
+    total_return = (equity[-1] - 1.0) if rets else None
     fwd_sharpe = _sharpe(rets, 365) if len(rets) >= 2 else None
-    mdd = _mdd(equity)
+    mdd = _mdd(equity) if rets else None
 
-    first_date = entries[0]["date"]
-    last_date = entries[-1]["date"]
+    # The benchmark is compared over the SAME window the returns came from,
+    # not over scheduled days the portfolio was never fully running on.
+    first_date = observed[0]["date"] if observed else entries[0]["date"]
+    last_date = observed[-1]["date"] if observed else entries[-1]["date"]
     today_d = (today or datetime.now(UTC)).date()
     frozen_d = datetime.fromisoformat(manifest["frozen_at"]).date() if "frozen_at" in manifest else None
     days_untouched = (today_d - frozen_d).days if frozen_d else None
@@ -195,7 +220,7 @@ def build_forward_summary(
 
     curve = []
     eq = 1.0
-    for e in entries:
+    for e in observed:
         eq *= 1.0 + e["port_ret"]
         curve.append({"t": e["date"], "v": round(eq, 5)})
 
@@ -235,9 +260,9 @@ def build_forward_summary(
         "parameter_changes": 0,  # proven by config+code seals; any edit would fail verification above
         "config_sha256": (manifest.get("config_sha256") or "")[:16],
         "code_sha256": (manifest.get("code_sha256") or "")[:16],
-        "forward_return": round(total_return, 4),
+        "forward_return": round(total_return, 4) if total_return is not None else None,
         "forward_sharpe": round(fwd_sharpe, 3) if fwd_sharpe is not None else None,
-        "max_drawdown": round(mdd, 4),
+        "max_drawdown": round(mdd, 4) if mdd is not None else None,
         "benchmark_label": bench_label,
         "benchmark_return": round(bench_return, 4) if bench_return is not None else None,
         "data_outages": outages,

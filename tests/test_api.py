@@ -233,12 +233,65 @@ class TestForwardSummary:
         assert res["missed_fills"] == 1
         assert res["benchmark_return"] == pytest.approx(0.03)
         assert -1.0 <= res["max_drawdown"] <= 0.0
-        assert len(res["curve"]) == 12
-        # compounding check
+        # The curve is the series the metrics were computed from — same days,
+        # same order. A partly-observed day is disclosed as a COUNT; it is
+        # never plotted as though the whole portfolio had been running.
+        entries = [json.loads(ln) for ln in lp.read_text().splitlines() if ln.strip()]
+        observed = [e for e in entries if api.is_fully_observed(e)]
+        assert len(observed) == 11
+        assert len(res["curve"]) == 11
+        assert [c["t"] for c in res["curve"]] == [e["date"] for e in observed]
+        # compounding check, driven by the log rather than by position parity
         eq = 1.0
-        for c in res["curve"]:
-            eq *= 1 + 0.001 * (-1 if res["curve"].index(c) % 5 == 4 else 1)
-        assert res["forward_return"] == pytest.approx(eq - 1, abs=1e-3)
+        for i, e in enumerate(observed):
+            eq *= 1.0 + e["port_ret"]
+            assert res["curve"][i]["v"] == pytest.approx(round(eq, 5), abs=1e-6)
+        assert res["forward_return"] == pytest.approx(eq - 1, abs=1e-4)
+
+    def test_no_observed_days_withholds_metrics(self, api, tmp_path):
+        """Every sleeve dark on every day: nothing was measured, so no return,
+        no drawdown and no curve may be reported.
+
+        Returning 0.0 here would dress up "nothing was seen" as "nothing
+        happened" — and a green 0.00% on the dashboard would be a flattering
+        artefact of a dead feed, which is the exact failure this record exists
+        to make impossible.
+        """
+        from datetime import timedelta
+
+        fp = tmp_path / "freeze.json"
+        _write_freeze(fp)
+        lp = tmp_path / "log.jsonl"
+        # Every day is partly observed: one sleeve held pending on each of the
+        # five scheduled days, so no day has all sleeves printing.
+        d0 = datetime.fromisoformat("2026-08-24")
+        rows = [
+            {
+                "date": (d0 + timedelta(days=i)).date().isoformat(),
+                "port_ret": 0.001,
+                "assets": {"S0": {"note": "session_pending", "sleeve_ret": 0.0},
+                           "S1": {"sleeve_ret": 0.001},
+                           "S2": {"sleeve_ret": 0.001}},
+                "outages": [],
+                "missed_fills": [],
+            }
+            for i in range(5)
+        ]
+        lp.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+        res = api.build_forward_summary(
+            freeze_path=str(fp), log_path=str(lp),
+            benchmark_fetch=lambda: [], today=datetime(2026, 9, 20, tzinfo=UTC),
+        )
+        assert res["started"] is True
+        assert res["n_days_recorded"] == 5   # scheduled days: still disclosed
+        assert res["days_full"] == 0
+        assert res["days_partial"] == 5
+        assert res["forward_return"] is None
+        assert res["forward_sharpe"] is None
+        assert res["max_drawdown"] is None
+        assert res["curve"] == []
+        # the window still falls back to scheduled days, never to a guess
+        assert res["first_day"] == "2026-08-24"
 
     def test_manifest_tamper_surfaces_not_verified(self, api, tmp_path):
         """Reader-side verification covers the manifest seal (config hash).
