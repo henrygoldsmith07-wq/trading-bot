@@ -1,8 +1,8 @@
 {
-  "frozen_at": "2026-08-25T10:54:24.611493+00:00",
-  "frozen_at_date": "2026-08-25",
-  "git_commit_at_freeze": "41e3ee9a72e5ee392480fece97bb93110f03be0f",
-  "git_tag": null,
+  "frozen_at": "2026-09-06T14:44:50.642463+00:00",
+  "frozen_at_date": "2026-09-06",
+  "git_commit_at_freeze": "33fbf80bfed7256019b1c907d111537b848c87cd",
+  "git_tag": "freeze/20260906",
   "image_digest": null,
   "retune_policy": "FORWARD PERIOD IS NEVER USED FOR SELECTION OR TUNING",
   "code_policy": "RUNNER MUST EXECUTE THE FROZEN COMMIT; REFUSE ON CODE MISMATCH",
@@ -261,5 +261,5 @@
   },
   "config_sha256": "e4176a17b0d39fad9b45f9a5a7c1ec06ab20073ca626dca9ee4b14ddda37228f",
   "code_fingerprint_algo": "sha256-lf-v1",
-  "code_sha256": "ebbaa35cefb660ec631b57ddb29bed48d3e87ca71fe64d174e0e6fb90a7cd4c3"
+  "code_sha256": "62740c253e1693918f4e1b9cc218dfb9550c1a46c5e183775b4e9788c625bf87"
 }
