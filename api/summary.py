@@ -53,6 +53,37 @@ def is_fully_observed(entry: dict) -> bool:
     return all(d.get("note") is None for d in assets.values())
 
 
+def is_market_closed(entry: dict) -> bool:
+    """True when the only sleeves that did not print were waiting on a session
+    that produced no bar today: a weekend, an exchange holiday, or — if a run
+    fired before the close — a session that had not closed yet.
+
+    A fetch failure is never `session_pending`; it carries the error as its
+    note. So this predicate means "no bar exists and nothing broke", which is
+    the only thing the accounting below actually needs.
+
+    `bot/prospective.py` marks such a sleeve `session_pending` and holds the
+    previous weight: nothing failed, there was simply no session to observe.
+    That is categorically different from a fetch failure, and conflating them
+    is not a cosmetic error. The portfolio holds three US ETFs, so two days in
+    every seven are weekends; booked as outages that is ~29% of scheduled days,
+    comfortably above the 20% threshold at which the grade is withheld. A
+    closed exchange would then suppress the verdict permanently, and the
+    experiment would read as broken because of a calendar.
+
+    A closed day is also not EVIDENCE: the sleeves that did print (crypto
+    trades straight through) produced a return for part of the portfolio only,
+    and a partial-portfolio return must not be booked as a portfolio day.
+    """
+    assets = entry.get("assets") or {}
+    if not assets:
+        return False
+    noted = [d for d in assets.values() if d.get("note") is not None]
+    if not noted:
+        return False
+    return all(d.get("note") == "session_pending" for d in noted)
+
+
 def classify_forward_days(entries: list[dict]) -> dict[str, int]:
     """Split scheduled days by how much of the portfolio was ACTUALLY observed.
 
@@ -64,8 +95,12 @@ def classify_forward_days(entries: list[dict]) -> dict[str, int]:
     feed manufacture the very thing the forward test exists to measure: the
     feed goes down, the count keeps climbing, and the hero number improves
     while nothing is being observed.
+
+    `closed` is separate from `partial` and `dark` on purpose: on a day the
+    exchange never opened, nothing was broken and nothing was observed. It is
+    neither evidence nor an outage, so it must not be added to either count.
     """
-    full = partial = dark = 0
+    full = partial = dark = closed = 0
     for e in entries:
         assets = e.get("assets") or {}
         if not assets:
@@ -74,11 +109,13 @@ def classify_forward_days(entries: list[dict]) -> dict[str, int]:
         live = sum(1 for d in assets.values() if d.get("note") is None)
         if live == len(assets):
             full += 1
+        elif is_market_closed(e):
+            closed += 1
         elif live:
             partial += 1
         else:
             dark += 1
-    return {"full": full, "partial": partial, "dark": dark}
+    return {"full": full, "partial": partial, "dark": dark, "closed": closed}
 
 
 def _graded_forward_view(forward: dict | None) -> dict | None:
@@ -253,6 +290,10 @@ def build_forward_summary(
         "days_full": days["full"],
         "days_partial": days["partial"],
         "days_dark": days["dark"],
+        # Days the exchange never opened. Disclosed, but in neither count:
+        # not evidence (nothing was observed) and not an outage (nothing
+        # broke). Weekends are two days in seven here.
+        "days_closed": days["closed"],
         "data_outage_events": outages,
         "data_outage_days": days["partial"] + days["dark"],
         "first_day": first_date,

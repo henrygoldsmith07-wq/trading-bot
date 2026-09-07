@@ -51,10 +51,40 @@ jobs:
           # carry the manifest across the upcoming ref checkout: freeze.json
           # lives on main, but the frozen commit predates it
           cp freeze.json /tmp/freeze.json
+          # ...and carry the TAPE too. Step 4 runs inside the frozen commit's
+          # tree, whose forward_log.jsonl is a snapshot from freeze time and
+          # therefore STALE: entries main has deliberately quarantined (every
+          # day predating a re-freeze) are still sitting in it. Appending to
+          # that file and merging back resurrected two pre-freeze days, which
+          # then counted as forward evidence. The tape lives on main; the
+          # frozen commit contributes code, never data.
+          cp forward_log.jsonl /tmp/forward_log.jsonl 2>/dev/null || :
 
       - name: Stop gracefully when no freeze exists yet
         if: steps.pointer.outputs.commit == ''
         run: echo "::notice::no freeze manifest — nothing to advance today"
+
+      # The portfolio mixes 24/7 crypto with three US ETFs. On a Saturday or
+      # Sunday the ETF sleeves are structurally 'session_pending' — there is
+      # no session to observe — so the day can never be fully observed. The
+      # runner would still record it: a return computed from the 10 crypto
+      # sleeves only, carrying a 13-asset label, booked as a forward day and
+      # counted as a data outage. Two days in seven is ~29% of scheduled days,
+      # which sits above the 20% outage threshold and would hold the verdict
+      # grade down permanently — an exchange being closed is not a broken
+      # feed. Do not trade on days the equity sleeves cannot trade.
+      # (NYSE holidays are not knowable here; api/summary.py classifies those
+      # as market-closed rather than outage when they do occur.)
+      - name: Skip days the equity sleeves cannot trade
+        id: calendar
+        run: |
+          dow=$(date -u +%u)  # 1=Monday .. 7=Sunday
+          if [ "$dow" -ge 6 ]; then
+            echo "trading=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::weekend ($(date -u +%A)) — equity sessions closed, no forward day recorded"
+          else
+            echo "trading=true" >> "$GITHUB_OUTPUT"
+          fi
 
       # ---- step 2: become the frozen commit --------------------------------
       - name: Check out the frozen commit
@@ -64,9 +94,13 @@ jobs:
           ref: ${{ steps.pointer.outputs.commit }}
           fetch-depth: 0
 
-      - name: Restore the manifest into the frozen tree
+      - name: Restore the manifest and the tape into the frozen tree
         if: steps.pointer.outputs.commit != ''
-        run: cp /tmp/freeze.json freeze.json
+        run: |
+          cp /tmp/freeze.json freeze.json
+          # seed the tape from main so --step appends to the CURRENT record
+          # rather than to the stale snapshot baked into the frozen commit
+          cp /tmp/forward_log.jsonl forward_log.jsonl 2>/dev/null || :
 
       - uses: actions/setup-python@v5
         if: steps.pointer.outputs.commit != ''
@@ -88,7 +122,7 @@ jobs:
 
       # ---- step 4: one forward day on frozen code --------------------------
       - name: Advance the prospective paper portfolio one day
-        if: steps.pointer.outputs.commit != ''
+        if: steps.pointer.outputs.commit != '' && steps.calendar.outputs.trading == 'true'
         env:
           LOG_FILE: forward_log.jsonl
         run: |
@@ -105,13 +139,13 @@ jobs:
       # That is exactly how five consecutive runs produced one recorded day.
       # The forward log is the evidence — nothing auxiliary may hold it hostage.
       - name: Snapshot today's universe
-        if: steps.pointer.outputs.commit != ''
+        if: steps.pointer.outputs.commit != '' && steps.calendar.outputs.trading == 'true'
         continue-on-error: true
         run: python -m bot universe-snapshot --top 20 --log universe_log.jsonl
 
       # ---- step 5: return to main; append ONLY the log (data, not code) ----
       - name: Append forward log to main
-        if: steps.pointer.outputs.commit != ''
+        if: steps.pointer.outputs.commit != '' && steps.calendar.outputs.trading == 'true'
         env:
           BRANCH: ${{ github.ref_name }}
         run: |
@@ -131,6 +165,21 @@ jobs:
               old = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
           seen = {e.get('date') for e in old}
           merged = old + [e for e in new if e.get('date') not in seen]
+          # Nothing downstream filters the tape by freeze date, so a day that
+          # predates the current freeze would be read as forward evidence.
+          # That is the one mistake this log cannot survive: it would mean
+          # scoring the experiment on data from before the rule was sealed.
+          # Enforce the boundary here, on every run, not by hand once.
+          fpath = pathlib.Path('freeze.json')
+          if fpath.exists():
+              cutoff = json.loads(fpath.read_text()).get('frozen_at_date')
+              if cutoff:
+                  kept = [e for e in merged if (e.get('date') or '') >= cutoff]
+                  dropped = len(merged) - len(kept)
+                  if dropped:
+                      print(f"dropped {dropped} entr{'y' if dropped == 1 else 'ies'} "
+                            f"dated before the freeze ({cutoff})")
+                  merged = kept
           p.write_text(''.join(json.dumps(e) + '\n' for e in merged))
           print(f"forward log entries after merge: {len(merged)}")
           u = pathlib.Path('universe_log.jsonl')

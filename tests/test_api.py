@@ -262,17 +262,19 @@ class TestForwardSummary:
         fp = tmp_path / "freeze.json"
         _write_freeze(fp)
         lp = tmp_path / "log.jsonl"
-        # Every day is partly observed: one sleeve held pending on each of the
-        # five scheduled days, so no day has all sleeves printing.
+        # Every day is partly observed: one sleeve in real outage on each of
+        # the five scheduled days, so no day has all sleeves printing. A real
+        # fetch failure — NOT 'session_pending', which would mean the session
+        # simply never opened and would be classed as a closed market.
         d0 = datetime.fromisoformat("2026-08-24")
         rows = [
             {
                 "date": (d0 + timedelta(days=i)).date().isoformat(),
                 "port_ret": 0.001,
-                "assets": {"S0": {"note": "session_pending", "sleeve_ret": 0.0},
+                "assets": {"S0": {"note": "fetch failed: HTTP Error 451: ", "sleeve_ret": 0.0},
                            "S1": {"sleeve_ret": 0.001},
                            "S2": {"sleeve_ret": 0.001}},
-                "outages": [],
+                "outages": [{"symbol": "S0", "problem": "fetch failed: HTTP Error 451: "}],
                 "missed_fills": [],
             }
             for i in range(5)
@@ -286,12 +288,62 @@ class TestForwardSummary:
         assert res["n_days_recorded"] == 5   # scheduled days: still disclosed
         assert res["days_full"] == 0
         assert res["days_partial"] == 5
+        assert res["days_closed"] == 0       # a failure, not a shut exchange
         assert res["forward_return"] is None
         assert res["forward_sharpe"] is None
         assert res["max_drawdown"] is None
         assert res["curve"] == []
         # the window still falls back to scheduled days, never to a guess
         assert res["first_day"] == "2026-08-24"
+
+    def test_closed_market_day_is_neither_evidence_nor_outage(self, api, tmp_path):
+        """A shut exchange is not a broken feed.
+
+        Three of thirteen sleeves are US ETFs, so on a weekend they are
+        structurally `session_pending`. Booking those days as data outages
+        would put ~29% of scheduled days above the 20% threshold and withhold
+        the verdict grade forever — the experiment would read as broken
+        because of a calendar. The day is also not evidence: the sleeves that
+        did print produced a return for part of the portfolio only.
+        """
+        fp = tmp_path / "freeze.json"
+        _write_freeze(fp)
+        lp = tmp_path / "log.jsonl"
+        _write_log(lp, days=5, outage_day=None, pending_day=0)
+        res = api.build_forward_summary(
+            freeze_path=str(fp), log_path=str(lp),
+            benchmark_fetch=lambda: [], today=datetime(2026, 9, 20, tzinfo=UTC),
+        )
+        assert res["days_full"] == 4
+        assert res["days_closed"] == 1
+        assert res["days_partial"] == 0
+        assert res["days_dark"] == 0
+        # counted as neither: not evidence, and not an outage
+        assert res["data_outage_days"] == 0
+        assert res["data_outage_events"] == 0
+        assert res["n_days_recorded"] == 5      # still disclosed as scheduled
+        assert len(res["curve"]) == 4
+
+    def test_real_failure_alongside_pending_session_is_still_an_outage(self, api):
+        """One sleeve waiting on a session does not excuse a genuine failure
+        on another. `closed` requires that NOTHING broke."""
+        entry = {
+            "date": "2026-08-24",
+            "port_ret": 0.0,
+            "assets": {
+                "SPY": {"note": "session_pending", "sleeve_ret": 0.0, "session": "us_equity"},
+                "GLD": {"note": "fetch failed: HTTP Error 451: ", "sleeve_ret": 0.0},
+                "BTCUSDT": {"sleeve_ret": 0.001},
+            },
+            "outages": [{"symbol": "GLD", "problem": "fetch failed: HTTP Error 451: "}],
+            "missed_fills": [],
+        }
+        assert api.is_market_closed(entry) is False
+        # ...whereas the same day with no failure is a closed market
+        clean = json.loads(json.dumps(entry))
+        clean["assets"]["GLD"] = {"note": "session_pending", "sleeve_ret": 0.0}
+        clean["outages"] = []
+        assert api.is_market_closed(clean) is True
 
     def test_manifest_tamper_surfaces_not_verified(self, api, tmp_path):
         """Reader-side verification covers the manifest seal (config hash).
@@ -465,10 +517,19 @@ class TestClassifyForwardDays:
         out = api.classify_forward_days([self._day({"A": None, "B": "outage"})])
         assert (out["full"], out["partial"], out["dark"]) == (0, 1, 0)
 
-    def test_session_pending_is_not_observed_either(self, api):
-        """A sleeve held at its previous weight produced no return today."""
+    def test_session_pending_only_is_a_closed_market_not_an_outage(self, api):
+        """A sleeve held at its previous weight produced no return today — so
+        the day is not evidence. But when NOTHING failed, that is a shut
+        exchange (weekend/holiday), not a broken feed: disclosed separately,
+        counted as neither evidence nor outage."""
         out = api.classify_forward_days([self._day({"A": None, "B": "session_pending"})])
-        assert (out["full"], out["partial"], out["dark"]) == (0, 1, 0)
+        assert (out["full"], out["partial"], out["dark"], out["closed"]) == (0, 0, 0, 1)
+
+    def test_pending_plus_real_failure_is_still_an_outage(self, api):
+        """A shut session does not excuse a genuine failure elsewhere. Only a
+        day on which NOTHING broke may be called a closed market."""
+        out = api.classify_forward_days([self._day({"A": None, "B": "outage", "C": "session_pending"})])
+        assert (out["full"], out["partial"], out["dark"], out["closed"]) == (0, 1, 0, 0)
 
     def test_every_sleeve_dark_is_worth_nothing(self, api):
         out = api.classify_forward_days([self._day({"A": "outage", "B": "outage"})])
@@ -485,12 +546,13 @@ class TestClassifyForwardDays:
             self._day({"A": None, "B": "outage"}),      # partial
             self._day({"A": "outage", "B": "outage"}),  # dark
             self._day({"A": None, "B": None}),          # full
+            self._day({"A": None, "B": "session_pending"}),  # closed market
         ]
         out = api.classify_forward_days(days)
-        assert (out["full"], out["partial"], out["dark"]) == (2, 1, 1)
+        assert (out["full"], out["partial"], out["dark"], out["closed"]) == (2, 1, 1, 1)
 
     def test_empty_log(self, api):
-        assert api.classify_forward_days([]) == {"full": 0, "partial": 0, "dark": 0}
+        assert api.classify_forward_days([]) == {"full": 0, "partial": 0, "dark": 0, "closed": 0}
 
 
 def test_asgi_payload_carries_verdict(monkeypatch, api):

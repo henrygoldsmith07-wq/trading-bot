@@ -336,6 +336,7 @@ function renderForward(f, v) {
   const scheduled = f && f.started ? (f.n_days_recorded | 0) : 0;
   const n = f && f.started ? (f.days_full | 0) : 0;
   const thin = f && f.started ? ((f.days_partial | 0) + (f.days_dark | 0)) : 0;
+  const closed = f && f.started ? (f.days_closed | 0) : 0;
   $("f-days").innerHTML = n + '<span class="unit">days</span>';
   let sub = (f && f.started)
     ? "forward paper days fully observed \u00b7 frozen " + (f.frozen_date || "\u2014") +
@@ -344,6 +345,12 @@ function renderForward(f, v) {
   if (thin > 0) {
     sub += " \u00b7 " + thin + " of " + scheduled +
       " scheduled days were only partly observed, so they are not counted here";
+  }
+  // A closed exchange is neither an outage nor evidence. Saying so stops a
+  // quiet weekend from looking like a broken feed.
+  if (closed > 0) {
+    sub += " \u00b7 " + closed + " fell on a closed market (weekend/holiday): " +
+      "nothing broke and nothing was observed, so they count as neither";
   }
   $("f-days-sub").textContent = sub;
 
