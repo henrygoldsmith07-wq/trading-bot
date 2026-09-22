@@ -178,7 +178,10 @@ def _validate_freeze_manifest(manifest: dict) -> None:
         raise ValueError("freeze manifest missing config hash")
     if not isinstance(manifest.get("code_sha256"), str) or not manifest["code_sha256"]:
         raise ValueError("freeze manifest missing code fingerprint")
-    _validate_freeze_config(manifest.get("config"))
+    config = manifest.get("config")
+    if not isinstance(config, dict):
+        raise ValueError("freeze manifest config must be a mapping")
+    _validate_freeze_config(config)
 
 
 def create_freeze(
