@@ -413,7 +413,17 @@ class TestForwardSummary:
 
         res = api.build_forward_summary(freeze_path=str(fp), log_path=str(lp))
         assert res["evidence_verified"] is False
-        assert "pre-freeze evidence" in res["evidence_reason"]
+        assert "non-forward evidence" in res["evidence_reason"]
+
+    def test_same_day_as_freeze_is_not_forward_evidence(self, api, tmp_path):
+        fp = tmp_path / "freeze.json"
+        _write_freeze(fp, frozen_date="2026-08-23")
+        lp = tmp_path / "log.jsonl"
+        _write_log(lp, days=1, first="2026-08-23")
+
+        res = api.build_forward_summary(freeze_path=str(fp), log_path=str(lp))
+        assert res["evidence_verified"] is False
+        assert "<= freeze date" in res["evidence_reason"]
 
     def test_impossible_forward_return_fails_closed(self, api, tmp_path):
         fp = tmp_path / "freeze.json"
