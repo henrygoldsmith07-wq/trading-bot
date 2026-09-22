@@ -142,6 +142,16 @@ def day_allocation(
     combiner (`combine_portfolio_rule`) and the forward runner — one math,
     two callers, no drift.
     """
+    if n_assets <= 0:
+        raise ValueError("n_assets must be positive")
+    if len(set(present)) != len(present):
+        raise ValueError("present assets must be unique")
+    if len(present) > n_assets:
+        raise ValueError("present asset count cannot exceed n_assets")
+    missing_hist = [s for s in present if s not in hist]
+    if missing_hist:
+        raise ValueError(f"missing history for present assets: {','.join(sorted(missing_hist))}")
+
     weights: dict[str, float] = {}
     if present:
         # base weights: inverse vol (capped), same as combine_portfolio_invvol
@@ -179,8 +189,6 @@ def day_allocation(
                     raise ValueError("tilted portfolio weights are invalid")
                 weights = {s: w / tilted_total for s, w in weights.items()}
 
-    if n_assets <= 0:
-        raise ValueError("n_assets must be positive")
     exposure = len(present) / n_assets
     if use_crisis:
         corr = avg_pairwise_corr({s: hist[s] for s in present}, corr_window) if present else None
