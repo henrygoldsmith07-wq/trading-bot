@@ -190,6 +190,84 @@ class TestCycleResilience:
         assert pf.positions["BTC"] == pytest.approx(5.0)
         assert "data_fetch_error" in result["report"]
 
+
+    def test_overallocated_targets_are_normalized_proportionally(self, tmp_path):
+        pf = PaperPortfolio(
+            start_cash=1000.0,
+            fee=0.0,
+            state_file=tmp_path / "state.json",
+            ledger_file=tmp_path / "ledger.jsonl",
+        )
+        data = {"A": _candles([100.0] * 5), "B": _candles([100.0] * 5)}
+
+        result = run_cycle(
+            ["A", "B"],
+            lambda _sym, _candles_: 1.0,
+            lambda sym: data[sym],
+            pf,
+            reports_dir=tmp_path / "reports",
+            now=NOW,
+        )
+
+        by_symbol = {d["symbol"]: d for d in result["decisions"]}
+        assert by_symbol["A"]["target_weight"] == pytest.approx(0.5)
+        assert by_symbol["B"]["target_weight"] == pytest.approx(0.5)
+        assert pf.positions["A"] == pytest.approx(5.0)
+        assert pf.positions["B"] == pytest.approx(5.0)
+        assert pf.cash == pytest.approx(0.0)
+        assert any(a["level"] == "target_weights_normalized" for a in result["alerts"])
+
+    def test_blocked_holding_reserves_portfolio_capacity(self, tmp_path):
+        pf = PaperPortfolio(
+            start_cash=1000.0,
+            fee=0.0,
+            state_file=tmp_path / "state.json",
+            ledger_file=tmp_path / "ledger.jsonl",
+        )
+        pf.rebalance("A", 0.5, 100.0, idem_key="seed-a", market_prices={"A": 100.0})
+
+        stale_open = int(NOW.timestamp() * 1000) - 10 * DAY_MS
+        data = {
+            "A": [{"open_time": stale_open, "close": 100.0}],
+            "B": _candles([100.0] * 5),
+        }
+        result = run_cycle(
+            ["A", "B"],
+            lambda sym, _candles_: 0.5 if sym == "A" else 1.0,
+            lambda sym: data[sym],
+            pf,
+            reports_dir=tmp_path / "reports",
+            now=NOW,
+        )
+
+        b = next(d for d in result["decisions"] if d["symbol"] == "B")
+        assert b["target_weight"] == pytest.approx(0.5)
+        assert pf.positions["A"] == pytest.approx(5.0)
+        assert pf.positions["B"] == pytest.approx(5.0)
+        assert pf.cash == pytest.approx(0.0)
+
+    def test_audit_report_never_values_missing_held_mark_at_zero(self, tmp_path):
+        pf = PaperPortfolio(
+            start_cash=1000.0,
+            fee=0.0,
+            state_file=tmp_path / "state.json",
+            ledger_file=tmp_path / "ledger.jsonl",
+        )
+        pf.rebalance("A", 0.5, 100.0, idem_key="seed-a", market_prices={"A": 100.0})
+
+        result = run_cycle(
+            ["B"],
+            lambda _sym, _candles_: 0.0,
+            lambda _sym: _candles([100.0] * 5),
+            pf,
+            reports_dir=tmp_path / "reports",
+            now=NOW,
+        )
+
+        assert "Equity: unavailable (missing marks: A)" in result["report"]
+        assert "| A | 5.000000 | n/a | n/a | n/a |" in result["report"]
+        assert any(d["action"] == "blocked_missing_mark" for d in result["decisions"])
+
     def test_ai_commentary_failure_cannot_erase_a_completed_cycle(self, tmp_path):
         pf = PaperPortfolio(
             start_cash=1000.0,
