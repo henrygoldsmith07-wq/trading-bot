@@ -224,7 +224,13 @@ def build_verdict(
     hist = grade_historical(canonical_rule_stats, headline_rule_substring, sel["grade"])
     robust = grade_robustness(canonical_per_asset, canonical_n_folds)
 
-    if cost_report:
+    if cost_report and cost_report.get("integrity_verified") is False:
+        c = {
+            "grade": "COMPROMISED",
+            "inputs": {"integrity_verified": False},
+            "reason": cost_report.get("integrity_reason") or "cost evidence integrity verification failed",
+        }
+    elif cost_report:
         c = grade_costs(cost_report.get("n_turnover_events", 0),
                         cost_report.get("error_bp"),
                         cost_report.get("sufficient", False))
