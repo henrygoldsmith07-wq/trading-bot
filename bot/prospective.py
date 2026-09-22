@@ -74,6 +74,110 @@ def _config_hash(config: dict) -> str:
     return hashlib.sha256(blob).hexdigest()
 
 
+def _validate_freeze_config(config: dict) -> None:
+    """Validate the complete immutable experiment contract, not just its hash."""
+    from .algorithm import validate_algorithm
+
+    if not isinstance(config, dict):
+        raise ValueError("freeze config must be a mapping")
+    required = {"assets", "frictions", "algorithm"}
+    missing = required - set(config)
+    if missing:
+        raise ValueError(f"freeze config missing required key(s): {sorted(missing)}")
+
+    assets = config["assets"]
+    if not isinstance(assets, list) or not assets:
+        raise ValueError("freeze config assets must be a non-empty list")
+    seen: set[str] = set()
+    for index, asset in enumerate(assets):
+        if not isinstance(asset, dict):
+            raise ValueError(f"asset {index} must be a mapping")
+        required_asset = {"symbol", "source", "periods_per_year", "strategy"}
+        missing_asset = required_asset - set(asset)
+        if missing_asset:
+            raise ValueError(f"asset {index} missing key(s): {sorted(missing_asset)}")
+        symbol = asset["symbol"]
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise ValueError(f"asset {index} symbol must be non-empty")
+        if symbol in seen:
+            raise ValueError(f"duplicate frozen asset symbol: {symbol}")
+        seen.add(symbol)
+        source = asset["source"]
+        if not isinstance(source, str) or not source.strip():
+            raise ValueError(f"asset {symbol} source must be non-empty")
+        ppy = asset["periods_per_year"]
+        if isinstance(ppy, bool) or not isinstance(ppy, int) or ppy <= 0:
+            raise ValueError(f"asset {symbol} periods_per_year must be a positive integer")
+        session = asset.get("session", "continuous")
+        if session not in ("continuous", "us_equity"):
+            raise ValueError(f"asset {symbol} has unsupported session {session!r}")
+        try:
+            strategy_from_spec(asset["strategy"])
+        except Exception as exc:
+            raise ValueError(f"asset {symbol} has invalid strategy spec") from exc
+
+    frictions = config["frictions"]
+    if not isinstance(frictions, dict):
+        raise ValueError("freeze config frictions must be a mapping")
+    allowed_frictions = {
+        "fee", "spread_bps", "slippage_bps", "execution", "risk_free_annual"
+    }
+    unknown = set(frictions) - allowed_frictions
+    if unknown:
+        raise ValueError(f"unknown friction key(s): {sorted(unknown)}")
+    for required_key in ("fee", "execution"):
+        if required_key not in frictions:
+            raise ValueError(f"frictions missing required key: {required_key}")
+    for key in ("fee", "spread_bps", "slippage_bps", "risk_free_annual"):
+        value = frictions.get(key, 0.0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            raise ValueError(f"frictions.{key} must be finite")
+    if float(frictions["fee"]) < 0.0:
+        raise ValueError("frictions.fee must be non-negative")
+    if float(frictions.get("spread_bps", 0.0)) < 0.0:
+        raise ValueError("frictions.spread_bps must be non-negative")
+    if float(frictions.get("slippage_bps", 0.0)) < 0.0:
+        raise ValueError("frictions.slippage_bps must be non-negative")
+    if frictions["execution"] not in ("close", "next_open"):
+        raise ValueError("frictions.execution must be 'close' or 'next_open'")
+
+    validate_algorithm(config["algorithm"])
+    legacy_overlay = config.get("overlay")
+    if legacy_overlay is not None:
+        if not isinstance(legacy_overlay, dict):
+            raise ValueError("legacy overlay view must be a mapping")
+        if "target_vol" in legacy_overlay:
+            target = legacy_overlay["target_vol"]
+            if (
+                isinstance(target, bool)
+                or not isinstance(target, (int, float))
+                or not math.isfinite(float(target))
+                or float(target) <= 0.0
+            ):
+                raise ValueError("legacy overlay target_vol must be positive and finite")
+
+
+def _validate_freeze_manifest(manifest: dict) -> None:
+    if not isinstance(manifest, dict):
+        raise ValueError("freeze manifest must be a mapping")
+    try:
+        frozen_at = datetime.fromisoformat(manifest["frozen_at"])
+        frozen_date = date.fromisoformat(manifest["frozen_at_date"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("freeze manifest has invalid frozen_at/frozen_at_date") from exc
+    if frozen_at.tzinfo is None:
+        raise ValueError("freeze manifest frozen_at must be timezone-aware")
+    if frozen_at.astimezone(UTC).date() != frozen_date:
+        raise ValueError("freeze manifest frozen_at_date disagrees with frozen_at")
+    if manifest.get("code_fingerprint_algo") != CODE_FINGERPRINT_ALGO:
+        raise ValueError("freeze manifest has unknown code fingerprint algorithm")
+    if not isinstance(manifest.get("config_sha256"), str) or not manifest["config_sha256"]:
+        raise ValueError("freeze manifest missing config hash")
+    if not isinstance(manifest.get("code_sha256"), str) or not manifest["code_sha256"]:
+        raise ValueError("freeze manifest missing code fingerprint")
+    _validate_freeze_config(manifest.get("config"))
+
+
 def create_freeze(
     assets: list[dict],
     frictions: dict,
@@ -117,6 +221,7 @@ def create_freeze(
     }
     if research_context is not None:
         config["research_context"] = research_context
+    _validate_freeze_config(config)
     freeze_now = now or datetime.now(UTC)
     if freeze_now.tzinfo is None:
         freeze_now = freeze_now.replace(tzinfo=UTC)
@@ -147,9 +252,12 @@ def create_freeze(
 
 
 def load_freeze(path: str | Path = FREEZE_FILE, verify_code: bool = True) -> dict:
-    """Load and verify the manifest. Raises on config tampering and, unless
-    `verify_code=False`, on any implementation mismatch with the running tree."""
-    manifest = json.loads(Path(path).read_text())
+    """Load and verify the complete immutable experiment manifest."""
+    try:
+        manifest = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError("freeze manifest is unreadable") from exc
+    _validate_freeze_manifest(manifest)
     actual = _config_hash(manifest["config"])
     if actual != manifest.get("config_sha256"):
         raise ValueError("freeze manifest hash mismatch — config was modified after freezing")
