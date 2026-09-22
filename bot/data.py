@@ -155,9 +155,13 @@ def clean_candles(candles: list[dict]) -> list[dict]:
     for raw in candles:
         if not isinstance(raw, dict):
             continue
+        raw_close = raw.get("close")
+        raw_timestamp = raw.get("open_time")
+        if raw_close is None or raw_timestamp is None:
+            continue
         try:
-            close = float(raw.get("close"))
-            timestamp_float = float(raw.get("open_time"))
+            close = float(raw_close)
+            timestamp_float = float(raw_timestamp)
         except (TypeError, ValueError):
             continue
         if not math.isfinite(close) or close <= 0.0:
