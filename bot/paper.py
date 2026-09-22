@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import time
 from datetime import UTC, datetime
@@ -33,8 +34,23 @@ def _utc_now() -> datetime:
 
 
 def _checksum(payload: dict) -> str:
-    blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     return hashlib.sha256(blob).hexdigest()
+
+
+def _finite(value) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _positive_finite(value) -> bool:
+    return _finite(value) and float(value) > 0.0
+
+
+class LedgerCorruptionError(ValueError):
+    """Raised when durable paper-trading evidence cannot be replayed safely."""
 
 
 class OrderLedger:
@@ -45,23 +61,34 @@ class OrderLedger:
 
     def append(self, order: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(order, sort_keys=True, allow_nan=False)
         with open(self.path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(order, sort_keys=True) + "\n")
+            f.write(line + "\n")
             f.flush()
             os.fsync(f.fileno())
 
     def entries(self) -> list[dict]:
         if not self.path.exists():
             return []
+        raw = self.path.read_text(encoding="utf-8")
+        lines = raw.splitlines()
         out = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
+        for line_no, raw_line in enumerate(lines, start=1):
+            line = raw_line.strip()
             if not line:
                 continue
             try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue  # torn final line after a crash: ignore, state replays the rest
+                entry = json.loads(line)
+            except json.JSONDecodeError as exc:
+                # Only an unterminated final record is a valid crash artefact.
+                # Corruption in the middle of an append-only ledger must never
+                # be silently skipped because replay would invent balances.
+                if line_no == len(lines) and not raw.endswith(("\n", "\r")):
+                    continue
+                raise LedgerCorruptionError(f"corrupt ledger JSON at line {line_no}") from exc
+            if not isinstance(entry, dict):
+                raise LedgerCorruptionError(f"ledger line {line_no} is not an object")
+            out.append(entry)
         return out
 
     def idem_keys(self) -> set[str]:
@@ -72,9 +99,13 @@ def _save_state_atomic(state: dict, path: Path) -> None:
     body = {k: v for k, v in state.items() if k != "checksum"}
     wrapped = {"schema_version": STATE_SCHEMA_VERSION, **body}
     wrapped["checksum"] = _checksum({k: v for k, v in wrapped.items()})
+    encoded = json.dumps(wrapped, indent=2, allow_nan=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(wrapped, indent=2))
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(encoded)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
 
 
@@ -82,12 +113,24 @@ def _load_state(path: Path) -> dict | None:
     if not path.exists():
         return None
     try:
-        wrapped = json.loads(path.read_text())
+        wrapped = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
-    checksum = wrapped.pop("checksum", None)
-    if checksum != _checksum(wrapped) or wrapped.get("schema_version") != STATE_SCHEMA_VERSION:
+    if not isinstance(wrapped, dict):
         return None
+    checksum = wrapped.pop("checksum", None)
+    try:
+        checksum_ok = checksum == _checksum(wrapped)
+    except (TypeError, ValueError):
+        return None
+    if not checksum_ok or wrapped.get("schema_version") != STATE_SCHEMA_VERSION:
+        return None
+    positions = wrapped.get("positions")
+    if not _finite(wrapped.get("cash")) or float(wrapped["cash"]) < -1e-6 or not isinstance(positions, dict):
+        return None
+    for sym, qty in positions.items():
+        if not isinstance(sym, str) or not _finite(qty) or float(qty) < -1e-12:
+            return None
     return wrapped
 
 
@@ -101,41 +144,137 @@ class PaperPortfolio:
         state_file: str = "paper_state.json",
         ledger_file: str = "paper_ledger.jsonl",
     ):
-        self.start_cash = start_cash
-        self.fee = fee
+        if not _finite(start_cash) or float(start_cash) < 0.0:
+            raise ValueError("start_cash must be finite and non-negative")
+        if not _finite(fee) or float(fee) < 0.0:
+            raise ValueError("fee must be finite and non-negative")
+        self.start_cash = float(start_cash)
+        self.fee = float(fee)
         self.state_file = Path(state_file)
         self.ledger = OrderLedger(ledger_file)
         self._idem_keys: set[str] = set()
 
+        # The ledger is fsynced BEFORE the state snapshot is replaced, so it is
+        # the source of truth after a crash. A valid-but-stale state file can
+        # exist if the process dies between those two operations.
         state = _load_state(self.state_file)
-        if state is not None:
+        recovered = self._recover_from_ledger(self.start_cash)
+        if recovered is not None:
+            self.cash, self.positions = recovered
+            state_matches = (
+                state is not None
+                and math.isclose(float(state["cash"]), self.cash, rel_tol=0.0, abs_tol=1e-6)
+                and set(state["positions"]) == set(self.positions)
+                and all(
+                    math.isclose(float(state["positions"][sym]), qty, rel_tol=0.0, abs_tol=1e-10)
+                    for sym, qty in self.positions.items()
+                )
+            )
+            if not state_matches:
+                self.persist()
+        elif state is not None:
             self.cash = float(state["cash"])
             self.positions = {s: float(q) for s, q in state["positions"].items()}
             self._idem_keys = self.ledger.idem_keys()
         else:
-            recovered = self._recover_from_ledger(start_cash)
-            if recovered is None:
-                self.cash = start_cash
-                self.positions = {}
-                self._idem_keys = set()
-            else:
-                self.cash, self.positions = recovered
+            self.cash = self.start_cash
+            self.positions = {}
+            self._idem_keys = set()
 
     def _recover_from_ledger(self, start_cash: float) -> tuple[float, dict[str, float]] | None:
-        """Rebuild balances by replaying ledger deltas (crash recovery)."""
+        """Rebuild balances by validating and replaying every durable fill."""
         entries = [e for e in self.ledger.entries() if e.get("kind") == "fill"]
         if not entries:
             return None
-        cash = float(entries[0].get("cash_before", start_cash))
+
         positions: dict[str, float] = {}
-        for e in entries:
-            cash = e["cash_after"]
+        seen_keys: set[str] = set()
+        cash: float | None = None
+        required = {
+            "idem_key",
+            "symbol",
+            "side",
+            "qty",
+            "price",
+            "notional",
+            "fee",
+            "cash_before",
+            "cash_after",
+            "position_after",
+        }
+
+        for index, e in enumerate(entries, start=1):
+            missing = required - set(e)
+            if missing:
+                raise LedgerCorruptionError(
+                    f"ledger fill {index} missing fields: {','.join(sorted(missing))}"
+                )
+            idem_key = str(e["idem_key"])
+            if not idem_key or idem_key in seen_keys:
+                raise LedgerCorruptionError(f"ledger fill {index} has duplicate/empty idempotency key")
+            seen_keys.add(idem_key)
+
             sym = e["symbol"]
-            positions[sym] = e["position_after"]
-            if positions[sym] == 0.0:
-                del positions[sym]
-        self._idem_keys = {e["idem_key"] for e in entries if e.get("idem_key")}
-        return cash, positions
+            side = e["side"]
+            if not isinstance(sym, str) or not sym or side not in ("BUY", "SELL"):
+                raise LedgerCorruptionError(f"ledger fill {index} has invalid symbol/side")
+
+            numeric_names = (
+                "qty",
+                "price",
+                "notional",
+                "fee",
+                "cash_before",
+                "cash_after",
+                "position_after",
+            )
+            if any(not _finite(e[name]) for name in numeric_names):
+                raise LedgerCorruptionError(f"ledger fill {index} contains a non-finite number")
+
+            qty = float(e["qty"])
+            price = float(e["price"])
+            notional = float(e["notional"])
+            fee_paid = float(e["fee"])
+            cash_before = float(e["cash_before"])
+            cash_after = float(e["cash_after"])
+            position_after = float(e["position_after"])
+
+            if price <= 0.0 or notional < 0.0 or fee_paid < 0.0 or cash_before < -1e-6 or cash_after < -1e-6:
+                raise LedgerCorruptionError(f"ledger fill {index} contains an impossible balance/price")
+            if qty > 1e-12 and side != "BUY":
+                raise LedgerCorruptionError(f"ledger fill {index} side disagrees with quantity")
+            if qty < -1e-12 and side != "SELL":
+                raise LedgerCorruptionError(f"ledger fill {index} side disagrees with quantity")
+            if cash is None:
+                cash = cash_before
+            elif not math.isclose(cash_before, cash, rel_tol=0.0, abs_tol=2e-5):
+                raise LedgerCorruptionError(f"ledger cash continuity breaks at fill {index}")
+
+            expected_notional = abs(qty) * price
+            if not math.isclose(notional, expected_notional, rel_tol=1e-9, abs_tol=2e-5):
+                raise LedgerCorruptionError(f"ledger notional is inconsistent at fill {index}")
+            expected_cash = (
+                cash_before - notional - fee_paid
+                if side == "BUY"
+                else cash_before + notional - fee_paid
+            )
+            if not math.isclose(cash_after, expected_cash, rel_tol=0.0, abs_tol=2e-5):
+                raise LedgerCorruptionError(f"ledger cash arithmetic is inconsistent at fill {index}")
+
+            expected_position = positions.get(sym, 0.0) + qty
+            if position_after < -1e-10 or not math.isclose(
+                position_after, expected_position, rel_tol=0.0, abs_tol=2e-10
+            ):
+                raise LedgerCorruptionError(f"ledger position continuity breaks at fill {index}")
+
+            cash = cash_after
+            if abs(position_after) < 1e-12:
+                positions.pop(sym, None)
+            else:
+                positions[sym] = position_after
+
+        self._idem_keys = seen_keys
+        return (cash if cash is not None else float(start_cash)), positions
 
     def persist(self) -> None:
         _save_state_atomic(
@@ -157,18 +296,22 @@ class PaperPortfolio:
         return total
 
     def target_position_for(self, symbol: str, target_weight: float, prices: dict[str, float]) -> float:
+        if not _finite(target_weight) or not 0.0 <= float(target_weight) <= 1.0:
+            raise ValueError(f"target_weight must be finite and within [0, 1] (got {target_weight})")
         missing_marks = sorted(
             sym
             for sym, qty in self.positions.items()
-            if abs(qty) > 1e-12 and (prices.get(sym) is None or prices[sym] <= 0)
+            if abs(qty) > 1e-12 and not _positive_finite(prices.get(sym))
         )
         if missing_marks:
             raise ValueError(f"missing usable price for held positions: {','.join(missing_marks)}")
-        eq = self.equity(prices)
         px = prices.get(symbol)
-        if px is None or px <= 0:
+        if not _positive_finite(px):
             raise ValueError(f"no usable price for {symbol}")
-        return max(0.0, target_weight) * eq / px
+        eq = self.equity(prices)
+        if not _finite(eq) or eq < 0.0:
+            raise ValueError("portfolio equity is not finite/non-negative")
+        return float(target_weight) * eq / float(px)
 
     def rebalance(
         self,
@@ -189,6 +332,12 @@ class PaperPortfolio:
         """
         if idem_key in self._idem_keys:
             return {"skipped": "duplicate_order", "idem_key": idem_key}
+        if not _positive_finite(price):
+            return {"skipped": f"no usable price for {symbol}"}
+        if not _finite(min_notional) or float(min_notional) < 0.0:
+            return {"skipped": "invalid_min_notional"}
+        price = float(price)
+        min_notional = float(min_notional)
         # Position sizing must use TOTAL portfolio equity. In a multi-asset
         # portfolio, valuing only the symbol being traded silently drops every
         # other holding from equity and under-sizes later rebalances.
@@ -214,6 +363,8 @@ class PaperPortfolio:
             if delta_qty > max_delta_qty:
                 delta_qty = max_delta_qty
                 notional = delta_qty * price
+            if abs(delta_qty) < 1e-12 or notional < min_notional:
+                return {"skipped": "insufficient_cash", "notional": notional}
             fee_paid = notional * self.fee
             self.cash = cash_before - notional - fee_paid
         else:
@@ -223,10 +374,13 @@ class PaperPortfolio:
         if abs(self.positions[symbol]) < 1e-12:
             del self.positions[symbol]
 
+        fill_ts = ts or _utc_now()
+        if fill_ts.tzinfo is None:
+            fill_ts = fill_ts.replace(tzinfo=UTC)
         fill = {
             "kind": "fill",
-            "ts": (ts or _utc_now()).isoformat(),
-            "date": (ts or _utc_now()).astimezone(UTC).date().isoformat(),
+            "ts": fill_ts.isoformat(),
+            "date": fill_ts.astimezone(UTC).date().isoformat(),
             "idem_key": idem_key,
             "symbol": symbol,
             "side": side,
@@ -272,20 +426,56 @@ def decide_orders(
     prices: dict[str, float],
     stale_symbols: set[str],
     weight_epsilon: float = 1e-4,
+    as_of: datetime | None = None,
 ) -> list[dict]:
     """Plan this cycle's decisions WITHOUT executing: every symbol gets an
     explanation (holds included); stale symbols are blocked up front.
     Weights follow the engine convention: fraction of TOTAL equity
     (cash + positions), so a flat symbol's weight is 0."""
     decisions: list[dict] = []
-    date = _utc_now().date().isoformat()
-    total_equity = cash + sum(q * prices.get(s, 0.0) for s, q in current_positions.items())
-    eq = max(total_equity, 1e-9)
+    decision_time = as_of or _utc_now()
+    if decision_time.tzinfo is None:
+        decision_time = decision_time.replace(tzinfo=UTC)
+    date = decision_time.astimezone(UTC).date().isoformat()
+    missing_marks = sorted(
+        s for s, q in current_positions.items() if abs(q) > 1e-12 and not _positive_finite(prices.get(s))
+    )
+    total_equity = (
+        float(cash) + sum(float(q) * float(prices[s]) for s, q in current_positions.items())
+        if not missing_marks and _finite(cash)
+        else float("nan")
+    )
     for sym, (w, why) in targets.items():
         if sym in stale_symbols:
             decisions.append({"symbol": sym, "action": "blocked_stale", "explanation": why})
             continue
-        px = prices.get(sym, 0.0)
+        if missing_marks:
+            decisions.append(
+                {
+                    "symbol": sym,
+                    "action": "blocked_missing_mark",
+                    "explanation": f"{why} missing_marks={','.join(missing_marks)}",
+                }
+            )
+            continue
+        if not _finite(w) or not 0.0 <= float(w) <= 1.0:
+            decisions.append(
+                {
+                    "symbol": sym,
+                    "action": "blocked_invalid_target",
+                    "explanation": f"{why} invalid_target_weight={w}",
+                }
+            )
+            continue
+        if not _positive_finite(prices.get(sym)):
+            decisions.append({"symbol": sym, "action": "blocked_invalid_price", "explanation": why})
+            continue
+        if not _finite(total_equity) or total_equity <= 0.0:
+            decisions.append({"symbol": sym, "action": "blocked_invalid_equity", "explanation": why})
+            continue
+        px = float(prices[sym])
+        eq = total_equity
+        w = float(w)
         cur_w = current_positions.get(sym, 0.0) * px / eq
         action = "hold" if abs(w - cur_w) <= weight_epsilon else ("BUY" if w > cur_w else "SELL")
         decisions.append(
@@ -339,8 +529,15 @@ def daily_audit_report(
     else:
         lines.append("(none)")
     lines.append("\n## Alerts")
-    lines.extend(f"- {a['symbol']}: {a['level']} ({a['age_days']}d old)" if "age_days" in a else "- none" for a in alerts)
-    if not alerts:
+    if alerts:
+        for a in alerts:
+            subject = a.get("symbol", "system")
+            if "age_days" in a:
+                lines.append(f"- {subject}: {a['level']} ({a['age_days']}d old)")
+            else:
+                detail = f" — {a['detail']}" if a.get("detail") else ""
+                lines.append(f"- {subject}: {a['level']}{detail}")
+    else:
         lines.append("- none")
     return "\n".join(lines) + "\n"
 
@@ -350,7 +547,12 @@ def write_audit_report(reports_dir: str | Path, content: str, as_of: datetime | 
     d.mkdir(parents=True, exist_ok=True)
     stamp = (as_of or _utc_now()).date().isoformat()
     path = d / f"audit_{stamp}.md"
-    path.write_text(content, encoding="utf-8")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
     return path
 
 
@@ -379,47 +581,87 @@ def run_cycle(
     now = now or _utc_now()
     candles_by_symbol = {}
     targets: dict[str, tuple[float, str]] = {}
+    alerts: list[dict] = []
     for sym in symbols:
-        candles = fetch_candles_fn(sym)
+        try:
+            candles = fetch_candles_fn(sym)
+        except Exception as exc:  # data-source failure is isolated to this sleeve
+            candles = []
+            alerts.append({"symbol": sym, "level": "data_fetch_error", "detail": type(exc).__name__})
         candles_by_symbol[sym] = candles
         if candles:
             closes = [c["close"] for c in candles]
-            w = weight_fn(sym, candles)
-            prev_close = closes[-2] if len(closes) >= 2 else closes[-1]
+            latest = closes[-1]
+            if not _positive_finite(latest):
+                targets[sym] = (0.0, "invalid latest close — trading blocked")
+                alerts.append({"symbol": sym, "level": "invalid_price"})
+                continue
+            try:
+                w = weight_fn(sym, candles)
+            except Exception as exc:  # strategy bugs must not create an order
+                targets[sym] = (0.0, "strategy evaluation failed — trading blocked")
+                alerts.append({"symbol": sym, "level": "strategy_error", "detail": type(exc).__name__})
+                continue
+            prev_close = closes[-2] if len(closes) >= 2 else latest
             targets[sym] = (
                 w,
-                f"close={closes[-1]:.2f} prev_close={prev_close:.2f} "
-                f"candles={len(candles)} target_weight={w:.3f}",
+                f"close={float(latest):.2f} prev_close={float(prev_close):.2f} "
+                f"candles={len(candles)} target_weight={float(w):.3f}" if _finite(w) else
+                f"close={float(latest):.2f} prev_close={float(prev_close):.2f} "
+                f"candles={len(candles)} target_weight={w}",
             )
         else:
             targets[sym] = (0.0, "no candle data — forced flat")
 
-    alerts = staleness_alerts(candles_by_symbol, now_ms=int(now.timestamp() * 1000), max_age_days=max_age_days)
-    stale = {a["symbol"] for a in alerts}
-    prices = {s: cs[-1]["close"] for s, cs in candles_by_symbol.items() if cs}
+    alerts.extend(staleness_alerts(candles_by_symbol, now_ms=int(now.timestamp() * 1000), max_age_days=max_age_days))
+    blocked_symbols = {a["symbol"] for a in alerts if a.get("symbol")}
+    prices = {
+        s: float(cs[-1]["close"])
+        for s, cs in candles_by_symbol.items()
+        if cs and _positive_finite(cs[-1].get("close"))
+    }
 
-    decisions = []
+    decisions = decide_orders(
+        targets,
+        portfolio.cash,
+        portfolio.positions,
+        prices,
+        blocked_symbols,
+        as_of=now,
+    )
     fills = []
-    for d in decide_orders(targets, portfolio.cash, portfolio.positions, prices, stale) if prices else []:
-        decisions.append(d)
-        if d["action"] not in ("hold", "blocked_stale"):
-            res = portfolio.rebalance(
-                d["symbol"],
-                d["target_weight"],
-                prices[d["symbol"]],
-                idem_key=d["idem_key"],
-                reason=d["explanation"],
-                ts=now,
-                market_prices=prices,
-            )
-            if res is not None:
-                fills.append(res)
+    # Reallocations must release cash before consuming it. Otherwise a BUY
+    # encountered before its funding SELL can clamp to zero and poison the
+    # day's idempotency key despite no position change.
+    execution_order = sorted(
+        (d for d in decisions if d["action"] in ("SELL", "BUY")),
+        key=lambda d: 0 if d["action"] == "SELL" else 1,
+    )
+    for d in execution_order:
+        res = portfolio.rebalance(
+            d["symbol"],
+            d["target_weight"],
+            prices[d["symbol"]],
+            idem_key=d["idem_key"],
+            reason=d["explanation"],
+            ts=now,
+            market_prices=prices,
+        )
+        if res is not None:
+            fills.append(res)
 
-    report = daily_audit_report(portfolio, prices, decisions, [f for f in fills if f.get("kind") == "fill"], alerts, as_of=now)
+    trade_fills = [f for f in fills if f.get("kind") == "fill"]
+    report = daily_audit_report(portfolio, prices, decisions, trade_fills, alerts, as_of=now)
     if ai_note_fn is not None:
-        note = ai_note_fn(report)
-        if note:
-            report += "\n## AI commentary (advisory only — does not affect decisions)\n\n" + note.strip() + "\n"
+        try:
+            note = ai_note_fn(report)
+        except Exception as exc:
+            alerts.append({"level": "ai_commentary_error", "detail": type(exc).__name__})
+            report = daily_audit_report(portfolio, prices, decisions, trade_fills, alerts, as_of=now)
+            report += "\n## AI commentary (advisory only — does not affect decisions)\n\n(unavailable)\n"
+        else:
+            if note:
+                report += "\n## AI commentary (advisory only — does not affect decisions)\n\n" + note.strip() + "\n"
     report_path = write_audit_report(reports_dir, report, as_of=now)
     return {"decisions": decisions, "fills": fills, "alerts": alerts, "report_path": str(report_path), "report": report}
 
