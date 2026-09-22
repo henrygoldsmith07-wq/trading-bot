@@ -36,7 +36,7 @@ def _mk_manifest(tmp_path, algo):
              "strategy": BuyHold()}  # sleeve == raw asset return; isolates the portfolio layer
             for s in ("AAA", "BBB", "CCC")
         ],
-        frictions={"fee": 0.0, "spread_bps": 0.0, "slippage_bps": 0.0, "execution": "close", "risk_free_annual": 0.0},
+        frictions={"fee": 0.0, "spread_bps": 0.0, "slippage_bps": 0.0, "execution": "next_open", "risk_free_annual": 0.0},
         algorithm=algo,
         path=tmp_path / f"freeze_{abs(hash(json.dumps(algo, sort_keys=True))) % 10**8}.json",
         now=datetime(2026, 5, 31, tzinfo=UTC),
@@ -340,6 +340,22 @@ class TestSpecValidation:
             validate_algorithm(bad)
 
 
+    def test_prospective_freeze_rejects_same_close_execution(self, tmp_path):
+        from bot.prospective import create_freeze
+
+        with pytest.raises(ValueError, match="next_open"):
+            create_freeze(
+                assets=[{"symbol": "AAA", "source": "test", "periods_per_year": 365,
+                         "strategy": BuyHold()}],
+                frictions={"fee": 0.0, "spread_bps": 0.0, "slippage_bps": 0.0,
+                           "execution": "close", "risk_free_annual": 0.0},
+                algorithm=_algo(),
+                path=tmp_path / "bad_close_freeze.json",
+                now=datetime(2026, 5, 31, tzinfo=UTC),
+                git_commit="bad-close",
+            )
+
+
 class TestSealing:
     def test_algorithm_is_sealed_by_config_hash(self, tmp_path):
         from bot import prospective as P
@@ -375,7 +391,7 @@ class TestSealing:
         manifest = create_freeze(
             assets=[{"symbol": s, "source": "test", "periods_per_year": 365, "strategy": ConstWeight(0.5)}
                     for s in ("AAA", "BBB", "CCC")],
-            frictions={"fee": 0.0, "spread_bps": 0.0, "slippage_bps": 0.0, "execution": "close", "risk_free_annual": 0.0},
+            frictions={"fee": 0.0, "spread_bps": 0.0, "slippage_bps": 0.0, "execution": "next_open", "risk_free_annual": 0.0},
             algorithm=_algo(rebalance_band=0.9, overlay_enabled=False),
             path=tmp_path / "freeze_band.json",
             now=datetime(2026, 5, 31, tzinfo=UTC),
