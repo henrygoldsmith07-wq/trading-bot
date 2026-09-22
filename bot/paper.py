@@ -62,6 +62,32 @@ class OrderLedger:
     def append(self, order: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps(order, sort_keys=True, allow_nan=False)
+
+        # A crash can leave an unterminated tail. Repair only that tail before
+        # appending; a complete JSON record that merely lacks its newline gets
+        # the separator restored. This prevents two records being glued into
+        # one corrupt line on the next write.
+        if self.path.exists():
+            raw = self.path.read_text(encoding="utf-8")
+            if raw and not raw.endswith(("\n", "\r")):
+                tail = raw.splitlines()[-1].strip()
+                try:
+                    parsed_tail = json.loads(tail)
+                except json.JSONDecodeError:
+                    last_newline = raw.rfind("\n")
+                    repaired = raw[: last_newline + 1] if last_newline >= 0 else ""
+                    with open(self.path, "w", encoding="utf-8") as repair:
+                        repair.write(repaired)
+                        repair.flush()
+                        os.fsync(repair.fileno())
+                else:
+                    if not isinstance(parsed_tail, dict):
+                        raise LedgerCorruptionError("ledger final record is not an object")
+                    with open(self.path, "a", encoding="utf-8") as separator:
+                        separator.write("\n")
+                        separator.flush()
+                        os.fsync(separator.fileno())
+
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
             f.flush()
