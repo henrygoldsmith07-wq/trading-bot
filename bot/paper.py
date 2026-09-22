@@ -411,14 +411,57 @@ def staleness_alerts(
     now_ms: int | None = None,
     max_age_days: float = 3.0,
 ) -> list[dict]:
-    """Alerts for symbols whose most recent candle is older than the cutoff."""
+    """Alerts for missing, malformed, future-dated, or stale market data."""
     now = time.time() * 1000 if now_ms is None else now_ms
     alerts: list[dict] = []
     for sym, candles in candles_by_symbol.items():
-        age_days = (now - candles[-1]["open_time"]) / 86_400_000 if candles else float("inf")
-        if age_days > max_age_days:
+        if not candles:
+            alerts.append({"symbol": sym, "age_days": float("inf"), "level": "stale_data"})
+            continue
+        latest = candles[-1]
+        if not isinstance(latest, dict) or not _finite(latest.get("open_time")):
+            alerts.append({"symbol": sym, "level": "invalid_timestamp"})
+            continue
+        age_days = (now - float(latest["open_time"])) / 86_400_000
+        if age_days < -0.05:
+            alerts.append({"symbol": sym, "age_days": round(age_days, 1), "level": "future_data"})
+        elif age_days > max_age_days:
             alerts.append({"symbol": sym, "age_days": round(age_days, 1), "level": "stale_data"})
     return alerts
+
+
+def _scale_targets_to_gross_cap(
+    targets: dict[str, tuple[float, str]],
+    blocked_symbols: set[str],
+    max_gross_exposure: float,
+) -> tuple[dict[str, tuple[float, str]], dict | None]:
+    """Proportionally cap tradeable long-only targets to deterministic gross exposure."""
+    if not _finite(max_gross_exposure) or not 0.0 < float(max_gross_exposure) <= 1.0:
+        raise ValueError("max_gross_exposure must be finite and within (0, 1]")
+    cap = float(max_gross_exposure)
+    raw_gross = sum(
+        float(weight)
+        for sym, (weight, _why) in targets.items()
+        if sym not in blocked_symbols and _finite(weight) and 0.0 <= float(weight) <= 1.0
+    )
+    if raw_gross <= cap + 1e-12:
+        return targets, None
+
+    scale = cap / raw_gross
+    scaled: dict[str, tuple[float, str]] = {}
+    for sym, (weight, why) in targets.items():
+        if sym not in blocked_symbols and _finite(weight) and 0.0 <= float(weight) <= 1.0:
+            adjusted = float(weight) * scale
+            scaled[sym] = (
+                adjusted,
+                f"{why} gross-cap raw_target={float(weight):.3f} scaled_target={adjusted:.3f}",
+            )
+        else:
+            scaled[sym] = (weight, why)
+    return scaled, {
+        "level": "target_weights_scaled",
+        "detail": f"raw_gross={raw_gross:.6f} cap={cap:.6f} scale={scale:.6f}",
+    }
 
 
 def decide_orders(
@@ -570,6 +613,7 @@ def run_cycle(
     portfolio: PaperPortfolio,
     reports_dir: str | Path = "reports",
     max_age_days: float = 3.0,
+    max_gross_exposure: float = 1.0,
     now: datetime | None = None,
     ai_note_fn=None,
 ) -> dict:
@@ -581,18 +625,37 @@ def run_cycle(
     weights or fills — it runs after execution is complete.
     """
     now = now or _utc_now()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    if not _finite(max_age_days) or float(max_age_days) < 0.0:
+        raise ValueError("max_age_days must be finite and non-negative")
+    if not symbols:
+        raise ValueError("at least one symbol is required")
+    normalized_symbols = [str(sym).strip().upper() for sym in symbols if str(sym).strip()]
+    if not normalized_symbols:
+        raise ValueError("at least one non-empty symbol is required")
+    if len(set(normalized_symbols)) != len(normalized_symbols):
+        raise ValueError("symbols must be unique")
+
     candles_by_symbol = {}
     targets: dict[str, tuple[float, str]] = {}
     alerts: list[dict] = []
-    for sym in symbols:
+    for sym in normalized_symbols:
         try:
             candles = fetch_candles_fn(sym)
         except Exception as exc:  # data-source failure is isolated to this sleeve
             candles = []
             alerts.append({"symbol": sym, "level": "data_fetch_error", "detail": type(exc).__name__})
+        if not isinstance(candles, list):
+            alerts.append({"symbol": sym, "level": "invalid_candle_payload", "detail": type(candles).__name__})
+            candles = []
         candles_by_symbol[sym] = candles
         if candles:
-            closes = [c["close"] for c in candles]
+            if not all(isinstance(candle, dict) for candle in candles):
+                targets[sym] = (0.0, "malformed candle payload — trading blocked")
+                alerts.append({"symbol": sym, "level": "invalid_candle_payload"})
+                continue
+            closes = [candle.get("close") for candle in candles]
             latest = closes[-1]
             if not _positive_finite(latest):
                 targets[sym] = (0.0, "invalid latest close — trading blocked")
@@ -615,8 +678,17 @@ def run_cycle(
         else:
             targets[sym] = (0.0, "no candle data — forced flat")
 
-    alerts.extend(staleness_alerts(candles_by_symbol, now_ms=int(now.timestamp() * 1000), max_age_days=max_age_days))
+    alerts.extend(
+        staleness_alerts(
+            candles_by_symbol,
+            now_ms=int(now.timestamp() * 1000),
+            max_age_days=float(max_age_days),
+        )
+    )
     blocked_symbols = {a["symbol"] for a in alerts if a.get("symbol")}
+    targets, gross_alert = _scale_targets_to_gross_cap(targets, blocked_symbols, max_gross_exposure)
+    if gross_alert is not None:
+        alerts.append(gross_alert)
     prices = {
         s: float(cs[-1]["close"])
         for s, cs in candles_by_symbol.items()
