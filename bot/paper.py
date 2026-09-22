@@ -199,9 +199,19 @@ class PaperPortfolio:
             if not state_matches:
                 self.persist()
         elif state is not None:
-            self.cash = float(state["cash"])
-            self.positions = {s: float(q) for s, q in state["positions"].items()}
-            self._idem_keys = self.ledger.idem_keys()
+            state_cash = float(state["cash"])
+            state_positions = {s: float(q) for s, q in state["positions"].items()}
+            state_is_initial = (
+                not state_positions
+                and math.isclose(state_cash, self.start_cash, rel_tol=0.0, abs_tol=1e-8)
+            )
+            if not state_is_initial:
+                raise LedgerCorruptionError(
+                    "paper state contains traded balances but the durable order ledger is empty/missing"
+                )
+            self.cash = state_cash
+            self.positions = state_positions
+            self._idem_keys = set()
         else:
             self.cash = self.start_cash
             self.positions = {}
