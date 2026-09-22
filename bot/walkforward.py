@@ -20,13 +20,42 @@ from .portfolio_rules import _capped_normalize
 from .strategy import build_candidates
 
 
+def _validate_timeline(candles: list[dict]) -> list[int]:
+    if len(candles) < 2:
+        raise ValueError("need at least two candles")
+    times: list[int] = []
+    previous: int | None = None
+    for index, candle in enumerate(candles):
+        if not isinstance(candle, dict):
+            raise ValueError(f"candle {index} must be a mapping")
+        ts = candle.get("open_time")
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+            raise ValueError(f"candle {index} has invalid open_time")
+        ts_int = int(ts)
+        if ts_int != ts or ts_int < 0:
+            raise ValueError(f"candle {index} has invalid open_time")
+        if previous is not None and ts_int <= previous:
+            raise ValueError("candle timestamps must be strictly increasing")
+        times.append(ts_int)
+        previous = ts_int
+    return times
+
+
+def _positive_days(value: int, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{label} must be a positive integer")
+    return value
+
+
 def _fold_boundaries(candles: list[dict], train_days: int, test_days: int) -> list[tuple[int, int, int]]:
     """Expanding-window folds: train [0, train_end), test [train_end, test_end).
 
     Each fold's training window grows by one test period, and every test
     window is used exactly once — the most recent data is never skipped.
     """
-    times = [c["open_time"] for c in candles]
+    train_days = _positive_days(train_days, "train_days")
+    test_days = _positive_days(test_days, "test_days")
+    times = _validate_timeline(candles)
     n = len(candles)
     folds = []
     epoch = times[0]
@@ -76,10 +105,24 @@ def walk_forward_at(
     per-fold strategy picks, and summary statistics.
     """
     candidates = candidates if candidates is not None else build_candidates()
-    times = [c["open_time"] for c in candles]
+    if not candidates:
+        raise ValueError("candidate set must be non-empty")
+    times = _validate_timeline(candles)
     n = len(candles)
     if not abs_folds:
         raise ValueError("no folds supplied")
+    if isinstance(embargo_days, bool) or not isinstance(embargo_days, int) or embargo_days < 0:
+        raise ValueError("embargo_days must be a non-negative integer")
+    previous_test_end: int | None = None
+    for index, fold in enumerate(abs_folds):
+        if not isinstance(fold, tuple) or len(fold) != 2:
+            raise ValueError(f"fold {index} must be a (train_end, test_end) tuple")
+        train_end_time, test_end_time = fold
+        if train_end_time >= test_end_time:
+            raise ValueError(f"fold {index} must have train_end < test_end")
+        if previous_test_end is not None and train_end_time < previous_test_end:
+            raise ValueError("walk-forward test windows must not overlap")
+        previous_test_end = test_end_time
 
     engine_kwargs = dict(
         fee=fee,
@@ -177,7 +220,11 @@ def _purged_inner_folds(candles: list[dict], train_days: int, test_days: int, pu
     """Inner (selection) folds with a purge gap of `purge_days` between the
     end of training and the start of testing, so indicators computed on
     training data cannot reach into the evaluation window."""
-    times = [c["open_time"] for c in candles]
+    train_days = _positive_days(train_days, "train_days")
+    test_days = _positive_days(test_days, "test_days")
+    if isinstance(purge_days, bool) or not isinstance(purge_days, int) or purge_days < 0:
+        raise ValueError("purge_days must be a non-negative integer")
+    times = _validate_timeline(candles)
     n = len(candles)
     folds = []
     epoch = times[0]
@@ -197,8 +244,13 @@ def _purged_inner_folds(candles: list[dict], train_days: int, test_days: int, pu
 
 
 def nested_selection_fn(inner_train_days: int = 365, inner_test_days: int = 182, purge_days: int = 220, embargo_days: int = 30):
-    """Build a selection function that picks candidates by *inner* walk-forward
-    performance on the training window (nested walk-forward selection)."""
+    """Build a selection function that picks candidates by *inner* walk-forward performance."""
+    _positive_days(inner_train_days, "inner_train_days")
+    _positive_days(inner_test_days, "inner_test_days")
+    if isinstance(purge_days, bool) or not isinstance(purge_days, int) or purge_days < 0:
+        raise ValueError("purge_days must be a non-negative integer")
+    if isinstance(embargo_days, bool) or not isinstance(embargo_days, int) or embargo_days < 0:
+        raise ValueError("embargo_days must be a non-negative integer")
 
     def select(candidates, train_slice, engine_kwargs):
         inner_folds = _purged_inner_folds(train_slice, inner_train_days, inner_test_days, purge_days)
