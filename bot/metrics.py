@@ -20,11 +20,15 @@ def _validate_periods(periods_per_year: int) -> None:
 
 
 def _validate_returns(returns: list[float]) -> None:
+    """Validate numeric observations without imposing a distributional range.
+
+    Tail/moment helpers are also used on synthetic stress observations where
+    values can lie below -1; functions that compound returns validate the
+    resulting equity path separately.
+    """
     for i, value in enumerate(returns):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
             raise ValueError(f"return {i} must be finite")
-        if float(value) < -1.0:
-            raise ValueError(f"return {i} is below -100%")
 
 
 def _validate_equity(equity: list[float]) -> None:
