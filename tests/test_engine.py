@@ -1,3 +1,5 @@
+import pytest
+
 from bot.engine import run_strategy
 
 
@@ -37,10 +39,6 @@ def test_weights_clamped_to_unit_interval():
 
 
 def test_turnover_charged_on_weight_changes():
-    import math
-
-import pytest
-
     candles = _candles([100, 100, 100, 100, 100])
     res = run_strategy(candles, lambda c, i: 1.0 if i % 2 else 0.0, fee=0.01)
     # weights flip 0->1->0->1->0 over 4 return days: 4 unit changes of exposure
@@ -62,8 +60,6 @@ def test_no_lookahead_weight_never_sees_current_day():
 
 
 def test_return_days_aligned_with_returns():
-    import pytest
-
     candles = _candles([100, 110, 121])
     res = run_strategy(candles, lambda c, i: 1.0, fee=0.0)
     assert [t for t, _ in res["return_days"]] == [c["open_time"] for c in candles[1:]]
@@ -79,8 +75,6 @@ def test_exposure_and_stats_present():
 
 
 def test_insufficient_candles_raises():
-    import pytest
-
     with pytest.raises(ValueError):
         run_strategy(_candles([1.0]), lambda c, i: 1.0)
 
