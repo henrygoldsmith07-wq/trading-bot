@@ -173,6 +173,7 @@ class TestForwardRunner:
                        "execution": "next_open", "risk_free_annual": 0.03},
             algorithm=build_algorithm(rebalance_band=0.0, with_pool_version=False),
             path=tmp_path / "f.json",
+            now=datetime(2023, 11, 13, tzinfo=UTC),
             git_commit="canary",
         )
 
