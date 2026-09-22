@@ -182,6 +182,63 @@ def classify_forward_days(entries: list[dict]) -> dict[str, int]:
     return {"full": full, "partial": partial, "dark": dark, "closed": closed}
 
 
+def _order_lifecycle_warnings(entries: list[dict]) -> dict:
+    """Audit order metadata without rewriting the append-only return tape.
+
+    Lifecycle metadata is provenance, not an input to portfolio return
+    arithmetic. Broken chronology is therefore surfaced as a warning count,
+    while the original rows remain byte-for-byte auditable.
+    """
+    count = 0
+    reasons: dict[str, int] = {}
+
+    def bump(reason: str) -> None:
+        nonlocal count
+        count += 1
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+    def parse(value) -> datetime | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return dt if dt.tzinfo is not None else None
+
+    for entry in entries:
+        orders = entry.get("orders", [])
+        if not isinstance(orders, list):
+            bump("orders_not_list")
+            continue
+        for order in orders:
+            if not isinstance(order, dict):
+                bump("order_not_object")
+                continue
+            signal = parse(order.get("signal_generated_ts"))
+            intent = parse(order.get("intent_ts"))
+            submitted = parse(order.get("submitted_ts"))
+            filled = parse(order.get("fill_ts"))
+            if None in (signal, intent, submitted, filled):
+                bump("unparseable_timestamp")
+                continue
+            assert signal is not None and intent is not None and submitted is not None and filled is not None
+            if not (signal < intent <= submitted <= filled):
+                bump("non_monotonic_timestamps")
+                continue
+            if filled.date().isoformat() != entry.get("date"):
+                bump("fill_date_mismatch")
+                continue
+            price = order.get("fill_price")
+            if not isinstance(price, (int, float)) or isinstance(price, bool) or not math.isfinite(float(price)) or float(price) <= 0:
+                bump("invalid_fill_price")
+                continue
+            if order.get("side") not in ("BUY", "SELL"):
+                bump("invalid_side")
+
+    return {"count": count, "reasons": reasons}
+
+
 def _graded_forward_view(forward: dict | None) -> dict | None:
     """The view of the forward record that grading is allowed to see.
 
@@ -326,6 +383,7 @@ def build_forward_summary(
     # impossible to re-collapse by accident.
     outages = sum(len(e.get("outages", [])) for e in entries)
     missed_fills = sum(len(e.get("missed_fills", [])) for e in entries)
+    lifecycle = _order_lifecycle_warnings(entries)
     days = classify_forward_days(entries)
 
     curve = []
@@ -383,6 +441,13 @@ def build_forward_summary(
         "benchmark_return": round(bench_return, 4) if bench_return is not None else None,
         "data_outages": outages,
         "missed_fills": missed_fills,
+        "order_lifecycle_anomalies": lifecycle["count"],
+        "order_lifecycle_anomaly_reasons": lifecycle["reasons"],
+        "evidence_warnings": (
+            [f"{lifecycle['count']} order lifecycle metadata anomal"
+             f"{'y' if lifecycle['count'] == 1 else 'ies'} detected; returns were not rewritten"]
+            if lifecycle["count"] else []
+        ),
         "curve": curve,
     }
 
