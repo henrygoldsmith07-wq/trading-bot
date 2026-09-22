@@ -65,7 +65,9 @@ class TestCalibrate:
         assert rep["sufficient"]
         assert rep["predicted_cost_bps"] == pytest.approx(20.0)   # fee 10 + 5 + 5
         assert rep["observed_cost_proxy_bps"] == pytest.approx(6.0)
-        assert rep["error_bp"] == pytest.approx(-14.0)
+        assert rep["observed_total_cost_proxy_bps"] == pytest.approx(16.0)
+        assert rep["contractual_fee_bps"] == pytest.approx(10.0)
+        assert rep["error_bp"] == pytest.approx(-4.0)
         assert rep["v2_proposal"]["status"] == "proposed"
 
     def test_insufficient_sample_blocks_v2(self):
@@ -107,7 +109,8 @@ class TestRoundtripAndFormat:
         rep = calibrate(rows, v1_frictions={"fee": 0.001, "spread_bps": 5.0, "slippage_bps": 5.0})
         text = format_report(rep)
         assert "predicted trading cost" in text
-        assert "observed slippage proxy" in text
+        assert "observed price proxy" in text
+        assert "observed total proxy" in text
         assert "V2 proposal" in text
 
     def test_json_serializable(self):
