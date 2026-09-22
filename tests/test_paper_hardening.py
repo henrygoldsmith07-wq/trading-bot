@@ -425,3 +425,52 @@ class TestCycleResilience:
                 now=NOW,
             )
         assert calls["n"] == 0
+
+    def test_blocked_holding_consumes_custom_gross_cap(self, tmp_path):
+        pf = PaperPortfolio(
+            start_cash=1000.0,
+            fee=0.0,
+            state_file=tmp_path / "state.json",
+            ledger_file=tmp_path / "ledger.jsonl",
+        )
+        pf.rebalance("A", 0.4, 100.0, idem_key="seed-a", market_prices={"A": 100.0})
+        stale_time = int(NOW.timestamp() * 1000 - 10 * DAY_MS)
+        data = {
+            "A": [{"open_time": stale_time, "close": 100.0}],
+            "B": _candles([100.0] * 5),
+        }
+
+        result = run_cycle(
+            ["A", "B"],
+            lambda sym, _candles_: 0.0 if sym == "A" else 1.0,
+            lambda sym: data[sym],
+            pf,
+            reports_dir=tmp_path / "reports",
+            max_gross_exposure=0.6,
+            now=NOW,
+        )
+
+        assert pf.positions["A"] == pytest.approx(4.0)
+        assert pf.positions["B"] == pytest.approx(2.0)
+        assert pf.cash == pytest.approx(400.0)
+        assert result["decisions"][0]["action"] == "blocked_stale"
+        assert any(a["level"] == "target_weights_scaled" for a in result["alerts"])
+
+    def test_cycle_cannot_omit_an_existing_holding(self, tmp_path):
+        pf = PaperPortfolio(
+            start_cash=1000.0,
+            fee=0.0,
+            state_file=tmp_path / "state.json",
+            ledger_file=tmp_path / "ledger.jsonl",
+        )
+        pf.rebalance("A", 0.5, 100.0, idem_key="seed-a", market_prices={"A": 100.0})
+
+        with pytest.raises(ValueError, match="include all held positions"):
+            run_cycle(
+                ["B"],
+                lambda _sym, _candles_: 0.5,
+                lambda _sym: _candles([100.0] * 5),
+                pf,
+                reports_dir=tmp_path / "reports",
+                now=NOW,
+            )
