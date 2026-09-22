@@ -16,7 +16,7 @@ from bot.prospective import (
     slippage_stats,
     trailing_overlay_weight,
 )
-from bot.strategy import TrendVol, strategy_from_spec, strategy_to_spec
+from bot.strategy import BuyHold, TrendVol, strategy_from_spec, strategy_to_spec
 
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 RUN_NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
