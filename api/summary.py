@@ -73,8 +73,10 @@ def _load_forward_entries(log_path: str, frozen_date: str | None) -> list[dict]:
                 raise ForwardLogIntegrityError(f"forward log repeats date {day}")
             if previous_date is not None and day <= previous_date:
                 raise ForwardLogIntegrityError("forward log dates are not strictly increasing")
-            if frozen_date and day < frozen_date:
-                raise ForwardLogIntegrityError(f"forward log contains pre-freeze evidence ({day} < {frozen_date})")
+            if frozen_date and day <= frozen_date:
+                raise ForwardLogIntegrityError(
+                    f"forward log contains non-forward evidence ({day} <= freeze date {frozen_date})"
+                )
 
             assets = entry.get("assets")
             if not isinstance(assets, dict) or not assets:
