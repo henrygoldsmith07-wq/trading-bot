@@ -42,7 +42,10 @@ def _mk_freeze(tmp_path, strategies=None):
     return manifest, tmp_path / "freeze.json"
 
 
-def _candles(closes, day_of_first=0):
+def _candles(closes, day_of_first=None):
+    if day_of_first is None:
+        today_index = int(RUN_NOW.timestamp() * 1000 // 86_400_000)
+        day_of_first = today_index - (len(closes) - 1)
     return [
         {"open_time": (day_of_first + i) * 86_400_000, "close": c} for i, c in enumerate(closes)
     ]
@@ -224,10 +227,12 @@ def test_run_step_flags_missed_fill_after_data_gap(tmp_path):
     strat = {"AAA": TrendVol(10, 5, 0.5), "BBB": TrendVol(10, 5, 0.5)}
     manifest, path = _mk_freeze(tmp_path, strat)
     log = tmp_path / "log.jsonl"
-    # gapped history: 3-day hole between the last two completed candles
+    # Remove two completed bars while keeping a valid current-day print:
+    # the previous completed bar is still recent, but the last completed
+    # transition spans three calendar days (two missed fills).
     closes = [100.0 * 1.004 ** i for i in range(300)]
-    candles = _candles(closes)
-    candles[-1] = {"open_time": candles[-1]["open_time"] + 3 * 86_400_000, "close": closes[-1] * 1.01}
+    full = _candles(closes)
+    candles = full[:-4] + full[-2:]
     res = run_step(manifest, _fetcher({"AAA": candles, "BBB": _mk_rising(400)}), now=RUN_NOW, log_path=log)
     mf = res["entry"]["missed_fills"]
     assert any(m["symbol"] == "AAA" and m["delayed_days"] >= 2 for m in mf)
@@ -238,12 +243,63 @@ def test_run_step_uses_only_completed_candles_for_decision(tmp_path):
     manifest, _ = _mk_freeze(tmp_path, strat)
     log = tmp_path / "log.jsonl"
     rising = _mk_rising(400)
-    # today's in-progress candle has a wild price; decision must ignore it
-    candles = rising + [{"open_time": rising[-1]["open_time"] + 86_400_000, "close": 1e9}]
+    # Replace TODAY'S live mark with a wild price. It may affect marking, but
+    # the target must use only completed bars ending yesterday.
+    candles = [dict(row) for row in rising]
+    candles[-1]["close"] = 1e9
     res = run_step(manifest, _fetcher({"AAA": candles, "BBB": rising}), now=RUN_NOW, log_path=log)
     det = res["entry"]["assets"]["AAA"]
-    assert det["price"] == 1e9  # executed at latest print...
-    assert det["weight"] <= 1.0  # ...but the decision stayed sane
+    assert det["price"] == 1e9
+    assert det["target"] == pytest.approx(TrendVol(10, 5, 0.5).weight(rising[:-1]))
+
+
+def test_run_step_blocks_malformed_feed_without_crashing(tmp_path):
+    strat = {"AAA": TrendVol(10, 5, 0.5), "BBB": TrendVol(10, 5, 0.5)}
+    manifest, _ = _mk_freeze(tmp_path, strat)
+    bad = _mk_rising(20)
+    bad[5] = "not-a-candle"
+    res = run_step(
+        manifest,
+        _fetcher({"AAA": bad, "BBB": _mk_rising(20)}),
+        now=RUN_NOW,
+        log_path=tmp_path / "log.jsonl",
+    )
+    detail = res["entry"]["assets"]["AAA"]
+    assert detail["weight"] == 0.0
+    assert detail["note"].startswith("fail_closed:")
+    assert any(o["symbol"] == "AAA" for o in res["entry"]["outages"])
+
+
+def test_run_step_blocks_stale_continuous_history_even_with_current_mark(tmp_path):
+    strat = {"AAA": TrendVol(10, 5, 0.5), "BBB": TrendVol(10, 5, 0.5)}
+    manifest, _ = _mk_freeze(tmp_path, strat)
+    full = _mk_rising(40)
+    # Keep history only through five days ago, then provide today's live mark.
+    stale = full[:-5] + [full[-1]]
+    res = run_step(
+        manifest,
+        _fetcher({"AAA": stale, "BBB": full}),
+        now=RUN_NOW,
+        log_path=tmp_path / "log.jsonl",
+    )
+    detail = res["entry"]["assets"]["AAA"]
+    assert detail["weight"] == 0.0
+    assert "stale completed history" in detail["note"]
+    assert any(a["symbol"] == "AAA" and a["level"] == "stale_data" for a in res["entry"]["alerts"])
+
+
+def test_run_step_nonfinite_strategy_target_holds_position(tmp_path, monkeypatch):
+    strat = {"AAA": TrendVol(10, 5, 0.5), "BBB": TrendVol(10, 5, 0.5)}
+    manifest, _ = _mk_freeze(tmp_path, strat)
+    monkeypatch.setattr(TrendVol, "weight", lambda self, candles: float("nan"))
+    res = run_step(
+        manifest,
+        _fetcher({"AAA": _mk_rising(40), "BBB": _mk_rising(40)}),
+        now=RUN_NOW,
+        log_path=tmp_path / "log.jsonl",
+    )
+    assert all(d["weight"] == 0.0 for d in res["entry"]["assets"].values())
+    assert len([a for a in res["entry"]["alerts"] if a["level"] == "strategy_error"]) == 2
 
 
 def test_slippage_stats_from_log():
