@@ -103,6 +103,20 @@ def test_day_allocation_rejects_impossible_inverse_vol_cap():
         )
 
 
+def test_day_allocation_rejects_present_count_above_denominator():
+    hist = {"A": [0.01] * 20, "B": [0.02] * 20}
+    with pytest.raises(ValueError, match="cannot exceed"):
+        day_allocation(hist, ["A", "B"], 1, use_tilt=False, use_crisis=False)
+
+
+def test_day_allocation_rejects_duplicate_present_assets():
+    hist = {"A": [0.01] * 20}
+    with pytest.raises(ValueError, match="unique"):
+        day_allocation(hist, ["A", "A"], 2, use_tilt=False, use_crisis=False)
+
+
+
+
 # ---------- combined rule ----------
 
 def test_rule_beats_top_asset_when_momentum_persists():
