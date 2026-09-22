@@ -235,7 +235,7 @@ class TestRunStepIntegration:
             algorithm=build_algorithm(rebalance_band=0.0, overlay_enabled=False,
                                       use_tilt=False, use_crisis=False),
             path=tmp_path / "freeze.json",
-            now=datetime(2026, 8, 23, tzinfo=UTC),
+            now=datetime(2026, 5, 31, tzinfo=UTC),
             git_commit="cal",
         )
         obs_path = tmp_path / "cost_observations.jsonl"
@@ -260,7 +260,7 @@ class TestRunStepIntegration:
         res = run_step(
             manifest,
             lambda sym, src: (candles, None),
-            now=datetime(2026, 8, 23, tzinfo=UTC).replace(hour=12),
+            now=datetime(2026, 7, 1, 12, tzinfo=UTC),
             log_path=tmp_path / "log.jsonl",
             kwargs_quote_fetcher=fake_quote,
             cost_observation_path=obs_path,
