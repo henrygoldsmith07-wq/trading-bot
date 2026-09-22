@@ -90,6 +90,27 @@ def test_run_step_logs_and_is_idempotent(tmp_path):
     assert len(load_log(log)) == 1
 
 
+def test_order_lifecycle_timestamps_are_chronological(tmp_path):
+    strat = {"AAA": TrendVol(10, 5, 0.5), "BBB": TrendVol(10, 5, 0.5)}
+    manifest, _ = _mk_freeze(tmp_path, strat)
+    rising = _mk_rising(400)
+    res = run_step(
+        manifest,
+        _fetcher({"AAA": rising, "BBB": rising}),
+        now=NOW,
+        log_path=tmp_path / "log.jsonl",
+    )
+    orders = res["entry"]["orders"]
+    assert orders, "rising series should produce at least one simulated order"
+    for order in orders:
+        signal = datetime.fromisoformat(order["signal_generated_ts"])
+        intent = datetime.fromisoformat(order["intent_ts"])
+        submitted = datetime.fromisoformat(order["submitted_ts"])
+        filled = datetime.fromisoformat(order["fill_ts"])
+        assert (intent - signal).total_seconds() == pytest.approx(1.0)
+        assert signal < intent <= submitted <= filled
+
+
 def _mk_rising(n, start=100.0, growth=1.004):
     return _candles([start * growth ** i for i in range(n)])
 
