@@ -215,3 +215,118 @@ class TestCycleResilience:
         assert "AI commentary" in result["report"]
         assert "(unavailable)" in result["report"]
         assert (tmp_path / "reports" / "audit_2026-09-22.md").exists()
+
+    def test_overallocated_targets_are_scaled_proportionally(self, tmp_path):
+        pf = PaperPortfolio(
+            start_cash=1000.0,
+            fee=0.0,
+            state_file=tmp_path / "state.json",
+            ledger_file=tmp_path / "ledger.jsonl",
+        )
+        data = {"A": _candles([100.0] * 5), "B": _candles([100.0] * 5)}
+
+        result = run_cycle(
+            ["B", "A"],
+            lambda _sym, _candles_: 1.0,
+            lambda sym: data[sym],
+            pf,
+            reports_dir=tmp_path / "reports",
+            now=NOW,
+        )
+
+        assert pf.positions["A"] == pytest.approx(5.0)
+        assert pf.positions["B"] == pytest.approx(5.0)
+        assert pf.cash == pytest.approx(0.0)
+        assert any(a["level"] == "target_weights_scaled" for a in result["alerts"])
+        targets = {d["symbol"]: d.get("target_weight") for d in result["decisions"]}
+        assert targets == {"B": pytest.approx(0.5), "A": pytest.approx(0.5)}
+
+    def test_custom_gross_cap_is_respected(self, tmp_path):
+        pf = PaperPortfolio(
+            start_cash=1000.0,
+            fee=0.0,
+            state_file=tmp_path / "state.json",
+            ledger_file=tmp_path / "ledger.jsonl",
+        )
+        data = {"A": _candles([100.0] * 5), "B": _candles([100.0] * 5)}
+
+        run_cycle(
+            ["A", "B"],
+            lambda _sym, _candles_: 1.0,
+            lambda sym: data[sym],
+            pf,
+            reports_dir=tmp_path / "reports",
+            max_gross_exposure=0.6,
+            now=NOW,
+        )
+
+        assert pf.positions["A"] == pytest.approx(3.0)
+        assert pf.positions["B"] == pytest.approx(3.0)
+        assert pf.cash == pytest.approx(400.0)
+
+    def test_malformed_candle_payload_is_blocked_not_crashed(self, tmp_path):
+        pf = PaperPortfolio(
+            start_cash=1000.0,
+            fee=0.0,
+            state_file=tmp_path / "state.json",
+            ledger_file=tmp_path / "ledger.jsonl",
+        )
+
+        result = run_cycle(
+            ["BTC"],
+            lambda _sym, _candles_: 1.0,
+            lambda _sym: [{"open_time": int(NOW.timestamp() * 1000), "close": 100.0}, "broken"],
+            pf,
+            reports_dir=tmp_path / "reports",
+            now=NOW,
+        )
+
+        assert pf.positions == {}
+        assert any(a["level"] == "invalid_candle_payload" for a in result["alerts"])
+        assert result["decisions"][0]["action"] == "blocked_stale"
+
+    def test_future_dated_market_data_is_blocked(self, tmp_path):
+        pf = PaperPortfolio(
+            start_cash=1000.0,
+            fee=0.0,
+            state_file=tmp_path / "state.json",
+            ledger_file=tmp_path / "ledger.jsonl",
+        )
+        future_ms = int(NOW.timestamp() * 1000 + DAY_MS)
+
+        result = run_cycle(
+            ["BTC"],
+            lambda _sym, _candles_: 1.0,
+            lambda _sym: [{"open_time": future_ms, "close": 100.0}],
+            pf,
+            reports_dir=tmp_path / "reports",
+            now=NOW,
+        )
+
+        assert pf.positions == {}
+        assert any(a["level"] == "future_data" for a in result["alerts"])
+        assert result["decisions"][0]["action"] == "blocked_stale"
+
+    def test_duplicate_symbols_are_rejected_before_fetch(self, tmp_path):
+        pf = PaperPortfolio(
+            start_cash=1000.0,
+            fee=0.0,
+            state_file=tmp_path / "state.json",
+            ledger_file=tmp_path / "ledger.jsonl",
+        )
+        calls = {"n": 0}
+
+        def fetch(_sym):
+            calls["n"] += 1
+            return _candles([100.0])
+
+        with pytest.raises(ValueError, match="unique"):
+            run_cycle(
+                ["btc", "BTC"],
+                lambda _sym, _candles_: 0.5,
+                fetch,
+                pf,
+                reports_dir=tmp_path / "reports",
+                now=NOW,
+            )
+        assert calls["n"] == 0
