@@ -23,6 +23,7 @@ def _freeze():
         "frozen_at": "2026-08-25T10:54:24+00:00",
         "frozen_at_date": "2026-08-25",
         "git_commit_at_freeze": "41e3ee9a",
+        "code_sha256": "code-abc123",
         "config": {"assets": [{"symbol": s} for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT")]},
     }
 
@@ -151,7 +152,8 @@ class TestQuarantineArchive:
 class TestVerificationGate:
     def test_calibrate_excludes_wrong_freeze_rows(self, tmp_path):
         matching = {**_row(), "evidenceClass": "forward-paper",
-                    "freezeId": "freeze/2026-08-25", "frozenGitCommit": "41e3ee9a"}
+                    "freezeId": "freeze/2026-08-25", "frozenGitCommit": "41e3ee9a",
+                    "codeFingerprint": "code-abc123"}
         old_study = {**_row(symbol="ETHUSDT", exec_price=100.06),
                      "evidenceClass": "forward-paper",
                      "freezeId": "freeze/OLD-STUDY", "frozenGitCommit": "old"}
@@ -167,11 +169,28 @@ class TestVerificationGate:
         assert rep["sufficient"] is False
 
 
+    def test_missing_or_partial_freeze_provenance_is_excluded(self):
+        rows = [
+            {**_row(), "evidenceClass": "forward-paper"},
+            {**_row(symbol="ETHUSDT"), "evidenceClass": "forward-paper",
+             "freezeId": "freeze/2026-08-25", "frozenGitCommit": "41e3ee9a"},
+        ]
+        rep = calibrate(
+            rows,
+            v1_frictions={"fee": 0.001},
+            freeze_manifest=_freeze(),
+            now=NOW,
+        )
+        assert rep["n_turnover_events"] == 0
+        assert rep["evidence_exclusions"].get("wrong_freeze") == 2
+
+
 def _freeze():
     return {
         "frozen_at": FROZEN_AT,
         "frozen_at_date": "2026-08-25",
         "git_commit_at_freeze": "41e3ee9a",
+        "code_sha256": "code-abc123",
         "config": {"assets": [{"symbol": s} for s in ("BTCUSDT", "ETHUSDT")]},
     }
 
