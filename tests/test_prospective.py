@@ -92,6 +92,67 @@ def test_append_log_restores_missing_record_separator(tmp_path):
     assert [entry["date"] for entry in entries] == ["2026-08-23", "2026-08-24"]
 
 
+def test_freeze_rejects_duplicate_assets(tmp_path):
+    from bot.algorithm import build_algorithm
+    from bot.strategy import BuyHold
+
+    assets = [
+        {"symbol": "AAA", "source": "test", "periods_per_year": 365, "strategy": BuyHold()},
+        {"symbol": "AAA", "source": "test", "periods_per_year": 365, "strategy": BuyHold()},
+    ]
+    with pytest.raises(ValueError, match="duplicate frozen asset"):
+        create_freeze(
+            assets=assets,
+            frictions={"fee": 0.0, "spread_bps": 0.0, "slippage_bps": 0.0,
+                       "execution": "next_open", "risk_free_annual": 0.0},
+            algorithm=build_algorithm(with_pool_version=False),
+            path=tmp_path / "dup.json",
+            now=NOW,
+            git_commit="dup",
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutator", "match"),
+    [
+        (lambda a, f: a[0].update({"periods_per_year": 0}), "periods_per_year"),
+        (lambda a, f: a[0].update({"session": "moon_market"}), "unsupported session"),
+        (lambda a, f: f.update({"fee": -0.01}), "non-negative"),
+        (lambda a, f: f.update({"spread_bps": float("nan")}), "finite"),
+        (lambda a, f: f.update({"execution": "close"}), "next_open"),
+        (lambda a, f: f.update({"mystery_cost": 1.0}), "unknown friction"),
+    ],
+)
+def test_freeze_rejects_invalid_asset_or_friction_contract(tmp_path, mutator, match):
+    from bot.algorithm import build_algorithm
+    from bot.strategy import BuyHold
+
+    assets = [{"symbol": "AAA", "source": "test", "periods_per_year": 365,
+               "strategy": BuyHold()}]
+    frictions = {"fee": 0.0, "spread_bps": 0.0, "slippage_bps": 0.0,
+                 "execution": "next_open", "risk_free_annual": 0.0}
+    mutator(assets, frictions)
+    with pytest.raises(ValueError, match=match):
+        create_freeze(
+            assets=assets,
+            frictions=frictions,
+            algorithm=build_algorithm(with_pool_version=False),
+            path=tmp_path / "invalid.json",
+            now=NOW,
+            git_commit="invalid",
+        )
+
+
+def test_load_freeze_rejects_timestamp_date_disagreement(tmp_path):
+    manifest, path = _mk_freeze(tmp_path, {"AAA": BuyHold(), "BBB": BuyHold()})
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["frozen_at_date"] = "2026-08-21"
+    raw["config_sha256"] = raw["config_sha256"]
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="disagrees"):
+        load_freeze(path, verify_code=False)
+
+
 def test_run_step_refuses_same_day_as_freeze(tmp_path):
     strat = {"AAA": TrendVol(10, 5, 0.5), "BBB": TrendVol(10, 5, 0.5)}
     manifest, _ = _mk_freeze(tmp_path, strat)
