@@ -12,6 +12,7 @@ Python runtime detects automatically. Deployed with the repo's classic
 zero-config layout (static `public/` + functions in `api/`).
 """
 import json
+import math
 import os
 import sys
 from datetime import UTC, datetime
@@ -36,6 +37,68 @@ ENGINE_KWARGS: dict[str, Any] = dict(
     risk_free_annual=0.03,
     rebalance_band=0.05,
 )
+
+
+class ForwardLogIntegrityError(ValueError):
+    """Raised when the committed prospective evidence tape is not trustworthy."""
+
+
+def _load_forward_entries(log_path: str, frozen_date: str | None) -> list[dict]:
+    """Load the forward tape without silently discarding damaged evidence."""
+    if not os.path.exists(log_path):
+        return []
+    entries: list[dict] = []
+    seen_dates: set[str] = set()
+    previous_date: str | None = None
+    with open(log_path, encoding="utf-8") as f:
+        for line_no, raw_line in enumerate(f, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ForwardLogIntegrityError(f"forward log JSON is corrupt at line {line_no}") from exc
+            if not isinstance(entry, dict):
+                raise ForwardLogIntegrityError(f"forward log line {line_no} is not an object")
+
+            day = entry.get("date")
+            if not isinstance(day, str):
+                raise ForwardLogIntegrityError(f"forward log line {line_no} has no valid date")
+            try:
+                datetime.fromisoformat(day)
+            except ValueError as exc:
+                raise ForwardLogIntegrityError(f"forward log line {line_no} has an invalid date") from exc
+            if day in seen_dates:
+                raise ForwardLogIntegrityError(f"forward log repeats date {day}")
+            if previous_date is not None and day <= previous_date:
+                raise ForwardLogIntegrityError("forward log dates are not strictly increasing")
+            if frozen_date and day < frozen_date:
+                raise ForwardLogIntegrityError(f"forward log contains pre-freeze evidence ({day} < {frozen_date})")
+
+            assets = entry.get("assets")
+            if not isinstance(assets, dict) or not assets:
+                raise ForwardLogIntegrityError(f"forward log line {line_no} has no asset detail")
+            if any(not isinstance(detail, dict) for detail in assets.values()):
+                raise ForwardLogIntegrityError(f"forward log line {line_no} has malformed asset detail")
+
+            port_ret = entry.get("port_ret")
+            try:
+                port_ret_f = float(port_ret)
+            except (TypeError, ValueError) as exc:
+                raise ForwardLogIntegrityError(f"forward log line {line_no} has invalid port_ret") from exc
+            if not math.isfinite(port_ret_f) or port_ret_f < -1.0:
+                raise ForwardLogIntegrityError(f"forward log line {line_no} has impossible port_ret")
+            entry["port_ret"] = port_ret_f
+
+            for key in ("outages", "missed_fills"):
+                if key in entry and not isinstance(entry[key], list):
+                    raise ForwardLogIntegrityError(f"forward log line {line_no} has invalid {key}")
+
+            entries.append(entry)
+            seen_dates.add(day)
+            previous_date = day
+    return entries
 
 
 def is_fully_observed(entry: dict) -> bool:
@@ -180,7 +243,7 @@ def build_forward_summary(
             raise ValueError("config sha mismatch — manifest tampered")
         code_verified = True
         code_reason = None
-    except ValueError as exc:
+    except (ValueError, KeyError, TypeError, OSError) as exc:
         code_verified = False
         code_reason = str(exc)
         manifest = locals().get("manifest") or {}
@@ -193,19 +256,26 @@ def build_forward_summary(
     except Exception:
         runtime_matches = False
 
-    entries = []
-    if os.path.exists(log_path):
-        for line in open(log_path, encoding="utf-8"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entries.append(_json.loads(line))
-            except ValueError:
-                continue
-
     frozen_date = manifest.get("frozen_at_date")
     commit = (manifest.get("git_commit_at_freeze") or "")[:12] or None
+    try:
+        entries = _load_forward_entries(log_path, frozen_date)
+    except ForwardLogIntegrityError as exc:
+        return {
+            "available": True,
+            "started": False,
+            "frozen_date": frozen_date,
+            "code": commit,
+            "code_verified": code_verified,
+            "code_reason": code_reason,
+            "evidence_verified": False,
+            "evidence_reason": str(exc),
+            "runtime_matches_freeze": runtime_matches,
+            "days_untouched": None,
+            "parameter_changes": 0,
+            "config_sha256": (manifest.get("config_sha256") or "")[:16],
+            "reason": f"forward evidence integrity failure: {exc}",
+        }
 
     if not entries:
         return {
@@ -215,6 +285,8 @@ def build_forward_summary(
             "code": commit,
             "code_verified": code_verified,
             "code_reason": code_reason,
+            "evidence_verified": True,
+            "evidence_reason": None,
             "runtime_matches_freeze": runtime_matches,
             "days_untouched": None,
             "parameter_changes": 0,
@@ -281,6 +353,8 @@ def build_forward_summary(
         "code": commit,
         "code_verified": code_verified,
         "code_reason": code_reason,
+        "evidence_verified": True,
+        "evidence_reason": None,
         "runtime_matches_freeze": runtime_matches,
         "days_untouched": days_untouched,
         # len(entries) is SCHEDULED days. days_full is what the evidence is
