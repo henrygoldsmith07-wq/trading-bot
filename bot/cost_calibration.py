@@ -36,6 +36,10 @@ OBSERVATIONS_LOG = Path(
 CALIBRATION_FILE = Path("cost_calibration.json")
 
 
+class CostObservationIntegrityError(ValueError):
+    """Raised when the append-only cost tape cannot be trusted."""
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -113,17 +117,30 @@ def append_observation(observation: dict, path: str | Path = OBSERVATIONS_LOG) -
 
 
 def load_observations(path: str | Path = OBSERVATIONS_LOG) -> list[dict]:
+    """Load the append-only cost tape; only a torn final write is ignorable."""
     p = Path(path)
     if not p.exists():
         return []
-    out = []
-    for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line:
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
+    raw = p.read_text(encoding="utf-8")
+    lines = raw.splitlines()
+    out: list[dict] = []
+    for line_no, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            if line_no == len(lines) and not raw.endswith(("\n", "\r")):
                 continue
+            raise CostObservationIntegrityError(
+                f"cost observation JSON is corrupt at line {line_no}"
+            ) from exc
+        if not isinstance(row, dict):
+            raise CostObservationIntegrityError(
+                f"cost observation line {line_no} is not an object"
+            )
+        out.append(row)
     return out
 
 
