@@ -1,7 +1,7 @@
 
 import pytest
 
-from bot.portfolio_rules import avg_pairwise_corr, combine_portfolio_rule, tilt_multipliers
+from bot.portfolio_rules import _capped_normalize, avg_pairwise_corr, combine_portfolio_rule, day_allocation, tilt_multipliers
 
 
 def _flat_timeline(n, start=1_600_000_000_000):
@@ -47,6 +47,60 @@ def test_avg_pairwise_corr_detects_co_movement():
 def test_avg_pairwise_corr_insufficient_history():
     assert avg_pairwise_corr({"A": [0.1, 0.2], "B": [0.1, 0.2]}, 60) is None
     assert avg_pairwise_corr({"A": [0.1] * 5}, 3) is None
+
+
+# ---------- allocation invariants ----------
+
+def test_capped_normalize_never_breaks_cap_during_redistribution():
+    raw = {
+        "A": 0.70,
+        "B": 0.15,
+        "C": 0.03,
+        "D": 0.03,
+        "E": 0.03,
+        "F": 0.02,
+        "G": 0.01,
+        "H": 0.01,
+        "I": 0.01,
+        "J": 0.01,
+    }
+    weights = _capped_normalize(raw, cap=0.20)
+    assert sum(weights.values()) == pytest.approx(1.0, abs=1e-12)
+    assert max(weights.values()) <= 0.20 + 1e-12
+
+
+def test_momentum_tilt_changes_relative_weights_not_gross_exposure():
+    hist = {
+        "A": [0.001, 0.002] * 60,
+        "B": [-0.04, 0.03] * 60,
+        "C": [0.01, -0.008] * 60,
+    }
+    weights, exposure, _ = day_allocation(
+        hist,
+        ["A", "B", "C"],
+        3,
+        vol_window=20,
+        use_tilt=True,
+        tilt_lookback=90,
+        max_tilt=0.5,
+        use_crisis=False,
+    )
+    assert sum(weights.values()) == pytest.approx(1.0, abs=1e-12)
+    assert exposure == pytest.approx(1.0)
+    assert weights["A"] > weights["B"]
+
+
+def test_day_allocation_rejects_impossible_inverse_vol_cap():
+    hist = {"A": [0.01, -0.01] * 20, "B": [0.02, -0.02] * 20}
+    with pytest.raises(ValueError, match="infeasible"):
+        day_allocation(
+            hist,
+            ["A", "B"],
+            2,
+            max_multiple_of_equal=0.5,
+            use_tilt=False,
+            use_crisis=False,
+        )
 
 
 # ---------- combined rule ----------
