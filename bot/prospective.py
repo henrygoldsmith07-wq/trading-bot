@@ -446,8 +446,8 @@ def run_step(
                 "side": "BUY" if w_eff > prev_w else "SELL",
                 "signal_generated_ts": signal_ts,
                 "intent_ts": (datetime.fromtimestamp(
-                    completed[-1]["open_time"] / 1000 + 86_400_000, tz=UTC
-                )).isoformat(),  # when the order was intended to work
+                    completed[-1]["open_time"] / 1000 + 86_400.0, tz=UTC
+                )).isoformat(),  # next daily open after the signal close
                 "submitted_ts": now.isoformat(),
                 "fill_ts": now.isoformat(),
                 "fill_price": exec_price,
