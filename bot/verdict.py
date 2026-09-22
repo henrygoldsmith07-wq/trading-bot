@@ -231,7 +231,21 @@ def build_verdict(
     else:
         c = {"grade": "Insufficient", "inputs": {}, "reason": "no cost tape"}
 
-    if forward and forward.get("available") and forward.get("started"):
+    if forward and forward.get("available") and forward.get("evidence_verified") is False:
+        f = grade_forward(
+            days_recorded=0,
+            code_verified=bool(forward.get("code_verified", True)),
+            evidence_verified=False,
+            parameter_changes=int(forward.get("parameter_changes", 0)),
+            outage_days=0,
+        )
+        f_out = {
+            "grade": f["grade"],
+            "inputs": {**f["inputs"], "days_recorded": 0},
+            "reason": forward.get("evidence_reason") or f["reason"],
+            "label": f"{f['grade']} — 0 trading days",
+        }
+    elif forward and forward.get("available") and forward.get("started"):
         n_days = int(forward.get("n_days_recorded", 0))
         f = grade_forward(
             days_recorded=n_days,
