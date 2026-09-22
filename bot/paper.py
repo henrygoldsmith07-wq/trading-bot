@@ -308,10 +308,12 @@ class PaperPortfolio:
         px = prices.get(symbol)
         if not _positive_finite(px):
             raise ValueError(f"no usable price for {symbol}")
+        assert px is not None
+        px_value = float(px)
         eq = self.equity(prices)
         if not _finite(eq) or eq < 0.0:
             raise ValueError("portfolio equity is not finite/non-negative")
-        return float(target_weight) * eq / float(px)
+        return float(target_weight) * eq / px_value
 
     def rebalance(
         self,
