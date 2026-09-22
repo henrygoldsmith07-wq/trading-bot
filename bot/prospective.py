@@ -374,34 +374,66 @@ def replay_throttle_state(port_rets: list[float], th: dict) -> tuple[float, floa
     return equity, peak, throttled
 
 
+def _feed_sanity_problem(candles) -> str | None:
+    """Validate the ordered price history before any signal can consume it."""
+    if not isinstance(candles, list):
+        return "feed payload is not a list"
+    previous_ts: float | None = None
+    for index, candle in enumerate(candles):
+        if not isinstance(candle, dict):
+            return f"candle {index} is not an object"
+        try:
+            ts = float(candle["open_time"])
+            close = float(candle["close"])
+        except (KeyError, TypeError, ValueError):
+            return f"candle {index} missing numeric timestamp/close"
+        if not math.isfinite(ts) or ts < 0.0:
+            return f"candle {index} has invalid timestamp"
+        if not math.isfinite(close) or close <= 0.0:
+            return f"candle {index} has invalid close"
+        if previous_ts is not None and ts <= previous_ts:
+            return "feed timestamps are not strictly increasing"
+        previous_ts = ts
+    return None
+
+
 def _bar_sanity_problem(candle: dict) -> str | None:
-    """FAIL-CLOSED bar validation. Returns a problem string, or None when the
-    print is tradeable. Guards the execution path against impossible prices:
-    non-positive/non-finite OHLC, high < low, close outside [low, high] band
-    (with a small tolerance), and single-bar moves beyond ±50% vs the open."""
-    import math
+    """FAIL-CLOSED validation for the execution/mark bar."""
+    if not isinstance(candle, dict):
+        return "bar is not an object"
 
-    def bad(*vals: float) -> bool:
-        return any(v is None or not math.isfinite(v) or v <= 0 for v in vals)
+    def positive_finite(value) -> float | None:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        return numeric if math.isfinite(numeric) and numeric > 0.0 else None
 
-    o = candle.get("open")
-    hi, lo, c = candle.get("high"), candle.get("low"), candle.get("close")
-    if c is None:
-        return "missing close"
-    if not math.isfinite(float(c)) or float(c) <= 0:
-        return f"non-positive close ({c})"
-    if o is not None and hi is not None and lo is not None:
-        if bad(float(o), float(hi), float(lo)):
+    close = positive_finite(candle.get("close"))
+    if close is None:
+        return f"invalid close ({candle.get('close')})"
+
+    raw_open = candle.get("open")
+    raw_high = candle.get("high")
+    raw_low = candle.get("low")
+    present_ohl = [raw_open is not None, raw_high is not None, raw_low is not None]
+    if any(present_ohl) and not all(present_ohl):
+        return "partial OHLC fields"
+    if all(present_ohl):
+        open_px = positive_finite(raw_open)
+        high = positive_finite(raw_high)
+        low = positive_finite(raw_low)
+        if None in (open_px, high, low):
             return "non-finite/zero OHLC field"
-        if float(hi) < float(lo):
-            return f"high<low ({hi}<{lo})"
+        assert open_px is not None and high is not None and low is not None
+        if high < low:
+            return f"high<low ({high}<{low})"
         tol = 1.001
-        if not (float(lo) / tol <= float(c) <= float(hi) * tol):
-            return f"close {c} outside [low,high]=[{lo},{hi}]"
-        if o and (float(o) > 0):
-            move = abs(float(c) / float(o) - 1.0)
-            if move > 0.5:
-                return f"|open->close| {move:.0%} exceeds 50% sanity bound"
+        if not (low / tol <= close <= high * tol):
+            return f"close {close} outside [low,high]=[{low},{high}]"
+        move = abs(close / open_px - 1.0)
+        if move > 0.5:
+            return f"|open->close| {move:.0%} exceeds 50% sanity bound"
     return None
 
 
@@ -510,11 +542,24 @@ def run_step(
         session = a.get("session", "continuous")
         strategy = strategy_from_spec(a["strategy"])  # raises on tampered spec: no fallback
         prev_w = prev_weights.get(sym, 0.0)  # EFFECTIVE (post-band) weight held
-        candles, problem = fetcher(sym, a["source"])
+        try:
+            candles, problem = fetcher(sym, a["source"])
+        except Exception as exc:
+            candles, problem = [], f"fetch exception: {type(exc).__name__}"
         if problem:
             outages.append({"symbol": sym, "problem": problem})
             sleeve_rets.append(0.0)
             asset_details[sym] = {"weight": prev_w, "target": prev_w, "price": None, "sleeve_ret": 0.0, "slippage_bps": None, "note": problem}
+            continue
+        feed_problem = _feed_sanity_problem(candles)
+        if feed_problem:
+            outages.append({"symbol": sym, "problem": f"bad feed: {feed_problem}"})
+            sleeve_rets.append(0.0)
+            asset_details[sym] = {
+                "weight": prev_w, "target": prev_w, "price": None,
+                "sleeve_ret": 0.0, "slippage_bps": None,
+                "note": f"fail_closed:{feed_problem}",
+            }
             continue
 
         # ---- exchange-calendar gate ------------------------------------------
@@ -546,6 +591,25 @@ def run_step(
             alerts.append({"symbol": sym, "level": "future_dated_rows_dropped",
                            "dropped": len(candles) - len(usable)})
         candles = usable
+        if not candles:
+            outages.append({"symbol": sym, "problem": "no usable current/past candles"})
+            sleeve_rets.append(0.0)
+            asset_details[sym] = {
+                "weight": prev_w, "target": prev_w, "price": None,
+                "sleeve_ret": 0.0, "slippage_bps": None,
+                "note": "fail_closed:no usable candles",
+            }
+            continue
+        latest_date = datetime.fromtimestamp(candles[-1]["open_time"] / 1000, tz=UTC).date()
+        if session == "continuous" and latest_date != now.date():
+            problem = "missing current continuous-session bar"
+            outages.append({"symbol": sym, "problem": problem})
+            sleeve_rets.append(0.0)
+            asset_details[sym] = {
+                "weight": prev_w, "target": prev_w, "price": None,
+                "sleeve_ret": 0.0, "slippage_bps": None, "note": problem,
+            }
+            continue
 
         # use only completed candles for the decision
         completed = [c for c in candles if datetime.fromtimestamp(c["open_time"] / 1000, tz=UTC).date() < now.date()]
@@ -557,8 +621,16 @@ def run_step(
         # data-staleness alert: a print much older than one bar means the feed
         # is silently frozen; trade the stale weight but say so loudly
         age_days = (now - datetime.fromtimestamp(completed[-1]["open_time"] / 1000, tz=UTC)).total_seconds() / 86_400.0
-        if age_days > 3.0:
+        if session == "continuous" and age_days > 3.0:
             alerts.append({"symbol": sym, "level": "stale_data", "age_days": round(age_days, 1)})
+            problem = f"stale completed history ({age_days:.1f}d)"
+            outages.append({"symbol": sym, "problem": problem})
+            sleeve_rets.append(0.0)
+            asset_details[sym] = {
+                "weight": prev_w, "target": prev_w, "price": None,
+                "sleeve_ret": 0.0, "slippage_bps": None, "note": problem,
+            }
+            continue
 
         # ---- FAIL CLOSED on corrupted prints --------------------------------
         # An impossible final bar (non-positive close, high<low, |1d move|
@@ -576,8 +648,15 @@ def run_step(
             continue
 
         try:
-            w_target = max(0.0, min(1.0, strategy.weight(completed)))
-        except Exception as exc:  # noqa: BLE001 — one bad symbol must not kill the day
+            raw_target = strategy.weight(completed)
+            if (
+                isinstance(raw_target, bool)
+                or not isinstance(raw_target, (int, float))
+                or not math.isfinite(float(raw_target))
+            ):
+                raise ValueError(f"non-finite/non-numeric target {raw_target!r}")
+            w_target = max(0.0, min(1.0, float(raw_target)))
+        except Exception as exc:  # one bad symbol must not create an order
             alerts.append({"symbol": sym, "level": "strategy_error",
                            "detail": f"{type(exc).__name__}: {exc}"})
             w_target = prev_w  # hold previous weight; no new signal this bar
@@ -586,12 +665,8 @@ def run_step(
         w_eff = w_target if abs(w_target - prev_w) > band else prev_w
         decision_close = completed[-1]["close"]
         today_candle = candles[-1]
-        is_today = datetime.fromtimestamp(today_candle["open_time"] / 1000, tz=UTC).date() == now.date()
-        if is_today:
-            exec_price = open_of(today_candle, fallback=decision_close)  # fill at today's open
-        else:
-            exec_price = today_candle["close"]  # lagged feed: first available print
-        closing_price = today_candle["close"]  # latest snapshot (live print)
+        exec_price = open_of(today_candle, fallback=decision_close)  # frozen next-open convention
+        closing_price = today_candle["close"]  # latest snapshot (live print / closed equity bar)
         # Accounting anchor: the LAST MARKED price for this asset (previous
         # entry's snapshot), falling back to the decision close on the first
         # day or after an outage. Chaining marks means every price interval
