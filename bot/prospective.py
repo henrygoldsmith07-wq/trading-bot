@@ -207,6 +207,19 @@ def append_log(entry: dict, path: str | Path = LOG_FILE) -> None:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(entry, allow_nan=False)
+
+    # Validate the existing tape before extending it. A complete final record
+    # without a newline is valid evidence, but it still needs a separator or
+    # the next JSON object would be glued onto it.
+    if p.exists():
+        load_log(p)
+        raw = p.read_text(encoding="utf-8")
+        if raw and not raw.endswith(("\n", "\r")):
+            with open(p, "a", encoding="utf-8") as separator:
+                separator.write("\n")
+                separator.flush()
+                os.fsync(separator.fileno())
+
     with open(p, "a", encoding="utf-8") as f:
         f.write(line + "\n")
         f.flush()
