@@ -290,7 +290,7 @@ class PaperPortfolio:
         total = self.cash
         for sym, qty in self.positions.items():
             px = prices.get(sym)
-            if px is None:  # unknown mark: carry last known cost basis conservatively
+            if px is None:  # partial valuations are allowed only for reporting helpers
                 continue
             total += qty * px
         return total
@@ -548,16 +548,32 @@ def daily_audit_report(
     fills, alerts."""
     now = as_of or _utc_now()
     lines = [f"# Paper audit report — {now.date().isoformat()} {now.strftime('%H:%M')} UTC"]
-    lines.append(f"\nEquity: ${portfolio.equity(prices):,.2f}  Cash: ${portfolio.cash:,.2f}")
+    missing_marks = sorted(
+        sym for sym, qty in portfolio.positions.items()
+        if abs(qty) > 1e-12 and not _positive_finite(prices.get(sym))
+    )
+    equity_value = None if missing_marks else portfolio.equity(prices)
+    if equity_value is None:
+        lines.append(
+            f"\nEquity: unavailable (missing marks: {','.join(missing_marks)})  "
+            f"Cash: ${portfolio.cash:,.2f}"
+        )
+    else:
+        lines.append(f"\nEquity: ${equity_value:,.2f}  Cash: ${portfolio.cash:,.2f}")
     lines.append("\n## Positions")
     if portfolio.positions:
         lines.append("| symbol | qty | price | value | weight |")
         lines.append("|---|---|---|---|---|")
-        eq = max(portfolio.equity(prices), 1e-9)
+        eq = max(equity_value, 1e-9) if equity_value is not None else None
         for sym, qty in sorted(portfolio.positions.items()):
-            px = prices.get(sym, 0.0)
-            val = qty * px
-            lines.append(f"| {sym} | {qty:.6f} | {px:.2f} | ${val:,.2f} | {val / eq:.1%} |")
+            px = prices.get(sym)
+            if not _positive_finite(px):
+                lines.append(f"| {sym} | {qty:.6f} | n/a | n/a | n/a |")
+                continue
+            assert px is not None
+            val = qty * float(px)
+            weight = f"{val / eq:.1%}" if eq is not None else "n/a"
+            lines.append(f"| {sym} | {qty:.6f} | {float(px):.2f} | ${val:,.2f} | {weight} |")
     else:
         lines.append("(flat)")
     lines.append("\n## Decisions & explanations")
@@ -694,6 +710,44 @@ def run_cycle(
         for s, cs in candles_by_symbol.items()
         if cs and _positive_finite(cs[-1].get("close"))
     }
+
+    # The broker is long-only and unlevered, so independent per-symbol signals
+    # cannot be allowed to request more than the portfolio can own. Scale only
+    # valid, tradable targets, and reserve weight for blocked holdings that
+    # cannot safely be changed this cycle.
+    missing_held_marks = [
+        s for s, q in portfolio.positions.items()
+        if abs(q) > 1e-12 and not _positive_finite(prices.get(s))
+    ]
+    if not missing_held_marks:
+        marked_equity = portfolio.equity(prices)
+        if _positive_finite(marked_equity):
+            locked_weight = sum(
+                q * prices[s] / marked_equity
+                for s, q in portfolio.positions.items()
+                if s in blocked_symbols and s in prices
+            )
+            available_weight = max(0.0, 1.0 - locked_weight)
+            scalable = {
+                s: float(w)
+                for s, (w, _why) in targets.items()
+                if s not in blocked_symbols and _finite(w) and 0.0 <= float(w) <= 1.0
+            }
+            raw_gross = sum(scalable.values())
+            if raw_gross > available_weight + 1e-12 and raw_gross > 0.0:
+                scale = available_weight / raw_gross
+                for s, raw_weight in scalable.items():
+                    _old_weight, why = targets[s]
+                    targets[s] = (
+                        raw_weight * scale,
+                        f"{why} normalized_from={raw_weight:.3f} scale={scale:.3f}",
+                    )
+                alerts.append(
+                    {
+                        "level": "target_weights_normalized",
+                        "detail": f"gross={raw_gross:.3f} available={available_weight:.3f}",
+                    }
+                )
 
     decisions = decide_orders(
         targets,
