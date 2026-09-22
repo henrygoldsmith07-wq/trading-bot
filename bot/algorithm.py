@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 
 # --- defaults: the headline configuration ----------------------------------
 
@@ -73,13 +74,19 @@ def candidate_pool_version(candidates: list | None = None) -> str:
 
 
 def validate_algorithm(spec: dict) -> None:
-    """Reject unknown keys and bad types. Typos are behaviour changes."""
+    """Reject unknown keys, bad types and mathematically invalid parameters.
+
+    A frozen manifest is an executable research contract. Values that would
+    make the allocator undefined or change its meaning must fail before the
+    config can be sealed.
+    """
     unknown_top = set(spec) - set(ALGORITHM_DEFAULTS)
     if unknown_top:
         raise ValueError(f"unknown algorithm key(s): {sorted(unknown_top)}")
     missing = [k for k in _SCALARS | _SECTIONS if k not in spec]
     if missing:
         raise ValueError(f"algorithm missing required key(s): {sorted(missing)}")
+
     for section in _SECTIONS:
         sub = spec[section]
         if not isinstance(sub, dict):
@@ -87,20 +94,87 @@ def validate_algorithm(spec: dict) -> None:
         unknown_sub = set(sub) - set(ALGORITHM_DEFAULTS[section])
         if unknown_sub:
             raise ValueError(f"unknown key(s) in algorithm.{section}: {sorted(unknown_sub)}")
-    band = spec["rebalance_band"]
-    if not isinstance(band, (int, float)) or not 0 <= band < 1:
+        missing_sub = set(ALGORITHM_DEFAULTS[section]) - set(sub)
+        if missing_sub:
+            raise ValueError(
+                f"algorithm.{section} missing required key(s): {sorted(missing_sub)}"
+            )
+
+    def finite_number(value, label: str) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{label} must be numeric")
+        out = float(value)
+        if not math.isfinite(out):
+            raise ValueError(f"{label} must be finite")
+        return out
+
+    def positive_int(value, label: str, minimum: int = 1) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise ValueError(f"{label} must be an integer >= {minimum}")
+        return value
+
+    band = finite_number(spec["rebalance_band"], "rebalance_band")
+    if not 0.0 <= band < 1.0:
         raise ValueError("rebalance_band must be a fraction in [0, 1)")
+
     if spec["selection_mode"] not in ("walk_forward_selected", "fixed_risk_ensemble"):
         raise ValueError("selection_mode must be 'walk_forward_selected' or 'fixed_risk_ensemble'")
+    pool_version = spec["candidate_pool_version"]
+    if pool_version is not None and (not isinstance(pool_version, str) or not pool_version.strip()):
+        raise ValueError("candidate_pool_version must be a non-empty string or null")
+    if not isinstance(spec["universe_selection_rule"], str) or not spec["universe_selection_rule"].strip():
+        raise ValueError("universe_selection_rule must be a non-empty string")
+
+    wt = spec["weighting"]
+    if wt.get("mode") != "inverse_vol":
+        raise ValueError("weighting.mode must be 'inverse_vol'")
+    positive_int(wt.get("vol_window"), "weighting.vol_window", minimum=2)
+    max_multiple = finite_number(wt.get("max_multiple_of_equal"), "weighting.max_multiple_of_equal")
+    if max_multiple < 1.0:
+        raise ValueError("weighting.max_multiple_of_equal must be >= 1")
+
     xs = spec["xs_momentum"]
     if not isinstance(xs.get("enabled"), bool):
         raise ValueError("xs_momentum.enabled must be bool")
+    positive_int(xs.get("lookback"), "xs_momentum.lookback")
+    max_tilt = finite_number(xs.get("max_tilt"), "xs_momentum.max_tilt")
+    if not 0.0 <= max_tilt <= 1.0:
+        raise ValueError("xs_momentum.max_tilt must be in [0, 1]")
+
     cd = spec["crisis_derisk"]
     if not isinstance(cd.get("enabled"), bool):
         raise ValueError("crisis_derisk.enabled must be bool")
+    positive_int(cd.get("corr_window"), "crisis_derisk.corr_window", minimum=2)
+    corr_threshold = finite_number(cd.get("corr_threshold"), "crisis_derisk.corr_threshold")
+    if not -1.0 <= corr_threshold <= 1.0:
+        raise ValueError("crisis_derisk.corr_threshold must be in [-1, 1]")
+    derisk = finite_number(cd.get("multiplier"), "crisis_derisk.multiplier")
+    if not 0.0 <= derisk <= 1.0:
+        raise ValueError("crisis_derisk.multiplier must be in [0, 1]")
+
     th = spec["drawdown_throttle"]
     if not isinstance(th.get("enabled"), bool):
         raise ValueError("drawdown_throttle.enabled must be bool")
+    dd_trigger = finite_number(th.get("dd_trigger"), "drawdown_throttle.dd_trigger")
+    dd_exit = finite_number(th.get("dd_exit"), "drawdown_throttle.dd_exit")
+    if not -1.0 <= dd_trigger < 0.0:
+        raise ValueError("drawdown_throttle.dd_trigger must be in [-1, 0)")
+    if not dd_trigger < dd_exit <= 0.0:
+        raise ValueError("drawdown_throttle.dd_exit must be > dd_trigger and <= 0")
+    throttle = finite_number(th.get("factor"), "drawdown_throttle.factor")
+    if not 0.0 < throttle <= 1.0:
+        raise ValueError("drawdown_throttle.factor must be in (0, 1]")
+
+    ov = spec["overlay"]
+    if not isinstance(ov.get("enabled"), bool):
+        raise ValueError("overlay.enabled must be bool")
+    target_vol = finite_number(ov.get("target_vol"), "overlay.target_vol")
+    if target_vol <= 0.0:
+        raise ValueError("overlay.target_vol must be > 0")
+    positive_int(ov.get("window"), "overlay.window", minimum=2)
+    overlay_fee = finite_number(ov.get("fee_on_turnover"), "overlay.fee_on_turnover")
+    if not 0.0 <= overlay_fee < 1.0:
+        raise ValueError("overlay.fee_on_turnover must be in [0, 1)")
 
 
 def build_algorithm(
@@ -165,5 +239,5 @@ def build_algorithm(
 
 def algorithm_fingerprint(algorithm: dict) -> str:
     """sha256 of the canonical algorithm JSON — printed alongside config/code hashes."""
-    blob = json.dumps(algorithm, sort_keys=True, separators=(",", ":")).encode()
+    blob = json.dumps(algorithm, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     return hashlib.sha256(blob).hexdigest()
