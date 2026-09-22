@@ -39,7 +39,7 @@ def _mk_manifest(tmp_path, algo):
         frictions={"fee": 0.0, "spread_bps": 0.0, "slippage_bps": 0.0, "execution": "close", "risk_free_annual": 0.0},
         algorithm=algo,
         path=tmp_path / f"freeze_{abs(hash(json.dumps(algo, sort_keys=True))) % 10**8}.json",
-        now=datetime(2026, 8, 23, tzinfo=UTC),
+        now=datetime(2026, 5, 31, tzinfo=UTC),
         git_commit="cafe",
     )
 
@@ -203,7 +203,7 @@ class TestParity:
             frictions=frictions,
             algorithm=algo,
             path=tmp_path / "freeze_toggle.json",
-            now=datetime(2026, 8, 23, tzinfo=UTC),
+            now=datetime(2026, 5, 31, tzinfo=UTC),
             git_commit="toggle",
         )
         log = tmp_path / "log.jsonl"
@@ -246,7 +246,7 @@ class TestParity:
             frictions=frictions,
             algorithm=algo,
             path=tmp_path / "freeze_toggle.json",
-            now=datetime(2026, 8, 23, tzinfo=UTC),
+            now=datetime(2026, 5, 31, tzinfo=UTC),
             git_commit="toggle",
         )
         log = tmp_path / "log.jsonl"
@@ -309,6 +309,36 @@ class TestSpecValidation:
         v2 = candidate_pool_version([BuyHold()])
         assert v1 != v2 and len(v1) == 16
 
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"max_multiple_of_equal": 0.5}, "max_multiple_of_equal"),
+            ({"vol_window": 1}, "vol_window"),
+            ({"max_tilt": 1.5}, "max_tilt"),
+            ({"corr_threshold": 1.5}, "corr_threshold"),
+            ({"derisk_factor": -0.1}, "multiplier"),
+            ({"dd_trigger": 0.1}, "dd_trigger"),
+            ({"dd_trigger": -0.05, "dd_exit": -0.10}, "dd_exit"),
+            ({"throttle_factor": 0.0}, "factor"),
+            ({"target_vol": 0.0}, "target_vol"),
+            ({"overlay_window": 1}, "overlay.window"),
+            ({"overlay_fee": -0.01}, "fee_on_turnover"),
+        ],
+    )
+    def test_invalid_numeric_domains_rejected_before_freeze(self, kwargs, match):
+        with pytest.raises(ValueError, match=match):
+            _algo(**kwargs)
+
+    def test_nonfinite_algorithm_value_rejected(self):
+        with pytest.raises(ValueError, match="finite"):
+            _algo(target_vol=float("nan"))
+
+    def test_missing_required_subkey_rejected(self):
+        bad = _algo()
+        del bad["weighting"]["vol_window"]
+        with pytest.raises(ValueError, match="missing required"):
+            validate_algorithm(bad)
+
 
 class TestSealing:
     def test_algorithm_is_sealed_by_config_hash(self, tmp_path):
@@ -348,7 +378,7 @@ class TestSealing:
             frictions={"fee": 0.0, "spread_bps": 0.0, "slippage_bps": 0.0, "execution": "close", "risk_free_annual": 0.0},
             algorithm=_algo(rebalance_band=0.9, overlay_enabled=False),
             path=tmp_path / "freeze_band.json",
-            now=datetime(2026, 8, 23, tzinfo=UTC),
+            now=datetime(2026, 5, 31, tzinfo=UTC),
             git_commit="band",
         )
         log = tmp_path / "log.jsonl"
