@@ -38,6 +38,23 @@ class TestLedgerFailClosed:
         with pytest.raises(LedgerCorruptionError, match="line 2"):
             OrderLedger(path).entries()
 
+    def test_append_repairs_torn_final_record(self, tmp_path):
+        path = tmp_path / "ledger.jsonl"
+        path.write_text(
+            '{"kind":"note","idem_key":"old"}\n{"kind":BROKEN',
+            encoding="utf-8",
+        )
+        ledger = OrderLedger(path)
+        ledger.append({"kind": "note", "idem_key": "new"})
+        assert [e["idem_key"] for e in ledger.entries()] == ["old", "new"]
+
+    def test_append_restores_missing_separator_after_complete_record(self, tmp_path):
+        path = tmp_path / "ledger.jsonl"
+        path.write_text('{"kind":"note","idem_key":"old"}', encoding="utf-8")
+        ledger = OrderLedger(path)
+        ledger.append({"kind": "note", "idem_key": "new"})
+        assert [e["idem_key"] for e in ledger.entries()] == ["old", "new"]
+
     def test_nonfinite_values_cannot_be_appended(self, tmp_path):
         ledger = OrderLedger(tmp_path / "ledger.jsonl")
         with pytest.raises(ValueError):
