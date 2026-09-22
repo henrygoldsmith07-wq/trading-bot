@@ -31,6 +31,7 @@ def _freeze():
 def _row(**over):
     row = {
         "ts": "2026-08-26T21:45:00+00:00",
+        "signal_ts": "2026-08-25T23:59:59+00:00",
         "symbol": "BTCUSDT",
         "side": "BUY",
         "decision_close": 100.0,
@@ -153,10 +154,13 @@ class TestVerificationGate:
     def test_calibrate_excludes_wrong_freeze_rows(self, tmp_path):
         matching = {**_row(), "evidenceClass": "forward-paper",
                     "freezeId": "freeze/2026-08-25", "frozenGitCommit": "41e3ee9a",
-                    "codeFingerprint": "code-abc123"}
+                    "codeFingerprint": "code-abc123", "runId": "fwd-1",
+                    "source": "forward-runner"}
         old_study = {**_row(symbol="ETHUSDT", exec_price=100.06),
                      "evidenceClass": "forward-paper",
-                     "freezeId": "freeze/OLD-STUDY", "frozenGitCommit": "old"}
+                     "freezeId": "freeze/OLD-STUDY", "frozenGitCommit": "old",
+                     "codeFingerprint": "old-code", "runId": "old-run",
+                     "source": "forward-runner"}
         rep = calibrate([matching, old_study], v1_frictions={"fee": 0.001},
                         freeze_manifest=_freeze(), now=NOW)
         assert rep["n_turnover_events"] == 1          # only matching-freeze row measured
@@ -183,6 +187,63 @@ class TestVerificationGate:
         )
         assert rep["n_turnover_events"] == 0
         assert rep["evidence_exclusions"].get("wrong_freeze") == 2
+
+    def test_prefreeze_signal_cannot_become_forward_cost_evidence(self):
+        row = {
+            **_row(signal_ts="2026-08-24T23:59:59+00:00"),
+            "evidenceClass": "forward-paper",
+            "freezeId": "freeze/2026-08-25",
+            "frozenGitCommit": "41e3ee9a",
+            "codeFingerprint": "code-abc123",
+            "runId": "fwd-pre",
+            "source": "forward-runner",
+        }
+        rep = calibrate(
+            [row],
+            v1_frictions={"fee": 0.001},
+            freeze_manifest=_freeze(),
+            now=NOW,
+        )
+        assert rep["n_turnover_events"] == 0
+        assert rep["evidence_exclusions"].get("wrong_freeze") == 1
+
+    def test_duplicate_verified_observation_counted_once(self):
+        row = {
+            **_row(),
+            "evidenceClass": "forward-paper",
+            "freezeId": "freeze/2026-08-25",
+            "frozenGitCommit": "41e3ee9a",
+            "codeFingerprint": "code-abc123",
+            "runId": "fwd-1",
+            "source": "forward-runner",
+        }
+        rep = calibrate(
+            [row, dict(row)],
+            v1_frictions={"fee": 0.001},
+            freeze_manifest=_freeze(),
+            now=NOW,
+        )
+        assert rep["n_turnover_events"] == 1
+        assert rep["evidence_exclusions"].get("replay") == 1
+
+    def test_out_of_universe_row_never_counts_even_with_valid_freeze_stamps(self):
+        row = {
+            **_row(symbol="NOTINFREEZE"),
+            "evidenceClass": "forward-paper",
+            "freezeId": "freeze/2026-08-25",
+            "frozenGitCommit": "41e3ee9a",
+            "codeFingerprint": "code-abc123",
+            "runId": "fwd-1",
+            "source": "forward-runner",
+        }
+        rep = calibrate(
+            [row],
+            v1_frictions={"fee": 0.001},
+            freeze_manifest=_freeze(),
+            now=NOW,
+        )
+        assert rep["n_turnover_events"] == 0
+        assert rep["evidence_exclusions"].get("fixture_test") == 1
 
 
 def _freeze():
