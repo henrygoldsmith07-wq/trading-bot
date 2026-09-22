@@ -85,10 +85,9 @@ def _load_forward_entries(log_path: str, frozen_date: str | None) -> list[dict]:
                 raise ForwardLogIntegrityError(f"forward log line {line_no} has malformed asset detail")
 
             port_ret = entry.get("port_ret")
-            try:
-                port_ret_f = float(port_ret)
-            except (TypeError, ValueError) as exc:
-                raise ForwardLogIntegrityError(f"forward log line {line_no} has invalid port_ret") from exc
+            if not isinstance(port_ret, (int, float)) or isinstance(port_ret, bool):
+                raise ForwardLogIntegrityError(f"forward log line {line_no} has invalid port_ret")
+            port_ret_f = float(port_ret)
             if not math.isfinite(port_ret_f) or port_ret_f < -1.0:
                 raise ForwardLogIntegrityError(f"forward log line {line_no} has impossible port_ret")
             entry["port_ret"] = port_ret_f
