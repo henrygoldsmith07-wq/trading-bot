@@ -18,6 +18,7 @@ from bot.prospective import (
 from bot.strategy import TrendVol, strategy_from_spec, strategy_to_spec
 
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
+RUN_NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
 
 
 def _algo(**overrides):
@@ -34,7 +35,7 @@ def _mk_freeze(tmp_path, strategies=None):
         frictions={"fee": 0.001, "spread_bps": 5, "slippage_bps": 5, "execution": "next_open", "risk_free_annual": 0.03},
         algorithm=_algo(),
         path=tmp_path / "freeze.json",
-        now=NOW,
+        now=RUN_NOW,
         git_commit="abc123",
     )
     return manifest, tmp_path / "freeze.json"
@@ -78,14 +79,28 @@ def test_strategy_spec_roundtrip():
         strategy_from_spec({"type": "NotAThing", "params": {}})
 
 
+def test_run_step_refuses_same_day_as_freeze(tmp_path):
+    strat = {"AAA": TrendVol(10, 5, 0.5), "BBB": TrendVol(10, 5, 0.5)}
+    manifest, _ = _mk_freeze(tmp_path, strat)
+    log = tmp_path / "log.jsonl"
+    res = run_step(
+        manifest,
+        _fetcher({"AAA": _mk_rising(400), "BBB": _mk_rising(400)}),
+        now=NOW,
+        log_path=log,
+    )
+    assert res["status"] == "not_after_freeze"
+    assert not log.exists()
+
+
 def test_run_step_logs_and_is_idempotent(tmp_path):
     strat = {"AAA": TrendVol(10, 5, 0.5), "BBB": TrendVol(10, 5, 0.5)}
     manifest, path = _mk_freeze(tmp_path, strat)
     log = tmp_path / "log.jsonl"
     rising = _mk_rising(400)
-    res1 = run_step(manifest, _fetcher({"AAA": rising, "BBB": rising}), now=NOW, log_path=log)
+    res1 = run_step(manifest, _fetcher({"AAA": rising, "BBB": rising}), now=RUN_NOW, log_path=log)
     assert res1["status"] == "logged"
-    res2 = run_step(manifest, _fetcher({"AAA": rising, "BBB": rising}), now=NOW, log_path=log)
+    res2 = run_step(manifest, _fetcher({"AAA": rising, "BBB": rising}), now=RUN_NOW, log_path=log)
     assert res2["status"] == "already_logged"
     assert len(load_log(log)) == 1
 
@@ -97,7 +112,7 @@ def test_order_lifecycle_timestamps_are_chronological(tmp_path):
     res = run_step(
         manifest,
         _fetcher({"AAA": rising, "BBB": rising}),
-        now=NOW,
+        now=RUN_NOW,
         log_path=tmp_path / "log.jsonl",
     )
     orders = res["entry"]["orders"]
@@ -123,7 +138,7 @@ def test_run_step_records_outages(tmp_path):
     res = run_step(
         manifest,
         _fetcher({"AAA": rising, "BBB": rising}, problems={"BBB": "fetch failed: timeout"}),
-        now=NOW,
+        now=RUN_NOW,
         log_path=log,
     )
     entry = res["entry"]
@@ -139,7 +154,7 @@ def test_run_step_flags_missed_fill_after_data_gap(tmp_path):
     closes = [100.0 * 1.004 ** i for i in range(300)]
     candles = _candles(closes)
     candles[-1] = {"open_time": candles[-1]["open_time"] + 3 * 86_400_000, "close": closes[-1] * 1.01}
-    res = run_step(manifest, _fetcher({"AAA": candles, "BBB": _mk_rising(400)}), now=NOW, log_path=log)
+    res = run_step(manifest, _fetcher({"AAA": candles, "BBB": _mk_rising(400)}), now=RUN_NOW, log_path=log)
     mf = res["entry"]["missed_fills"]
     assert any(m["symbol"] == "AAA" and m["delayed_days"] >= 2 for m in mf)
 
@@ -151,7 +166,7 @@ def test_run_step_uses_only_completed_candles_for_decision(tmp_path):
     rising = _mk_rising(400)
     # today's in-progress candle has a wild price; decision must ignore it
     candles = rising + [{"open_time": rising[-1]["open_time"] + 86_400_000, "close": 1e9}]
-    res = run_step(manifest, _fetcher({"AAA": candles, "BBB": rising}), now=NOW, log_path=log)
+    res = run_step(manifest, _fetcher({"AAA": candles, "BBB": rising}), now=RUN_NOW, log_path=log)
     det = res["entry"]["assets"]["AAA"]
     assert det["price"] == 1e9  # executed at latest print...
     assert det["weight"] <= 1.0  # ...but the decision stayed sane
@@ -200,4 +215,4 @@ def test_forward_runner_never_reselects(tmp_path):
     manifest, _ = _mk_freeze(tmp_path, strat)
     manifest["config"]["assets"][0]["strategy"] = {"type": "Mystery", "params": {}}
     with pytest.raises(ValueError):
-        run_step(manifest, _fetcher({"AAA": _mk_rising(400), "BBB": _mk_rising(400)}), now=NOW, log_path=tmp_path / "log.jsonl")
+        run_step(manifest, _fetcher({"AAA": _mk_rising(400), "BBB": _mk_rising(400)}), now=RUN_NOW, log_path=tmp_path / "log.jsonl")
