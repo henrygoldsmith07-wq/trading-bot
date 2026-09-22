@@ -27,6 +27,43 @@ def test_parse_klines_maps_binance_columns():
     assert len(candles) == 2
 
 
+def test_clean_candles_rejects_malformed_rows_and_normalizes_numeric_strings():
+    candles = [
+        "not-a-candle",
+        {"close": 10.0},
+        {"open_time": "bad", "close": 10.0},
+        {"open_time": float("nan"), "close": 10.0},
+        {"open_time": -1, "close": 10.0},
+        {"open_time": 1.5, "close": 10.0},
+        {"open_time": DAY_MS, "close": "11.5", "open": "11.0", "volume": "7"},
+    ]
+    cleaned = clean_candles(candles)
+    assert cleaned == [{
+        "open_time": DAY_MS,
+        "close": 11.5,
+        "open": 11.0,
+        "volume": 7.0,
+    }]
+
+
+def test_clean_candles_invalid_optional_fields_cannot_poison_duplicate_choice():
+    candles = [
+        {
+            "open_time": DAY_MS,
+            "close": 10.0,
+            "open": float("nan"),
+            "volume": float("nan"),
+            "quote_volume": float("inf"),
+        },
+        {"open_time": DAY_MS, "close": 11.0, "volume": 2.0},
+    ]
+    cleaned = clean_candles(candles)
+    assert len(cleaned) == 1
+    assert cleaned[0]["close"] == 11.0
+    assert cleaned[0]["volume"] == 2.0
+    assert "quote_volume" not in cleaned[0]
+
+
 def test_clean_candles_drops_bad_and_dedupes_keeps_higher_volume():
     candles = [
         {"open_time": 0, "close": 10.0, "volume": 1.0},
