@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -68,7 +70,7 @@ CHECKPOINTS = [("1 month", 30), ("3 months", 91), ("6 months", 182), ("12 months
 
 
 def _config_hash(config: dict) -> str:
-    blob = json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+    blob = json.dumps(config, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     return hashlib.sha256(blob).hexdigest()
 
 
@@ -115,9 +117,13 @@ def create_freeze(
     }
     if research_context is not None:
         config["research_context"] = research_context
+    freeze_now = now or datetime.now(UTC)
+    if freeze_now.tzinfo is None:
+        freeze_now = freeze_now.replace(tzinfo=UTC)
+    freeze_now = freeze_now.astimezone(UTC)
     manifest = {
-        "frozen_at": (now or datetime.now(UTC)).isoformat(),
-        "frozen_at_date": (now or datetime.now(UTC)).date().isoformat(),
+        "frozen_at": freeze_now.isoformat(),
+        "frozen_at_date": freeze_now.date().isoformat(),
         "git_commit_at_freeze": git_commit,
         "git_tag": git_tag,
         "image_digest": image_digest,
@@ -128,7 +134,15 @@ def create_freeze(
         "code_fingerprint_algo": CODE_FINGERPRINT_ALGO,
         "code_sha256": code_fingerprint(),
     }
-    Path(path).write_text(json.dumps(manifest, indent=2))
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    encoded = json.dumps(manifest, indent=2, allow_nan=False)
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(encoded)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, p)
     return manifest
 
 
@@ -145,15 +159,58 @@ def load_freeze(path: str | Path = FREEZE_FILE, verify_code: bool = True) -> dic
 
 
 def load_log(path: str | Path = LOG_FILE) -> list[dict]:
+    """Load the prospective tape with strict chronology and numeric checks."""
     p = Path(path)
     if not p.exists():
         return []
-    return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+    entries: list[dict] = []
+    previous_day: str | None = None
+    seen: set[str] = set()
+    for line_no, raw in enumerate(p.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"forward log JSON is corrupt at line {line_no}") from exc
+        if not isinstance(entry, dict):
+            raise ValueError(f"forward log line {line_no} is not an object")
+        day = entry.get("date")
+        if not isinstance(day, str):
+            raise ValueError(f"forward log line {line_no} has no date")
+        try:
+            date.fromisoformat(day)
+        except ValueError as exc:
+            raise ValueError(f"forward log line {line_no} has invalid date") from exc
+        if day in seen:
+            raise ValueError(f"forward log repeats date {day}")
+        if previous_day is not None and day <= previous_day:
+            raise ValueError("forward log dates are not strictly increasing")
+        port_ret = entry.get("port_ret")
+        try:
+            port_ret_f = float(port_ret)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"forward log line {line_no} has invalid port_ret") from exc
+        if not math.isfinite(port_ret_f) or port_ret_f < -1.0:
+            raise ValueError(f"forward log line {line_no} has impossible port_ret")
+        if not isinstance(entry.get("assets"), dict) or not entry["assets"]:
+            raise ValueError(f"forward log line {line_no} has no asset detail")
+        entry["port_ret"] = port_ret_f
+        entries.append(entry)
+        seen.add(day)
+        previous_day = day
+    return entries
 
 
 def append_log(entry: dict, path: str | Path = LOG_FILE) -> None:
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(entry, allow_nan=False)
+    with open(p, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def trailing_overlay_weight(port_rets: list[float], target: float, window: int = 20) -> float:
@@ -282,8 +339,25 @@ def run_step(
     if not allow_code_mismatch:
         verify_freeze_code(manifest)
     now = now or datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    now = now.astimezone(UTC)
     today = now.date().isoformat()
+    try:
+        freeze_day = date.fromisoformat(manifest["frozen_at_date"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("freeze manifest has no valid frozen_at_date") from exc
+    if now.date() <= freeze_day:
+        return {
+            "status": "not_after_freeze",
+            "freeze_date": freeze_day.isoformat(),
+            "date": today,
+        }
     log = load_log(log_path)
+    if any(e["date"] <= freeze_day.isoformat() for e in log):
+        raise ValueError("forward log contains evidence on/before the freeze date")
+    if log and log[-1]["date"] > today:
+        raise ValueError("forward log contains a future-dated entry")
     for e in log:
         if e["date"] == today:
             return {"status": "already_logged", "entry": e}
