@@ -269,6 +269,7 @@ def verified_forward_rows(rows: list[dict], freeze_manifest: dict, now: datetime
     Returns (verified_rows, exclusion_counts).
     """
     expected_commit = freeze_manifest.get("git_commit_at_freeze") or ""
+    expected_code = freeze_manifest.get("code_sha256") or ""
     freeze_id = f"freeze/{freeze_manifest['frozen_at_date']}"
     now = now or datetime.now(UTC)
 
@@ -290,10 +291,13 @@ def verified_forward_rows(rows: list[dict], freeze_manifest: dict, now: datetime
         if row.get("evidenceClass") != EVIDENCE_FORWARD_PAPER:
             bump(EXCL_FIXTURE_TEST if row.get("evidenceClass") == EVIDENCE_FIXTURE else "other_class")
             continue
-        if row.get("freezeId") not in (None, freeze_id):
+        if row.get("freezeId") != freeze_id:
             bump(EXCL_WRONG_FREEZE)
             continue
-        if expected_commit and row.get("frozenGitCommit") not in (None, "", expected_commit):
+        if expected_commit and row.get("frozenGitCommit") != expected_commit:
+            bump(EXCL_WRONG_FREEZE)
+            continue
+        if expected_code and row.get("codeFingerprint") != expected_code:
             bump(EXCL_WRONG_FREEZE)
             continue
         miss = missing_problems(row)
