@@ -95,7 +95,7 @@ class TestForward:
         assert grade_forward(days, True, 0)["grade"] == expected
 
     def test_compromised_overrides(self):
-        for kw in ({"code_verified": False}, {"parameter_changes": 3}):
+        for kw in ({"code_verified": False}, {"parameter_changes": 3}, {"evidence_verified": False}):
             res = grade_forward(days_recorded=400, **kw)
             assert res["grade"] == "COMPROMISED"
 
@@ -172,3 +172,17 @@ class TestBuildVerdict:
                      "code_verified": False, "parameter_changes": 0, "data_outages": 0},
         )
         assert v["verdict"]["overall"] == "INVALIDATED"
+
+
+    def test_corrupt_forward_evidence_invalidates(self):
+        v = build_verdict(
+            canonical_rule_stats=RULES, canonical_per_asset=PER_ASSET,
+            canonical_n_folds=6, pool_size=1, ledger_search_n=None,
+            cost_report={"n_turnover_events": 60, "error_bp": 1.0, "sufficient": True},
+            forward={"available": True, "started": True, "n_days_recorded": 200,
+                     "code_verified": True, "evidence_verified": False,
+                     "parameter_changes": 0, "data_outages": 0},
+        )
+        assert v["verdict"]["overall"] == "INVALIDATED"
+        assert v["details"]["forward"]["grade"] == "COMPROMISED"
+        assert "integrity" in v["details"]["forward"]["reason"]
