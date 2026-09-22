@@ -448,8 +448,12 @@ def build_verdict_payload(forward: dict | None) -> dict | None:
             except (OSError, ValueError):
                 manifest = None
             cost_report = calibrate(obs, v1_frictions=frictions, freeze_manifest=manifest)
-    except Exception:
-        cost_report = None
+            cost_report["integrity_verified"] = True
+    except Exception as exc:
+        cost_report = {
+            "integrity_verified": False,
+            "integrity_reason": f"{type(exc).__name__}: {exc}",
+        }
 
     try:
         return build_verdict(
