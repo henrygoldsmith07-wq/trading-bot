@@ -138,8 +138,11 @@ def _validate_freeze_config(config: dict) -> None:
         raise ValueError("frictions.spread_bps must be non-negative")
     if float(frictions.get("slippage_bps", 0.0)) < 0.0:
         raise ValueError("frictions.slippage_bps must be non-negative")
-    if frictions["execution"] not in ("close", "next_open"):
-        raise ValueError("frictions.execution must be 'close' or 'next_open'")
+    if frictions["execution"] != "next_open":
+        raise ValueError(
+            "prospective freezes require frictions.execution='next_open'; "
+            "same-close execution is a historical optimistic baseline only"
+        )
 
     validate_algorithm(config["algorithm"])
     legacy_overlay = config.get("overlay")
