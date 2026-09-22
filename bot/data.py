@@ -142,17 +142,79 @@ def recent_window(candles: list[dict], n: int) -> list[dict]:
 
 
 def clean_candles(candles: list[dict]) -> list[dict]:
-    """Missing/invalid-data handling: drop non-finite and non-positive closes,
-    deduplicate timestamps (keeping the higher-volume print), and sort by time."""
+    """Normalize raw candles at the market-data trust boundary.
+
+    Rows without a finite timestamp and positive finite close are unusable and
+    are dropped. Optional OHLC fields that are malformed are removed so
+    callers can apply their documented fallback semantics. Duplicate
+    timestamps keep the print with the highest valid volume; malformed volume
+    can never win a tie by propagating NaN.
+    """
     best: dict[int, dict] = {}
-    for c in candles:
-        close = c.get("close")
-        if close is None or not math.isfinite(close) or close <= 0:
+    best_volume: dict[int, float] = {}
+    for raw in candles:
+        if not isinstance(raw, dict):
             continue
-        t = c["open_time"]
-        existing = best.get(t)
-        if existing is None or c.get("volume", 0.0) >= existing.get("volume", 0.0):
-            best[t] = c
+        try:
+            close = float(raw.get("close"))
+            timestamp_float = float(raw.get("open_time"))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(close) or close <= 0.0:
+            continue
+        if not math.isfinite(timestamp_float) or timestamp_float < 0.0:
+            continue
+        timestamp = int(timestamp_float)
+        if timestamp_float != timestamp:
+            continue
+
+        candle = dict(raw)
+        candle["open_time"] = timestamp
+        candle["close"] = close
+
+        for field in ("open", "high", "low"):
+            value = candle.get(field)
+            if value is None:
+                candle.pop(field, None)
+                continue
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                candle.pop(field, None)
+                continue
+            if not math.isfinite(numeric) or numeric <= 0.0:
+                candle.pop(field, None)
+            else:
+                candle[field] = numeric
+
+        volume_score = 0.0
+        if "volume" in candle:
+            try:
+                volume = float(candle["volume"])
+            except (TypeError, ValueError):
+                candle.pop("volume", None)
+            else:
+                if math.isfinite(volume) and volume >= 0.0:
+                    candle["volume"] = volume
+                    volume_score = volume
+                else:
+                    candle.pop("volume", None)
+
+        if "quote_volume" in candle:
+            try:
+                quote_volume = float(candle["quote_volume"])
+            except (TypeError, ValueError):
+                candle.pop("quote_volume", None)
+            else:
+                if math.isfinite(quote_volume) and quote_volume >= 0.0:
+                    candle["quote_volume"] = quote_volume
+                else:
+                    candle.pop("quote_volume", None)
+
+        if timestamp not in best or volume_score >= best_volume[timestamp]:
+            best[timestamp] = candle
+            best_volume[timestamp] = volume_score
+
     return [best[t] for t in sorted(best)]
 
 
