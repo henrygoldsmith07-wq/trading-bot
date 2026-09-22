@@ -249,12 +249,14 @@ A second, deeper battery (`bot/research.py`, `bot/clustering.py`, `bot/ablation.
 
 Rewritten around a persistent multi-asset paper portfolio:
 
-- **Atomic state persistence** — temp-file + rename writes with a sha256 checksum; a crash mid-write can never corrupt balances
-- **Append-only order ledger** — every fill records idempotency key, deltas, post-trade balances, fees, and the decision explanation
-- **Crash recovery** — corrupt state files are rebuilt by replaying ledger deltas from start cash
-- **Duplicate-order prevention** — decisions carry `(date|symbol|action|target)` keys; re-running a cycle can never double-fill
-- **Data-staleness alerts** — symbols with frozen feeds get trading blocked for the cycle and land in the audit trail (also raised by `forward --step`)
-- **Decision explanations & daily audit reports** — markdown under `reports/` with positions, fills, alerts, and why every decision was taken (holds included)
+- **Durable atomic state** — state is checksummed, the temp file is flushed + fsynced before rename, and non-finite numbers are refused before JSON persistence
+- **Fail-closed append-only order ledger** — every fill records idempotency key, deltas, post-trade balances, fees, and the decision explanation; only an unterminated final crash fragment may be ignored, while interior corruption aborts recovery
+- **Ledger-first crash recovery** — every durable fill is replay-validated for cash, position, notional, side, and idempotency continuity; if a crash leaves a valid-but-stale state snapshot behind, the fsynced ledger wins and repairs state
+- **Duplicate-order prevention** — decisions carry `(date|symbol|action|target)` keys derived from the cycle timestamp; re-running a cycle cannot double-fill
+- **Multi-asset-safe execution** — total portfolio equity is marked with the full price snapshot, missing held-position marks fail closed, SELLs fund BUYs before execution, and zero-quantity cash-clamped orders never consume an idempotency key
+- **Failure isolation** — data-source and advisory-AI failures are audited without turning into orders or erasing an already-completed paper cycle
+- **Data-staleness alerts** — symbols with frozen feeds get their trading blocked for the cycle and land in the audit trail (also raised by `forward --step`)
+- **Decision explanations & atomic daily audit reports** — markdown under `reports/` with positions, fills, alerts, and why every decision was taken (holds included)
 
 ## Code identity: a freeze pins the implementation, not just numbers
 
