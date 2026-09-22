@@ -189,6 +189,40 @@ def _write_log(path: Path, days=10, first="2026-08-24", ret=0.001,
             }) + "\n")
 
 
+def test_order_lifecycle_warning_detects_metadata_without_rewriting_returns(api):
+    entries = [{
+        "date": "2026-09-07",
+        "orders": [{
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "signal_generated_ts": "2026-09-06T23:59:59+00:00",
+            "intent_ts": "2029-06-02T00:00:00+00:00",
+            "submitted_ts": "2026-09-07T23:47:10+00:00",
+            "fill_ts": "2026-09-07T23:47:10+00:00",
+            "fill_price": 100.0,
+        }],
+    }]
+    warning = api._order_lifecycle_warnings(entries)
+    assert warning["count"] == 1
+    assert warning["reasons"]["non_monotonic_timestamps"] == 1
+
+
+def test_clean_order_lifecycle_has_no_warning(api):
+    entries = [{
+        "date": "2026-09-07",
+        "orders": [{
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "signal_generated_ts": "2026-09-06T23:59:59+00:00",
+            "intent_ts": "2026-09-07T00:00:00+00:00",
+            "submitted_ts": "2026-09-07T21:45:00+00:00",
+            "fill_ts": "2026-09-07T21:45:00+00:00",
+            "fill_price": 100.0,
+        }],
+    }]
+    assert api._order_lifecycle_warnings(entries) == {"count": 0, "reasons": {}}
+
+
 class TestForwardSummary:
     def test_unavailable_without_freeze(self, api, tmp_path):
         res = api.build_forward_summary(freeze_path=str(tmp_path / "none.json"))
