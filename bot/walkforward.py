@@ -16,6 +16,7 @@ from bisect import bisect_left
 
 from .engine import DAY_MS, run_strategy
 from .metrics import cagr, max_drawdown, sharpe, volatility
+from .portfolio_rules import _capped_normalize
 from .strategy import build_candidates
 
 
@@ -261,13 +262,18 @@ def combine_portfolio(asset_dailies: dict[str, dict[int, float]], timeline: list
     present/eligible(day), so late listings only join when they were actually
     holdable. Default None = fixed historical denominator.
     """
+    if isinstance(n_assets, bool) or not isinstance(n_assets, int) or n_assets <= 0:
+        raise ValueError("n_assets must be a positive integer")
     dailies = list(asset_dailies.values())
     out = []
     for t in timeline:
-        denom = n_assets if denominator_by_day is None else max(1, denominator_by_day.get(t, n_assets))
-        total = 0.0
-        for daily in dailies:
-            total += daily.get(t, 0.0)
+        denom = n_assets if denominator_by_day is None else denominator_by_day.get(t, n_assets)
+        if isinstance(denom, bool) or not isinstance(denom, int) or denom <= 0:
+            raise ValueError(f"portfolio denominator must be a positive integer at {t}")
+        present_count = sum(1 for daily in dailies if t in daily)
+        if present_count > denom:
+            raise ValueError(f"present asset count exceeds denominator at {t}")
+        total = sum(daily.get(t, 0.0) for daily in dailies)
         out.append(total / denom)
     return out
 
@@ -293,12 +299,23 @@ def combine_portfolio_invvol(
     """
     import math
 
+    if isinstance(n_assets, bool) or not isinstance(n_assets, int) or n_assets <= 0:
+        raise ValueError("n_assets must be a positive integer")
+    if isinstance(window, bool) or not isinstance(window, int) or window < 2:
+        raise ValueError("window must be an integer >= 2")
+    if not isinstance(max_multiple_of_equal, (int, float)) or isinstance(max_multiple_of_equal, bool) or not math.isfinite(float(max_multiple_of_equal)) or float(max_multiple_of_equal) < 1.0:
+        raise ValueError("max_multiple_of_equal must be finite and >= 1")
+
     syms = list(asset_dailies)
     hist: dict[str, list[float]] = {s: [] for s in syms}
     out = []
     for t in timeline:
-        denom = n_assets if denominator_by_day is None else max(1, denominator_by_day.get(t, n_assets))
+        denom = n_assets if denominator_by_day is None else denominator_by_day.get(t, n_assets)
+        if isinstance(denom, bool) or not isinstance(denom, int) or denom <= 0:
+            raise ValueError(f"portfolio denominator must be a positive integer at {t}")
         present = [s for s in syms if t in asset_dailies[s]]
+        if len(present) > denom:
+            raise ValueError(f"present asset count exceeds denominator at {t}")
         if not present:
             out.append(0.0)
             continue
@@ -307,22 +324,14 @@ def combine_portfolio_invvol(
             for s in present:
                 h = hist[s][-window:]
                 if len(h) < 2:
-                    raw[s] = 1.0  # no usable history yet: neutral weight
+                    raw[s] = 1.0
                     continue
                 m = sum(h) / len(h)
                 var = sum((x - m) ** 2 for x in h) / (len(h) - 1)
                 vol = math.sqrt(max(var, 0.0) * 365)
                 raw[s] = 1.0 / max(vol, 1e-6)
-            cap = max_multiple_of_equal / len(present)
-            total_raw = sum(raw.values())
-            weights = {s: min(cap, raw[s] / total_raw) for s in present}
-            # renormalize once after capping (capped assets give back the excess)
-            free = [s for s in present if weights[s] < cap]
-            slack = 1.0 - sum(weights.values())
-            free_total = sum(raw[s] for s in free)
-            if free and free_total > 0 and slack > 0:
-                for s in free:
-                    weights[s] += slack * raw[s] / free_total
+            cap = float(max_multiple_of_equal) / len(present)
+            weights = _capped_normalize(raw, cap)
         else:
             eq = 1.0 / len(present)
             weights = {s: eq for s in present}
