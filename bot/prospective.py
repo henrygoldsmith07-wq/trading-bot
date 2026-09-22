@@ -188,10 +188,9 @@ def load_log(path: str | Path = LOG_FILE) -> list[dict]:
         if previous_day is not None and day <= previous_day:
             raise ValueError("forward log dates are not strictly increasing")
         port_ret = entry.get("port_ret")
-        try:
-            port_ret_f = float(port_ret)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"forward log line {line_no} has invalid port_ret") from exc
+        if not isinstance(port_ret, (int, float)) or isinstance(port_ret, bool):
+            raise ValueError(f"forward log line {line_no} has invalid port_ret")
+        port_ret_f = float(port_ret)
         if not math.isfinite(port_ret_f) or port_ret_f < -1.0:
             raise ValueError(f"forward log line {line_no} has impossible port_ret")
         if not isinstance(entry.get("assets"), dict) or not entry["assets"]:
