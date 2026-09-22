@@ -395,7 +395,7 @@ final record). Backfilled entries (33 seeded from git history) carry
 python -m bot ledger        # counts by category; search total = the honest N
 ```
 
-Current counts: **29 search experiments** (7 strategy families, 8 portfolio,
+Current counts: **30 search experiments** (7 strategy families, 9 portfolio,
 12 execution, 2 universe) + 4 methodology tools excluded from the search N.
 `validate` now reports DSR twice: once against the 85-candidate pool, once
 against the ledger-informed total — the latter is the honest number.
