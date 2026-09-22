@@ -70,7 +70,7 @@ class TestCalculateTransition:
         assert calculate_transition(1.0, 1.0, 100.0, 100.0, 101.0, cash_rate_period=rate)["cash"] == 0.0
 
     def test_invalid_prices_raise(self):
-        for bad in (0.0, -5.0):
+        for bad in (0.0, -5.0, float("nan"), float("inf")):
             with pytest.raises(ValueError, match="positive"):
                 calculate_transition(1.0, 1.0, bad, 100.0, 100.0)
             with pytest.raises(ValueError, match="positive"):
@@ -83,6 +83,24 @@ class TestCalculateTransition:
             calculate_transition(1.0, 1.0, 100.0, 100.0, 101.0, cash_basis="both")
 
 
+    @pytest.mark.parametrize("position", [-0.1, 1.1, float("nan"), float("inf")])
+    def test_invalid_positions_raise(self, position):
+        with pytest.raises(ValueError, match="position"):
+            calculate_transition(position, 0.5, 100.0, 100.0, 101.0)
+        with pytest.raises(ValueError, match="position"):
+            calculate_transition(0.5, position, 100.0, 100.0, 101.0)
+
+    @pytest.mark.parametrize("costs", [-0.01, float("nan"), float("inf")])
+    def test_invalid_costs_raise(self, costs):
+        with pytest.raises(ValueError, match="costs"):
+            calculate_transition(0.5, 0.5, 100.0, 100.0, 101.0, costs=costs)
+
+    @pytest.mark.parametrize("rate", [-1.0, float("nan"), float("inf")])
+    def test_invalid_cash_rate_raises(self, rate):
+        with pytest.raises(ValueError, match="cash_rate_period"):
+            calculate_transition(0.5, 0.5, 100.0, 100.0, 101.0, cash_rate_period=rate)
+
+
 class TestOpenOf:
     def test_valid_open_passes_through(self):
         assert open_of({"open": 42.0}, fallback=1.0) == 42.0
@@ -91,3 +109,11 @@ class TestOpenOf:
         assert open_of({}, fallback=7.0) == 7.0
         assert open_of({"open": None}, fallback=7.0) == 7.0
         assert open_of({"open": 0.0}, fallback=7.0) == 7.0
+
+        assert open_of({"open": float("nan")}, fallback=7.0) == 7.0
+        assert open_of({"open": float("inf")}, fallback=7.0) == 7.0
+
+    @pytest.mark.parametrize("fallback", [0.0, -1.0, float("nan"), float("inf")])
+    def test_invalid_fallback_raises(self, fallback):
+        with pytest.raises(ValueError, match="fallback"):
+            open_of({}, fallback=fallback)
