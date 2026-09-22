@@ -28,7 +28,17 @@ jobs:
       - name: Type check (mypy)
         run: mypy
       - name: Tests + coverage gate
-        run: pytest --cov=bot --cov-report=term-missing
+        run: pytest --junitxml=pytest-results.xml --cov=bot --cov-report=term-missing --cov-report=xml:coverage.xml
+      - name: Upload test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-diagnostics-${{ github.run_id }}
+          path: |
+            pytest-results.xml
+            coverage.xml
+          if-no-files-found: warn
+          retention-days: 7
       - name: README headline block derives from canonical run
         run: python scripts/derive_canonical_readme.py --check
 
