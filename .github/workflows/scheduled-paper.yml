@@ -39,9 +39,10 @@ jobs:
     timeout-minutes: 15
     steps:
       # ---- step 1: read the freeze pointer from main -----------------------
-      - name: Check out main (pointer only)
+      - name: Check out default branch (pointer only)
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 1
 
       - name: Read freeze pointer
@@ -147,7 +148,7 @@ jobs:
       - name: Append forward log to main
         if: steps.pointer.outputs.commit != '' && steps.calendar.outputs.trading == 'true'
         env:
-          BRANCH: ${{ github.ref_name }}
+          BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           [ -f forward_log.jsonl ] || { echo "no log produced this run"; exit 0; }
           cp forward_log.jsonl /tmp/forward_log.jsonl
