@@ -377,6 +377,54 @@ class TestForwardSummary:
         assert res["code_verified"] is True
         assert res["runtime_matches_freeze"] is False
 
+    def test_corrupt_forward_json_fails_closed(self, api, tmp_path):
+        fp = tmp_path / "freeze.json"
+        _write_freeze(fp)
+        lp = tmp_path / "log.jsonl"
+        _write_log(lp, days=2)
+        with lp.open("a", encoding="utf-8") as f:
+            f.write('{"date":BROKEN}\n')
+
+        res = api.build_forward_summary(freeze_path=str(fp), log_path=str(lp))
+        assert res["available"] is True
+        assert res["started"] is False
+        assert res["evidence_verified"] is False
+        assert "integrity failure" in res["reason"]
+        assert "line 3" in res["evidence_reason"]
+
+    def test_duplicate_forward_date_fails_closed(self, api, tmp_path):
+        fp = tmp_path / "freeze.json"
+        _write_freeze(fp)
+        lp = tmp_path / "log.jsonl"
+        _write_log(lp, days=2)
+        first = lp.read_text(encoding="utf-8").splitlines()[0]
+        with lp.open("a", encoding="utf-8") as f:
+            f.write(first + "\n")
+
+        res = api.build_forward_summary(freeze_path=str(fp), log_path=str(lp))
+        assert res["evidence_verified"] is False
+        assert "repeats date" in res["evidence_reason"]
+
+    def test_pre_freeze_forward_entry_fails_closed(self, api, tmp_path):
+        fp = tmp_path / "freeze.json"
+        _write_freeze(fp, frozen_date="2026-08-23")
+        lp = tmp_path / "log.jsonl"
+        _write_log(lp, days=1, first="2026-08-22")
+
+        res = api.build_forward_summary(freeze_path=str(fp), log_path=str(lp))
+        assert res["evidence_verified"] is False
+        assert "pre-freeze evidence" in res["evidence_reason"]
+
+    def test_impossible_forward_return_fails_closed(self, api, tmp_path):
+        fp = tmp_path / "freeze.json"
+        _write_freeze(fp)
+        lp = tmp_path / "log.jsonl"
+        _write_log(lp, days=1, ret=-1.5)
+
+        res = api.build_forward_summary(freeze_path=str(fp), log_path=str(lp))
+        assert res["evidence_verified"] is False
+        assert "impossible port_ret" in res["evidence_reason"]
+
     def test_benchmark_failure_degrades_to_none(self, api, tmp_path):
         fp = tmp_path / "freeze.json"
         _write_freeze(fp)
