@@ -34,10 +34,16 @@ def candle_date(candle: dict):
 
 
 def _open_price(candle: dict, fallback: float) -> float:
+    if not math.isfinite(float(fallback)) or float(fallback) <= 0.0:
+        raise ValueError("fallback price must be positive and finite")
     o = candle.get("open")
-    if o is None or o <= 0:
-        return fallback
-    return o
+    try:
+        value = float(o)
+    except (TypeError, ValueError):
+        return float(fallback)
+    if not math.isfinite(value) or value <= 0.0:
+        return float(fallback)
+    return value
 
 
 def run_strategy(
@@ -69,6 +75,43 @@ def run_strategy(
     n = len(candles)
     if n < 2:
         raise ValueError("need at least 2 candles")
+    if isinstance(start_index, bool) or not isinstance(start_index, int) or not 1 <= start_index < n:
+        raise ValueError("start_index must be an integer in [1, len(candles))")
+    if isinstance(latency_days, bool) or not isinstance(latency_days, int) or latency_days < 0:
+        raise ValueError("latency_days must be a non-negative integer")
+    if isinstance(periods_per_year, bool) or not isinstance(periods_per_year, int) or periods_per_year <= 0:
+        raise ValueError("periods_per_year must be a positive integer")
+
+    for label, value in (
+        ("fee", fee),
+        ("spread_bps", spread_bps),
+        ("slippage_bps", slippage_bps),
+        ("rebalance_band", rebalance_band),
+        ("risk_free_annual", risk_free_annual),
+    ):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            raise ValueError(f"{label} must be finite")
+    if fee < 0 or spread_bps < 0 or slippage_bps < 0:
+        raise ValueError("trading costs must be non-negative")
+    if not 0.0 <= rebalance_band < 1.0:
+        raise ValueError("rebalance_band must be in [0, 1)")
+    if risk_free_annual / periods_per_year <= -1.0:
+        raise ValueError("risk_free_annual implies an invalid per-period cash return")
+
+    previous_time: float | None = None
+    for idx, candle in enumerate(candles):
+        if not isinstance(candle, dict):
+            raise ValueError(f"candle {idx} must be a mapping")
+        try:
+            ts = float(candle["open_time"])
+            close = float(candle["close"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"candle {idx} is missing numeric open_time/close") from exc
+        if not math.isfinite(ts) or not math.isfinite(close) or close <= 0.0:
+            raise ValueError(f"candle {idx} has invalid timestamp/close")
+        if previous_time is not None and ts <= previous_time:
+            raise ValueError("candle timestamps must be strictly increasing")
+        previous_time = ts
 
     cp = cost_params or CostParams()
     base_cost_rate = fee + (spread_bps + slippage_bps) / 10_000.0
@@ -86,7 +129,10 @@ def run_strategy(
     for i in range(start_index, n):
         sig_i = i - latency_days
         if sig_i >= 1:
-            w_target = min(1.0, max(0.0, weight_fn(candles, sig_i)))
+            raw_target = weight_fn(candles, sig_i)
+            if isinstance(raw_target, bool) or not isinstance(raw_target, (int, float)) or not math.isfinite(float(raw_target)):
+                raise ValueError(f"weight_fn returned a non-finite target at index {sig_i}")
+            w_target = min(1.0, max(0.0, float(raw_target)))
         else:
             w_target = 0.0
         w = w_target if abs(w_target - prev_w) > rebalance_band else prev_w
