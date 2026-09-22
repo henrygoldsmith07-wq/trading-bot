@@ -152,10 +152,14 @@ def grade_costs(n_turnover_events: int, mean_error_bp: float | None, sufficient:
 def grade_forward(
     days_recorded: int,
     code_verified: bool = True,
+    evidence_verified: bool = True,
     parameter_changes: int = 0,
     outage_days: int = 0,
 ) -> dict:
     """Grade prospective evidence. Days are TRADING days actually logged."""
+    if not evidence_verified:
+        return {"grade": "COMPROMISED", "inputs": {"evidence_verified": False},
+                "reason": "forward evidence integrity verification failed — evidence void"}
     if not code_verified:
         return {"grade": "COMPROMISED", "inputs": {"code_verified": False},
                 "reason": "code identity verification failed — forward evidence void"}
@@ -232,6 +236,7 @@ def build_verdict(
         f = grade_forward(
             days_recorded=n_days,
             code_verified=bool(forward.get("code_verified")),
+            evidence_verified=bool(forward.get("evidence_verified", True)),
             parameter_changes=int(forward.get("parameter_changes", 0)),
             outage_days=int(forward.get("data_outages", 0)),
         )
