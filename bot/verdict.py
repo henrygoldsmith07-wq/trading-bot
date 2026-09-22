@@ -152,9 +152,9 @@ def grade_costs(n_turnover_events: int, mean_error_bp: float | None, sufficient:
 def grade_forward(
     days_recorded: int,
     code_verified: bool = True,
-    evidence_verified: bool = True,
     parameter_changes: int = 0,
     outage_days: int = 0,
+    evidence_verified: bool = True,
 ) -> dict:
     """Grade prospective evidence. Days are TRADING days actually logged."""
     if not evidence_verified:
