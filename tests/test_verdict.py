@@ -186,3 +186,17 @@ class TestBuildVerdict:
         assert v["verdict"]["overall"] == "INVALIDATED"
         assert v["details"]["forward"]["grade"] == "COMPROMISED"
         assert "integrity" in v["details"]["forward"]["reason"]
+
+
+    def test_corrupt_cost_evidence_invalidates(self):
+        v = build_verdict(
+            canonical_rule_stats=RULES, canonical_per_asset=PER_ASSET,
+            canonical_n_folds=6, pool_size=1, ledger_search_n=None,
+            cost_report={"integrity_verified": False, "integrity_reason": "cost tape corrupt"},
+            forward={"available": True, "started": True, "n_days_recorded": 200,
+                     "code_verified": True, "evidence_verified": True,
+                     "parameter_changes": 0, "data_outages": 0},
+        )
+        assert v["verdict"]["overall"] == "INVALIDATED"
+        assert v["details"]["costs"]["grade"] == "COMPROMISED"
+        assert "cost tape corrupt" in v["details"]["costs"]["reason"]
