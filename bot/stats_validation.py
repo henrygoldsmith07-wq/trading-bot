@@ -60,8 +60,6 @@ def expected_max_sharpe_annual(trial_sharpes_annual: list[float], n_trials: int)
         raise ValueError("n_trials must be a positive integer")
     if any(not isinstance(x, (int, float)) or isinstance(x, bool) or not math.isfinite(float(x)) for x in trial_sharpes_annual):
         raise ValueError("trial Sharpes must be finite")
-    if n_trials < len(trial_sharpes_annual):
-        raise ValueError("n_trials cannot be smaller than the observed trial-Sharpe sample")
     if n_trials < 2 or len(trial_sharpes_annual) < 2:
         return 0.0  # no cross-trial dispersion to estimate a max from
     var = stdev(trial_sharpes_annual) ** 2
