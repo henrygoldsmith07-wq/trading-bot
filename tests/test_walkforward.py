@@ -1,5 +1,12 @@
+import pytest
+
 from bot.strategy import BuyHold, TrendVol
-from bot.walkforward import _fold_boundaries, walk_forward
+from bot.walkforward import (
+    _fold_boundaries,
+    combine_portfolio,
+    combine_portfolio_invvol,
+    walk_forward,
+)
 
 
 def _candles(closes, start_ms=0):
@@ -35,7 +42,63 @@ def test_walk_forward_runs_and_reports():
 
 
 def test_walk_forward_insufficient_data_raises():
-    import pytest
-
     with pytest.raises(ValueError):
         walk_forward(_candles([1.0, 2.0, 3.0]), train_days=365, test_days=365)
+
+
+def test_inverse_vol_combiner_enforces_hard_cap_after_redistribution():
+    timeline = list(range(40))
+    streams = {
+        "LOW": {t: (0.00001 if t % 2 else -0.00001) for t in timeline},
+        "MID": {t: (0.01 if t % 2 else -0.01) for t in timeline},
+        "HIGH": {t: (0.03 if t % 2 else -0.03) for t in timeline},
+    }
+    # With three assets and max_multiple=1.2, no normalized sleeve may exceed
+    # 40%. The old one-pass redistribution could breach this after clipping.
+    out = combine_portfolio_invvol(
+        streams,
+        timeline,
+        n_assets=3,
+        window=10,
+        max_multiple_of_equal=1.2,
+    )
+    assert len(out) == len(timeline)
+    assert all(abs(r) <= 0.03 + 1e-12 for r in out)
+
+
+def test_equal_weight_combiner_rejects_denominator_smaller_than_present_assets():
+    timeline = [1]
+    streams = {"A": {1: 0.01}, "B": {1: 0.02}}
+    with pytest.raises(ValueError, match="exceeds denominator"):
+        combine_portfolio(streams, timeline, n_assets=2, denominator_by_day={1: 1})
+
+
+def test_inverse_vol_combiner_rejects_denominator_smaller_than_present_assets():
+    timeline = list(range(25))
+    streams = {
+        "A": {t: 0.001 for t in timeline},
+        "B": {t: -0.001 for t in timeline},
+    }
+    with pytest.raises(ValueError, match="exceeds denominator"):
+        combine_portfolio_invvol(
+            streams,
+            timeline,
+            n_assets=2,
+            window=5,
+            denominator_by_day={t: 1 for t in timeline},
+        )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"n_assets": 0}, "positive integer"),
+        ({"n_assets": 2, "window": 1}, "window"),
+        ({"n_assets": 2, "max_multiple_of_equal": 0.5}, "max_multiple_of_equal"),
+    ],
+)
+def test_inverse_vol_combiner_rejects_invalid_configuration(kwargs, match):
+    timeline = [1, 2]
+    streams = {"A": {1: 0.01, 2: 0.01}, "B": {1: 0.02, 2: 0.02}}
+    with pytest.raises(ValueError, match=match):
+        combine_portfolio_invvol(streams, timeline, **kwargs)
