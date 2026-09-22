@@ -188,11 +188,11 @@ jobs:
           if fpath.exists():
               cutoff = json.loads(fpath.read_text()).get('frozen_at_date')
               if cutoff:
-                  kept = [e for e in merged if (e.get('date') or '') >= cutoff]
+                  kept = [e for e in merged if (e.get('date') or '') > cutoff]
                   dropped = len(merged) - len(kept)
                   if dropped:
                       print(f"dropped {dropped} entr{'y' if dropped == 1 else 'ies'} "
-                            f"dated before the freeze ({cutoff})")
+                            f"dated on/before the freeze ({cutoff})")
                   merged = kept
           p.write_text(''.join(json.dumps(e) + '\n' for e in merged))
           print(f"forward log entries after merge: {len(merged)}")
