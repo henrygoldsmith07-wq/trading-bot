@@ -472,8 +472,8 @@ def _scale_targets_to_gross_cap(
     max_gross_exposure: float,
 ) -> tuple[dict[str, tuple[float, str]], dict | None]:
     """Proportionally cap tradeable long-only targets to deterministic gross exposure."""
-    if not _finite(max_gross_exposure) or not 0.0 < float(max_gross_exposure) <= 1.0:
-        raise ValueError("max_gross_exposure must be finite and within (0, 1]")
+    if not _finite(max_gross_exposure) or not 0.0 <= float(max_gross_exposure) <= 1.0:
+        raise ValueError("gross exposure cap must be finite and within [0, 1]")
     cap = float(max_gross_exposure)
     raw_gross = sum(
         float(weight)
@@ -688,6 +688,14 @@ def run_cycle(
         raise ValueError("at least one non-empty symbol is required")
     if len(set(normalized_symbols)) != len(normalized_symbols):
         raise ValueError("symbols must be unique")
+    if not _finite(max_gross_exposure) or not 0.0 < float(max_gross_exposure) <= 1.0:
+        raise ValueError("max_gross_exposure must be finite and within (0, 1]")
+    held_symbols = {sym for sym, qty in portfolio.positions.items() if abs(qty) > 1e-12}
+    omitted_held = sorted(held_symbols - set(normalized_symbols))
+    if omitted_held:
+        raise ValueError(
+            "symbols must include all held positions: " + ",".join(omitted_held)
+        )
 
     candles_by_symbol = {}
     targets: dict[str, tuple[float, str]] = {}
@@ -738,52 +746,49 @@ def run_cycle(
         )
     )
     blocked_symbols = {a["symbol"] for a in alerts if a.get("symbol")}
-    targets, gross_alert = _scale_targets_to_gross_cap(targets, blocked_symbols, max_gross_exposure)
-    if gross_alert is not None:
-        alerts.append(gross_alert)
     prices = {
         s: float(cs[-1]["close"])
         for s, cs in candles_by_symbol.items()
         if cs and _positive_finite(cs[-1].get("close"))
     }
 
-    # The broker is long-only and unlevered, so independent per-symbol signals
-    # cannot be allowed to request more than the portfolio can own. Scale only
-    # valid, tradable targets, and reserve weight for blocked holdings that
-    # cannot safely be changed this cycle.
+    # Blocked holdings cannot be safely traded this cycle, but they still
+    # consume exposure. Reserve their marked weight first, then proportionally
+    # scale only the tradeable targets into what remains of the configured cap.
     missing_held_marks = [
         s for s, q in portfolio.positions.items()
         if abs(q) > 1e-12 and not _positive_finite(prices.get(s))
     ]
+    available_cap = float(max_gross_exposure)
+    locked_weight = 0.0
     if not missing_held_marks:
         marked_equity = portfolio.equity(prices)
         if _positive_finite(marked_equity):
             locked_weight = sum(
-                q * prices[s] / marked_equity
+                float(q) * float(prices[s]) / float(marked_equity)
                 for s, q in portfolio.positions.items()
                 if s in blocked_symbols and s in prices
             )
-            available_weight = max(0.0, 1.0 - locked_weight)
-            scalable = {
-                s: float(w)
-                for s, (w, _why) in targets.items()
-                if s not in blocked_symbols and _finite(w) and 0.0 <= float(w) <= 1.0
-            }
-            raw_gross = sum(scalable.values())
-            if raw_gross > available_weight + 1e-12 and raw_gross > 0.0:
-                scale = available_weight / raw_gross
-                for s, raw_weight in scalable.items():
-                    _old_weight, why = targets[s]
-                    targets[s] = (
-                        raw_weight * scale,
-                        f"{why} normalized_from={raw_weight:.3f} scale={scale:.3f}",
-                    )
+            available_cap = max(0.0, float(max_gross_exposure) - locked_weight)
+            if locked_weight > float(max_gross_exposure) + 1e-12:
                 alerts.append(
                     {
-                        "level": "target_weights_normalized",
-                        "detail": f"gross={raw_gross:.3f} available={available_weight:.3f}",
+                        "level": "locked_exposure_over_cap",
+                        "detail": (
+                            f"locked={locked_weight:.6f} "
+                            f"cap={float(max_gross_exposure):.6f}"
+                        ),
                     }
                 )
+
+    targets, gross_alert = _scale_targets_to_gross_cap(
+        targets,
+        blocked_symbols,
+        available_cap,
+    )
+    if gross_alert is not None:
+        gross_alert["detail"] += f" locked={locked_weight:.6f}"
+        alerts.append(gross_alert)
 
     decisions = decide_orders(
         targets,
