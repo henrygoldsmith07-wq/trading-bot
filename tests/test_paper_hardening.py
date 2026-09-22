@@ -93,6 +93,27 @@ class TestLedgerFailClosed:
         assert persisted["cash"] == pytest.approx(expected_cash)
 
 
+    def test_traded_state_without_ledger_is_rejected(self, tmp_path):
+        state = tmp_path / "state.json"
+        ledger = tmp_path / "ledger.jsonl"
+        pf = PaperPortfolio(
+            start_cash=1000.0,
+            fee=0.0,
+            state_file=state,
+            ledger_file=ledger,
+        )
+        pf.rebalance("BTC", 0.5, 100.0, idem_key="first")
+        ledger.unlink()
+
+        with pytest.raises(LedgerCorruptionError, match="ledger is empty/missing"):
+            PaperPortfolio(
+                start_cash=1000.0,
+                fee=0.0,
+                state_file=state,
+                ledger_file=ledger,
+            )
+
+
 class TestOrderPreflight:
     def test_nan_price_is_rejected_without_persistent_side_effects(self, tmp_path):
         ledger = tmp_path / "ledger.jsonl"
