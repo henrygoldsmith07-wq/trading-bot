@@ -35,7 +35,7 @@ def _mk_freeze(tmp_path, strategies=None):
         frictions={"fee": 0.001, "spread_bps": 5, "slippage_bps": 5, "execution": "next_open", "risk_free_annual": 0.03},
         algorithm=_algo(),
         path=tmp_path / "freeze.json",
-        now=RUN_NOW,
+        now=NOW,
         git_commit="abc123",
     )
     return manifest, tmp_path / "freeze.json"
