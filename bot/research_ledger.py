@@ -147,7 +147,7 @@ def append_entry(
         if raw and not raw.endswith(("\n", "\r")):
             tail = raw.splitlines()[-1].strip()
             try:
-                json.loads(tail)
+                parsed_tail = json.loads(tail)
             except json.JSONDecodeError:
                 last_newline = raw.rfind("\n")
                 repaired = raw[: last_newline + 1] if last_newline >= 0 else ""
@@ -155,6 +155,13 @@ def append_entry(
                     repair.write(repaired)
                     repair.flush()
                     os.fsync(repair.fileno())
+            else:
+                if not isinstance(parsed_tail, dict):
+                    raise ValueError("research ledger final record is not an object")
+                with open(p, "a", encoding="utf-8") as separator:
+                    separator.write("\n")
+                    separator.flush()
+                    os.fsync(separator.fileno())
 
     entry = {
         "id": (entries[-1]["id"] + 1) if entries else 1,
