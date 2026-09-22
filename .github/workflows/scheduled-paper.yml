@@ -155,7 +155,21 @@ jobs:
           [ -f cost_observations.jsonl ] && cp cost_observations.jsonl /tmp/cost_observations.jsonl
           git config user.name "paper-bot"
           git config user.email "actions@users.noreply.github.com"
-          git checkout -f "$BRANCH"
+          # Main may have advanced while the frozen step was running. Refresh
+          # before merging data so the bot never tries to push from a stale
+          # branch snapshot.
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+
+          # A re-freeze during this workflow changes the experiment identity.
+          # Never attach evidence produced by the old frozen code to the new
+          # freeze merely because both runs happened on the same calendar day.
+          CURRENT_FREEZE=$(python -c "import json; print(json.load(open('freeze.json')).get('git_commit_at_freeze', ''))")
+          if [ "$CURRENT_FREEZE" != "${{ steps.pointer.outputs.commit }}" ]; then
+            echo "::notice::freeze changed while this run was executing; preserving artifacts but not mutating main"
+            exit 0
+          fi
+
           python - <<'PY'
           import json, pathlib
           p = pathlib.Path('forward_log.jsonl')
