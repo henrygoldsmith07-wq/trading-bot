@@ -37,6 +37,8 @@ def _open_price(candle: dict, fallback: float) -> float:
     if not math.isfinite(float(fallback)) or float(fallback) <= 0.0:
         raise ValueError("fallback price must be positive and finite")
     o = candle.get("open")
+    if o is None:
+        return float(fallback)
     try:
         value = float(o)
     except (TypeError, ValueError):
