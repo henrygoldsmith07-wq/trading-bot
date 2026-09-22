@@ -268,7 +268,7 @@ def build_verdict(
         f_out = {"grade": "Insufficient", "inputs": {}, "reason": reason,
                  "label": "Insufficient — 0 trading days"}
 
-    overall, note = combine(hist["grade"], robust["grade"], sel["grade"], c["grade"], f_out["grade"])
+    overall, note = combine(hist["grade"], robust["grade"], sel["grade"], str(c["grade"]), f_out["grade"])
 
     return {
         "verdict": {
