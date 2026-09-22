@@ -5,6 +5,7 @@ import pytest
 
 from bot.algorithm import build_algorithm
 from bot.prospective import (
+    append_log,
     checkpoints_due,
     create_freeze,
     load_freeze,
@@ -77,6 +78,18 @@ def test_strategy_spec_roundtrip():
     assert repr(s2) == repr(s)
     with pytest.raises(ValueError):
         strategy_from_spec({"type": "NotAThing", "params": {}})
+
+
+def test_append_log_restores_missing_record_separator(tmp_path):
+    log = tmp_path / "log.jsonl"
+    first = {"date": "2026-08-23", "port_ret": 0.0, "assets": {"AAA": {}}}
+    second = {"date": "2026-08-24", "port_ret": 0.0, "assets": {"AAA": {}}}
+    log.write_text(json.dumps(first), encoding="utf-8")
+
+    append_log(second, log)
+
+    entries = load_log(log)
+    assert [entry["date"] for entry in entries] == ["2026-08-23", "2026-08-24"]
 
 
 def test_run_step_refuses_same_day_as_freeze(tmp_path):
