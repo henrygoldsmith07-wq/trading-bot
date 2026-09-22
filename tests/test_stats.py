@@ -103,6 +103,26 @@ def test_stationary_bootstrap_shape_and_determinism():
     assert idx == idx2
 
 
+@pytest.mark.parametrize(("n", "block"), [(0, 20), (10, 0), (-1, 5), (10, -1)])
+def test_stationary_bootstrap_rejects_invalid_shape(n, block):
+    with pytest.raises(ValueError):
+        stationary_bootstrap_indices(n, block, random.Random(1))
+
+
+@pytest.mark.parametrize(
+    ("fn", "kwargs"),
+    [
+        (bootstrap_metrics, {"returns": [], "n_boot": 10}),
+        (bootstrap_metrics, {"returns": [0.01, -0.01], "n_boot": 0}),
+        (shuffle_test, {"returns": [], "n_boot": 10}),
+        (shuffle_test, {"returns": [0.01, -0.01], "n_boot": 0}),
+    ],
+)
+def test_resampling_helpers_reject_empty_or_zero_resamples(fn, kwargs):
+    with pytest.raises(ValueError):
+        fn(**kwargs)
+
+
 def test_bootstrap_ci_contains_point_estimate_ballpark():
     rets = _rand(800, 0.001, 0.02, seed=3)
     boot = bootstrap_metrics(rets, n_boot=200, seed=5)
@@ -126,6 +146,15 @@ def test_reality_check_all_noise_high_pvalue():
     streams = [_rand(600, 0.0, 0.01, seed=200 + i) for i in range(15)]
     rc = reality_check(streams, n_boot=50, seed=17)
     assert rc["p_value"] > 0.05
+
+
+def test_reality_check_rejects_empty_or_too_short_streams():
+    with pytest.raises(ValueError, match="non-empty"):
+        reality_check([], n_boot=10)
+    with pytest.raises(ValueError, match="at least two"):
+        reality_check([[0.01], [0.02]], n_boot=10)
+    with pytest.raises(ValueError, match="positive"):
+        reality_check([[0.01, 0.02]], n_boot=0)
 
 
 def test_finite_sample_pvalue_never_claims_zero_probability():
@@ -170,6 +199,13 @@ def test_start_end_sensitivity_shape():
 
 
 # ---------- parameter stability ----------
+
+def test_parameter_stability_rejects_empty_or_nonfinite_grid():
+    with pytest.raises(ValueError, match="non-empty"):
+        parameter_stability({})
+    with pytest.raises(ValueError, match="finite"):
+        parameter_stability({(10, 0.2): {"sharpe": float("nan")}})
+
 
 def test_parameter_stability_flat_vs_spiky_grid():
     flat = {(i, j): {"sharpe": 1.0} for i in range(5) for j in range(4)}
