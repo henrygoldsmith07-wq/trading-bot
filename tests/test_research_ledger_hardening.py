@@ -65,6 +65,20 @@ def test_trial_count_refuses_tampered_history(tmp_path):
         recommended_trial_count(ledger)
 
 
+def test_append_restores_separator_after_valid_final_record(tmp_path):
+    ledger = tmp_path / "research.jsonl"
+    _append(ledger)
+    raw = ledger.read_text(encoding="utf-8").rstrip("\n")
+    ledger.write_text(raw, encoding="utf-8")
+
+    appended = _append(ledger)
+    assert appended["id"] == 2
+
+    entries = load_entries(ledger)
+    assert [entry["id"] for entry in entries] == [1, 2]
+    verify_chain(entries)
+
+
 def test_append_repairs_only_torn_final_crash_fragment(tmp_path):
     ledger = tmp_path / "research.jsonl"
     _append(ledger)
