@@ -253,7 +253,7 @@ Rewritten around a persistent multi-asset paper portfolio:
 - **Fail-closed append-only order ledger** — every fill records idempotency key, deltas, post-trade balances, fees, and the decision explanation; only an unterminated final crash fragment may be ignored, while interior corruption aborts recovery
 - **Ledger-first crash recovery** — every durable fill is replay-validated for cash, position, notional, side, and idempotency continuity; if a crash leaves a valid-but-stale state snapshot behind, the fsynced ledger wins and repairs state
 - **Duplicate-order prevention** — decisions carry `(date|symbol|action|target)` keys derived from the cycle timestamp; re-running a cycle cannot double-fill
-- **Multi-asset-safe execution** — total portfolio equity is marked with the full price snapshot, missing held-position marks fail closed, SELLs fund BUYs before execution, and zero-quantity cash-clamped orders never consume an idempotency key
+- **Multi-asset-safe execution** — total portfolio equity is marked with the full price snapshot, missing held-position marks fail closed, SELLs fund BUYs before execution, zero-quantity cash-clamped orders never consume an idempotency key, and over-allocated independent targets are normalized to the unlevered portfolio capacity (including capacity locked by stale holdings)
 - **Failure isolation** — data-source and advisory-AI failures are audited without turning into orders or erasing an already-completed paper cycle
 - **Data-staleness alerts** — symbols with frozen feeds get their trading blocked for the cycle and land in the audit trail (also raised by `forward --step`)
 - **Decision explanations & atomic daily audit reports** — markdown under `reports/` with positions, fills, alerts, and why every decision was taken (holds included)
@@ -385,8 +385,11 @@ one of those is a draw from the same multiple-testing lottery.
 hypothesis, full configuration, primary metric, numeric result,
 accepted/rejected, git provenance — hash-chained so edits and deletions of
 failed ideas are detectable (`python -m bot ledger` verifies and reports).
-Backfilled entries (33 seeded from git history) carry `backfilled: true`
-and their original commit.
+Reads fail closed on interior JSON corruption; trial-count/DSR/freeze consumers
+verify the chain before trusting it; appends refuse non-finite results or a
+tampered history and can repair only the one safe crash shape (an unterminated
+final record). Backfilled entries (33 seeded from git history) carry
+`backfilled: true` and their original commit.
 
 ```bash
 python -m bot ledger        # counts by category; search total = the honest N
