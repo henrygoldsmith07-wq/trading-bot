@@ -155,6 +155,26 @@ class TestPersistenceAndFormatEdges:
         assert load_observations(p) == []
 
 
+    def test_interior_cost_tape_corruption_is_not_silently_skipped(self, tmp_path):
+        from bot.cost_calibration import CostObservationIntegrityError
+
+        p = tmp_path / "obs.jsonl"
+        p.write_text(
+            json.dumps(_obs()) + "\n" +
+            '{"broken":JSON}\n' +
+            json.dumps(_obs(exec_price=100.07)) + "\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(CostObservationIntegrityError, match="line 2"):
+            load_observations(p)
+
+    def test_torn_final_cost_record_is_ignored(self, tmp_path):
+        p = tmp_path / "obs.jsonl"
+        p.write_text(json.dumps(_obs()) + "\n" + '{"ts":', encoding="utf-8")
+        rows = load_observations(p)
+        assert len(rows) == 1
+
+
 class TestVolatilityContextUnits:
     """ADV units regression: Binance quote_volume is ALREADY USD turnover —
     multiplying by close produced price x USD nonsense (e.g. BTC $2B volume
