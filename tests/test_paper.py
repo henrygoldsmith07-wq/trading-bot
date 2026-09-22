@@ -58,7 +58,7 @@ class TestPersistenceAndRecovery:
         led = tmp_path / "l.jsonl"
         pf = PaperPortfolio(start_cash=2000.0, state_file=state, ledger_file=led)
         pf.rebalance("BTC", 0.5, price=50.0, idem_key="a-key")  # buy ~20 BTC
-        pf.rebalance("ETH", 1.0, price=10.0, idem_key="b-key")
+        pf.rebalance("ETH", 1.0, price=10.0, idem_key="b-key", market_prices={"BTC": 50.0, "ETH": 10.0})
         final_cash = pf.cash
         # simulate a crash mid-write: garbage in the state file
         state.write_text("{ this is not json !!!")
@@ -122,9 +122,31 @@ class TestRebalanceMechanics:
         pf = PaperPortfolio(start_cash=100.0, fee=0.001, state_file=tmp_path / "s.json", ledger_file=tmp_path / "l.jsonl")
         pf.rebalance("A", 0.9, 10.0, idem_key="a")  # leaves cash
         eq_before = pf.cash + pf.positions["A"] * 10.0
-        pf.rebalance("B", 1.0, 5.0, idem_key="b")  # demands more than available
+        pf.rebalance("B", 1.0, 5.0, idem_key="b", market_prices={"A": 10.0, "B": 5.0})  # demands more than available
         assert pf.cash >= -1e-6
         assert pf.cash + sum(q * p for q, p in [(pf.positions.get("A", 0), 10.0), (pf.positions.get("B", 0), 5.0)]) <= eq_before + 1e-6
+
+    def test_multi_asset_target_uses_total_portfolio_equity(self, tmp_path):
+        pf = PaperPortfolio(start_cash=1000.0, fee=0.0, state_file=tmp_path / "s.json", ledger_file=tmp_path / "l.jsonl")
+        pf.rebalance("A", 0.5, 100.0, idem_key="a", market_prices={"A": 100.0})
+        fill = pf.rebalance(
+            "B",
+            0.5,
+            100.0,
+            idem_key="b",
+            market_prices={"A": 100.0, "B": 100.0},
+        )
+        assert fill["kind"] == "fill"
+        assert pf.positions["A"] == pytest.approx(5.0)
+        assert pf.positions["B"] == pytest.approx(5.0)
+        assert pf.cash == pytest.approx(0.0)
+
+    def test_multi_asset_rebalance_refuses_incomplete_marks(self, tmp_path):
+        pf = PaperPortfolio(start_cash=1000.0, fee=0.0, state_file=tmp_path / "s.json", ledger_file=tmp_path / "l.jsonl")
+        pf.rebalance("A", 0.5, 100.0, idem_key="a")
+        result = pf.rebalance("B", 0.5, 100.0, idem_key="b")
+        assert result == {"skipped": "missing usable price for held positions: A"}
+        assert "B" not in pf.positions
 
     def test_dust_skipped(self, tmp_path):
         pf = PaperPortfolio(start_cash=100.0, state_file=tmp_path / "s.json", ledger_file=tmp_path / "l.jsonl")
@@ -204,6 +226,16 @@ class TestAuditReport:
 
 
 class TestRunCycle:
+    def test_cycle_sizes_each_asset_against_total_equity(self, tmp_path):
+        data = {"A": _candles([100.0] * 30), "B": _candles([100.0] * 30)}
+        pf = PaperPortfolio(start_cash=1000.0, fee=0.0, state_file=tmp_path / "s.json", ledger_file=tmp_path / "l.jsonl")
+        result = run_cycle(["A", "B"], lambda s, c: 0.5, lambda s: data[s], pf, reports_dir=tmp_path / "r")
+        fills = [f for f in result["fills"] if f.get("kind") == "fill"]
+        assert {f["symbol"] for f in fills} == {"A", "B"}
+        assert pf.positions["A"] == pytest.approx(5.0)
+        assert pf.positions["B"] == pytest.approx(5.0)
+        assert pf.cash == pytest.approx(0.0)
+
     def test_full_cycle_writes_report_and_ledger(self, tmp_path):
         data = {"BTC": _candles([100 + i for i in range(60)]), "ETH": []}
         pf = PaperPortfolio(start_cash=5000.0, state_file=tmp_path / "s.json", ledger_file=tmp_path / "l.jsonl")

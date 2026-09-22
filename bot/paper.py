@@ -157,6 +157,13 @@ class PaperPortfolio:
         return total
 
     def target_position_for(self, symbol: str, target_weight: float, prices: dict[str, float]) -> float:
+        missing_marks = sorted(
+            sym
+            for sym, qty in self.positions.items()
+            if abs(qty) > 1e-12 and (prices.get(sym) is None or prices[sym] <= 0)
+        )
+        if missing_marks:
+            raise ValueError(f"missing usable price for held positions: {','.join(missing_marks)}")
         eq = self.equity(prices)
         px = prices.get(symbol)
         if px is None or px <= 0:
@@ -172,6 +179,7 @@ class PaperPortfolio:
         reason: str = "",
         ts: datetime | None = None,
         min_notional: float = 1.0,
+        market_prices: dict[str, float] | None = None,
     ) -> dict | None:
         """Move `symbol` toward `target_weight` of equity. Returns the fill
         record, or None when skipped (duplicate key / no price / dust).
@@ -181,7 +189,11 @@ class PaperPortfolio:
         """
         if idem_key in self._idem_keys:
             return {"skipped": "duplicate_order", "idem_key": idem_key}
-        prices = {symbol: price}
+        # Position sizing must use TOTAL portfolio equity. In a multi-asset
+        # portfolio, valuing only the symbol being traded silently drops every
+        # other holding from equity and under-sizes later rebalances.
+        prices = dict(market_prices or {})
+        prices[symbol] = price
         try:
             target_qty = self.target_position_for(symbol, target_weight, prices)
         except ValueError as e:
@@ -398,6 +410,7 @@ def run_cycle(
                 idem_key=d["idem_key"],
                 reason=d["explanation"],
                 ts=now,
+                market_prices=prices,
             )
             if res is not None:
                 fills.append(res)
