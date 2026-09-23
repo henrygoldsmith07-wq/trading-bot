@@ -48,3 +48,17 @@ def test_slippage_is_capped():
     model = PaperExecutionModel(max_slippage_bps=25.0)
     fill = model.fill_price(100.0, "BUY", 1_000_000.0, 1.0)
     assert fill == pytest.approx(100.25)
+
+
+
+def test_simulate_exposes_execution_diagnostics():
+    model = PaperExecutionModel(half_spread_bps=3.0, impact_bps=4.0)
+    fill = model.simulate(100.0, "BUY", 1_000.0, 100_000.0)
+    assert fill.price > 100.0
+    assert fill.slippage_bps > 3.0
+    assert fill.participation == pytest.approx(0.01)
+
+
+def test_nonfinite_participation_reference_rejected():
+    with pytest.raises(ValueError):
+        PaperExecutionModel(participation_reference=math.inf)
