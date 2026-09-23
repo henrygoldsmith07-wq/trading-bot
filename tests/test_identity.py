@@ -27,7 +27,6 @@ class TestFingerprint:
             (d / "bot").mkdir(parents=True)
             (d / "pyproject.toml").write_text('[project]\nname="x"\n', encoding="utf-8")
             shutil.copy("bot/strategy.py", d / "bot" / "strategy.py", follow_symlinks=True)
-        # identical logical content, different EOL conventions
         text = (src / "bot" / "strategy.py").read_bytes().replace(b"\r\n", b"\n")
         (src / "bot" / "strategy.py").write_bytes(text)
         (dst / "bot" / "strategy.py").write_bytes(text.replace(b"\n", b"\r\n"))
@@ -43,7 +42,6 @@ class TestFingerprint:
             shutil.copy("bot/strategy.py", d / "bot" / "strategy.py")
             (d / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
         original = (a / "bot" / "strategy.py").read_bytes()
-        # one byte of real implementation change: a comment flip inside a docstring
         mutated = original.replace(b"Long-only.", b"Short-only.") or original + b"\n# x"
         (b / "bot" / "strategy.py").write_bytes(mutated)
         assert code_fingerprint(a) != code_fingerprint(b)
@@ -63,7 +61,7 @@ def _manifest_with(code_sha):
 
 class TestVerifyFreezeCode:
     def test_ok_when_matching_running_tree(self):
-        verify_freeze_code(_manifest_with(code_fingerprint()))  # no raise
+        verify_freeze_code(_manifest_with(code_fingerprint()))
 
     def test_refuses_on_mismatch(self):
         with pytest.raises(ValueError, match="CODE MISMATCH"):
@@ -95,7 +93,7 @@ class TestFreezeIntegration:
                     "strategy": __import__("bot.strategy", fromlist=["TrendVol"]).TrendVol(50, 20, 0.3),
                 }
             ],
-            frictions={"fee": 0.001},
+            frictions={"fee": 0.001, "execution": "next_open"},
             algorithm=build_algorithm(with_pool_version=False),
             path=tmp_path / "freeze.json",
             now=datetime(2026, 8, 23, tzinfo=UTC),
@@ -111,7 +109,6 @@ class TestFreezeIntegration:
         from bot import prospective as P
 
         self._make_freeze(tmp_path, monkeypatch)
-        # tamper ONLY the code field (config untouched -> config check passes)
         raw = json.loads((tmp_path / "freeze.json").read_text())
         raw["code_sha256"] = "f" * 64
         (tmp_path / "freeze.json").write_text(json.dumps(raw))
@@ -135,7 +132,7 @@ class TestFreezeIntegration:
         tampered = dict(manifest)
         tampered["code_sha256"] = "e" * 64
 
-        def boom_fetcher(sym, source):  # must never be reached
+        def boom_fetcher(sym, source):
             raise AssertionError("run_step traded on code that does not match the freeze")
 
         with pytest.raises(ValueError, match="CODE MISMATCH"):

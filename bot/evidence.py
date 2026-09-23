@@ -76,8 +76,18 @@ def temporal_problems(row: dict, now: datetime | None = None) -> list[str]:
 
 
 def numeric_problems(row: dict) -> list[str]:
+    import math
+
     problems = []
-    for field in ("turnover", "predicted_cost_bps", "decision_close"):
+    for field in (
+        "turnover",
+        "predicted_cost_bps",
+        "decision_close",
+        "exec_price",
+        "target_weight",
+        "previous_weight",
+        "observed_cost_proxy_bps",
+    ):
         v = row.get(field)
         if v is None:
             continue
@@ -86,10 +96,15 @@ def numeric_problems(row: dict) -> list[str]:
         except (TypeError, ValueError):
             problems.append(f"non-numeric {field}")
             continue
-        if field == "turnover":
-            if fv < 0 or fv != fv:  # negative or NaN
-                problems.append(f"invalid {field}")
-        elif fv <= 0 or fv != fv or fv in (float("inf"),):
+        if not math.isfinite(fv):
+            problems.append(f"invalid {field}")
+        elif field == "turnover" and fv < 0:
+            problems.append(f"invalid {field}")
+        elif field == "predicted_cost_bps" and fv < 0:
+            problems.append(f"invalid {field}")
+        elif field in ("decision_close", "exec_price") and fv <= 0:
+            problems.append(f"invalid {field}")
+        elif field in ("target_weight", "previous_weight") and not 0.0 <= fv <= 1.0:
             problems.append(f"invalid {field}")
     return problems
 
@@ -269,11 +284,16 @@ def verified_forward_rows(rows: list[dict], freeze_manifest: dict, now: datetime
     Returns (verified_rows, exclusion_counts).
     """
     expected_commit = freeze_manifest.get("git_commit_at_freeze") or ""
+    expected_code = freeze_manifest.get("code_sha256") or ""
     freeze_id = f"freeze/{freeze_manifest['frozen_at_date']}"
+    freeze_universe = {a["symbol"] for a in freeze_manifest.get("config", {}).get("assets", [])}
+    frozen_at = _parse_iso(freeze_manifest.get("frozen_at"))
+    freeze_date = freeze_manifest.get("frozen_at_date")
     now = now or datetime.now(UTC)
 
     kept: list[dict] = []
     excluded: dict[str, int] = {}
+    seen_identity_hashes: set[str] = set()
 
     def bump(reason: str):
         excluded[reason] = excluded.get(reason, 0) + 1
@@ -290,12 +310,45 @@ def verified_forward_rows(rows: list[dict], freeze_manifest: dict, now: datetime
         if row.get("evidenceClass") != EVIDENCE_FORWARD_PAPER:
             bump(EXCL_FIXTURE_TEST if row.get("evidenceClass") == EVIDENCE_FIXTURE else "other_class")
             continue
-        if row.get("freezeId") not in (None, freeze_id):
+        if row.get("symbol") not in freeze_universe:
+            bump(EXCL_FIXTURE_TEST)
+            continue
+        if row.get("freezeId") != freeze_id:
             bump(EXCL_WRONG_FREEZE)
             continue
-        if expected_commit and row.get("frozenGitCommit") not in (None, "", expected_commit):
+        if expected_commit and row.get("frozenGitCommit") != expected_commit:
             bump(EXCL_WRONG_FREEZE)
             continue
+        if expected_code and row.get("codeFingerprint") != expected_code:
+            bump(EXCL_WRONG_FREEZE)
+            continue
+        if not row.get("runId") or row.get("source") != "forward-runner":
+            bump(EXCL_MISSING_DATA)
+            continue
+
+        row_ts = _parse_iso(row.get("ts"))
+        signal_ts = _parse_iso(row.get("signal_ts"))
+        if (
+            frozen_at is None
+            or row_ts is None
+            or signal_ts is None
+            or signal_ts <= frozen_at
+            or (isinstance(freeze_date, str) and row_ts.date().isoformat() <= freeze_date)
+        ):
+            bump(EXCL_WRONG_FREEZE)
+            continue
+
+        identity = json.dumps(
+            {k: row.get(k) for k in (
+                "ts", "symbol", "side", "turnover", "decision_close", "exec_price"
+            )},
+            sort_keys=True,
+        )
+        if identity in seen_identity_hashes:
+            bump(EXCL_REPLAY)
+            continue
+        seen_identity_hashes.add(identity)
+
         miss = missing_problems(row)
         if miss:
             bump(EXCL_MISSING_DATA)

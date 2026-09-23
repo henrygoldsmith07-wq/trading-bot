@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -49,7 +50,7 @@ def _now() -> str:
 
 
 def entry_hash(entry: dict) -> str:
-    blob = json.dumps(entry, sort_keys=True, separators=(",", ":")).encode()
+    blob = json.dumps(entry, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     return hashlib.sha256(blob).hexdigest()
 
 
@@ -61,23 +62,32 @@ def validate_entry(entry: dict) -> None:
         raise ValueError(f"unknown category {entry['category']!r}; use one of {list(ALL_CATEGORIES)}")
     if not isinstance(entry["accepted"], bool):
         raise ValueError("accepted must be a boolean")
-    if not isinstance(entry["result"], (int, float)):
+    if not isinstance(entry["result"], (int, float)) or isinstance(entry["result"], bool):
         raise ValueError("result must be numeric")
+    if not math.isfinite(float(entry["result"])):
+        raise ValueError("result must be finite")
 
 
 def load_entries(path: str | Path = DEFAULT_LEDGER) -> list[dict]:
     p = Path(path)
     if not p.exists():
         return []
+    raw = p.read_text(encoding="utf-8")
+    lines = raw.splitlines()
     out = []
-    for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
+    for line_no, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
         if not line:
             continue
         try:
-            out.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue  # torn final line after a crash
+            entry = json.loads(line)
+        except json.JSONDecodeError as exc:
+            if line_no == len(lines) and not raw.endswith(("\n", "\r")):
+                continue  # one unterminated crash fragment is recoverable
+            raise ValueError(f"research ledger corrupt JSON at line {line_no}") from exc
+        if not isinstance(entry, dict):
+            raise ValueError(f"research ledger line {line_no} is not an object")
+        out.append(entry)
     return out
 
 
@@ -89,6 +99,7 @@ def verify_chain(entries: list[dict]) -> None:
     prev_id = 0
     prev_ts = ""
     for e in entries:
+        validate_entry(e)
         if e["id"] != prev_id + 1:
             raise ValueError(f"ledger gap/duplicate at id {e['id']} (expected {prev_id + 1}) — history was altered")
         if e["timestamp"] < prev_ts:
@@ -125,7 +136,33 @@ def append_entry(
     `timestamp` overrides the wall clock — used ONLY by the historical
     backfill seeder, and always applied BEFORE the content hash is computed
     so the seal stays valid."""
-    entries = load_entries(path)
+    p = Path(path)
+    entries = load_entries(p)
+    verify_chain(entries)
+
+    # If the previous process died mid-append, remove only the malformed
+    # unterminated tail before writing the next durable entry.
+    if p.exists():
+        raw = p.read_text(encoding="utf-8")
+        if raw and not raw.endswith(("\n", "\r")):
+            tail = raw.splitlines()[-1].strip()
+            try:
+                parsed_tail = json.loads(tail)
+            except json.JSONDecodeError:
+                last_newline = raw.rfind("\n")
+                repaired = raw[: last_newline + 1] if last_newline >= 0 else ""
+                with open(p, "w", encoding="utf-8") as repair:
+                    repair.write(repaired)
+                    repair.flush()
+                    os.fsync(repair.fileno())
+            else:
+                if not isinstance(parsed_tail, dict):
+                    raise ValueError("research ledger final record is not an object")
+                with open(p, "a", encoding="utf-8") as separator:
+                    separator.write("\n")
+                    separator.flush()
+                    os.fsync(separator.fileno())
+
     entry = {
         "id": (entries[-1]["id"] + 1) if entries else 1,
         "timestamp": timestamp or _now(),
@@ -145,7 +182,7 @@ def append_entry(
         entry["prev_hash"] = entries[-1].get("hash")
     entry["hash"] = entry_hash({k: v for k, v in entry.items()})
     with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, sort_keys=True) + "\n")
+        f.write(json.dumps(entry, sort_keys=True, allow_nan=False) + "\n")
         f.flush()
         os.fsync(f.fileno())
     return entry
@@ -186,7 +223,9 @@ def recommended_trial_count(path: str | Path = DEFAULT_LEDGER) -> int | None:
     p = Path(path)
     if not p.exists():
         return None
-    return summarize(load_entries(p))["recommended_trial_count"]
+    entries = load_entries(p)
+    verify_chain(entries)
+    return summarize(entries)["recommended_trial_count"]
 
 
 def ledger_fingerprint(path: str | Path = DEFAULT_LEDGER) -> tuple[int, str] | None:
@@ -194,8 +233,10 @@ def ledger_fingerprint(path: str | Path = DEFAULT_LEDGER) -> tuple[int, str] | N
     p = Path(path)
     if not p.exists():
         return None
+    entries = load_entries(p)
+    verify_chain(entries)
     raw = p.read_bytes()
-    return (raw.count(b"\n"), hashlib.sha256(raw).hexdigest())
+    return (len(entries), hashlib.sha256(raw).hexdigest())
 
 
 def deflated_sharpe_against_ledger(
@@ -215,6 +256,7 @@ def deflated_sharpe_against_ledger(
     entries = load_entries(path)
     if not entries:
         return {"available": False, "reason": "no research ledger"}
+    verify_chain(entries)
     summary = summarize(entries)
     n_trials = summary["recommended_trial_count"]
     trial_sharpes = summary["trial_sharpes"]

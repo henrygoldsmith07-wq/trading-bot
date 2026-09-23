@@ -94,6 +94,25 @@ class TestSaveAndLoad:
         assert rec["run_id"] == rid
         assert rid in str(list_runs(tmp_path / "runs")[0]["run_id"])
 
+    def test_auto_ids_do_not_collide_with_back_to_back_saves(self, tmp_path):
+        results = {"metrics": {}, "universe": ["X"], "parameters": {}, "environment": {}, "datasets": {}}
+        first = save_run_record(results, runs_dir=tmp_path / "runs")
+        second = save_run_record(results, runs_dir=tmp_path / "runs")
+        assert first != second
+        assert (tmp_path / "runs" / first / "run.json").exists()
+        assert (tmp_path / "runs" / second / "run.json").exists()
+
+    def test_nonfinite_run_record_is_rejected(self, tmp_path):
+        results = {
+            "metrics": {"sharpe": float("nan")},
+            "universe": [],
+            "parameters": {},
+            "environment": {},
+            "datasets": {},
+        }
+        with pytest.raises(ValueError):
+            save_run_record(results, runs_dir=tmp_path / "runs")
+
     def test_tampered_record_detected(self, tmp_path):
         results = {"metrics": {"a": 1.0}, "universe": [], "parameters": {}, "environment": {}, "datasets": {}}
         rid = save_run_record(results, runs_dir=tmp_path / "runs")

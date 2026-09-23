@@ -154,8 +154,12 @@ def grade_forward(
     code_verified: bool = True,
     parameter_changes: int = 0,
     outage_days: int = 0,
+    evidence_verified: bool = True,
 ) -> dict:
     """Grade prospective evidence. Days are TRADING days actually logged."""
+    if not evidence_verified:
+        return {"grade": "COMPROMISED", "inputs": {"evidence_verified": False},
+                "reason": "forward evidence integrity verification failed — evidence void"}
     if not code_verified:
         return {"grade": "COMPROMISED", "inputs": {"code_verified": False},
                 "reason": "code identity verification failed — forward evidence void"}
@@ -220,18 +224,39 @@ def build_verdict(
     hist = grade_historical(canonical_rule_stats, headline_rule_substring, sel["grade"])
     robust = grade_robustness(canonical_per_asset, canonical_n_folds)
 
-    if cost_report:
+    if cost_report and cost_report.get("integrity_verified") is False:
+        c = {
+            "grade": "COMPROMISED",
+            "inputs": {"integrity_verified": False},
+            "reason": cost_report.get("integrity_reason") or "cost evidence integrity verification failed",
+        }
+    elif cost_report:
         c = grade_costs(cost_report.get("n_turnover_events", 0),
                         cost_report.get("error_bp"),
                         cost_report.get("sufficient", False))
     else:
         c = {"grade": "Insufficient", "inputs": {}, "reason": "no cost tape"}
 
-    if forward and forward.get("available") and forward.get("started"):
+    if forward and forward.get("available") and forward.get("evidence_verified") is False:
+        f = grade_forward(
+            days_recorded=0,
+            code_verified=bool(forward.get("code_verified", True)),
+            evidence_verified=False,
+            parameter_changes=int(forward.get("parameter_changes", 0)),
+            outage_days=0,
+        )
+        f_out = {
+            "grade": f["grade"],
+            "inputs": {**f["inputs"], "days_recorded": 0},
+            "reason": forward.get("evidence_reason") or f["reason"],
+            "label": f"{f['grade']} — 0 trading days",
+        }
+    elif forward and forward.get("available") and forward.get("started"):
         n_days = int(forward.get("n_days_recorded", 0))
         f = grade_forward(
             days_recorded=n_days,
             code_verified=bool(forward.get("code_verified")),
+            evidence_verified=bool(forward.get("evidence_verified", True)),
             parameter_changes=int(forward.get("parameter_changes", 0)),
             outage_days=int(forward.get("data_outages", 0)),
         )
@@ -243,7 +268,7 @@ def build_verdict(
         f_out = {"grade": "Insufficient", "inputs": {}, "reason": reason,
                  "label": "Insufficient — 0 trading days"}
 
-    overall, note = combine(hist["grade"], robust["grade"], sel["grade"], c["grade"], f_out["grade"])
+    overall, note = combine(hist["grade"], robust["grade"], sel["grade"], str(c["grade"]), f_out["grade"])
 
     return {
         "verdict": {

@@ -65,7 +65,9 @@ class TestCalibrate:
         assert rep["sufficient"]
         assert rep["predicted_cost_bps"] == pytest.approx(20.0)   # fee 10 + 5 + 5
         assert rep["observed_cost_proxy_bps"] == pytest.approx(6.0)
-        assert rep["error_bp"] == pytest.approx(-14.0)
+        assert rep["observed_total_cost_proxy_bps"] == pytest.approx(16.0)
+        assert rep["contractual_fee_bps"] == pytest.approx(10.0)
+        assert rep["error_bp"] == pytest.approx(-4.0)
         assert rep["v2_proposal"]["status"] == "proposed"
 
     def test_insufficient_sample_blocks_v2(self):
@@ -107,7 +109,8 @@ class TestRoundtripAndFormat:
         rep = calibrate(rows, v1_frictions={"fee": 0.001, "spread_bps": 5.0, "slippage_bps": 5.0})
         text = format_report(rep)
         assert "predicted trading cost" in text
-        assert "observed slippage proxy" in text
+        assert "observed price proxy" in text
+        assert "observed total proxy" in text
         assert "V2 proposal" in text
 
     def test_json_serializable(self):
@@ -150,6 +153,26 @@ class TestPersistenceAndFormatEdges:
         p = tmp_path / "empty.jsonl"
         p.write_text("")
         assert load_observations(p) == []
+
+
+    def test_interior_cost_tape_corruption_is_not_silently_skipped(self, tmp_path):
+        from bot.cost_calibration import CostObservationIntegrityError
+
+        p = tmp_path / "obs.jsonl"
+        p.write_text(
+            json.dumps(_obs()) + "\n" +
+            '{"broken":JSON}\n' +
+            json.dumps(_obs(exec_price=100.07)) + "\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(CostObservationIntegrityError, match="line 2"):
+            load_observations(p)
+
+    def test_torn_final_cost_record_is_ignored(self, tmp_path):
+        p = tmp_path / "obs.jsonl"
+        p.write_text(json.dumps(_obs()) + "\n" + '{"ts":', encoding="utf-8")
+        rows = load_observations(p)
+        assert len(rows) == 1
 
 
 class TestVolatilityContextUnits:
@@ -212,7 +235,7 @@ class TestRunStepIntegration:
             algorithm=build_algorithm(rebalance_band=0.0, overlay_enabled=False,
                                       use_tilt=False, use_crisis=False),
             path=tmp_path / "freeze.json",
-            now=datetime(2026, 8, 23, tzinfo=UTC),
+            now=datetime(2026, 5, 31, tzinfo=UTC),
             git_commit="cal",
         )
         obs_path = tmp_path / "cost_observations.jsonl"
@@ -237,7 +260,7 @@ class TestRunStepIntegration:
         res = run_step(
             manifest,
             lambda sym, src: (candles, None),
-            now=datetime(2026, 8, 23, tzinfo=UTC).replace(hour=12),
+            now=datetime(2026, 7, 1, 12, tzinfo=UTC),
             log_path=tmp_path / "log.jsonl",
             kwargs_quote_fetcher=fake_quote,
             cost_observation_path=obs_path,

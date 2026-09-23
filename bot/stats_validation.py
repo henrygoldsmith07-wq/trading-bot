@@ -55,8 +55,11 @@ def psr(returns: list[float], periods_per_year: int = 365, sr_benchmark_annual: 
 
 
 def expected_max_sharpe_annual(trial_sharpes_annual: list[float], n_trials: int) -> float:
-    """Expected maximum Sharpe under the null across `n_trials` independent
-    trials (Lopez de Prado's deflation benchmark), in annualized units."""
+    """Expected maximum Sharpe under the null across `n_trials` independent trials."""
+    if isinstance(n_trials, bool) or not isinstance(n_trials, int) or n_trials < 1:
+        raise ValueError("n_trials must be a positive integer")
+    if any(not isinstance(x, (int, float)) or isinstance(x, bool) or not math.isfinite(float(x)) for x in trial_sharpes_annual):
+        raise ValueError("trial Sharpes must be finite")
     if n_trials < 2 or len(trial_sharpes_annual) < 2:
         return 0.0  # no cross-trial dispersion to estimate a max from
     var = stdev(trial_sharpes_annual) ** 2
@@ -75,6 +78,10 @@ def dsr(returns: list[float], trial_sharpes_annual: list[float], n_trials: int, 
 
 def stationary_bootstrap_indices(n: int, block: int, rng: random.Random) -> list[int]:
     """Politis-Romano stationary bootstrap: geometric block lengths with mean `block`."""
+    if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+        raise ValueError("n must be a positive integer")
+    if isinstance(block, bool) or not isinstance(block, int) or block < 1:
+        raise ValueError("block must be a positive integer")
     out: list[int] = []
     i = rng.randrange(n)
     while len(out) < n:
@@ -95,6 +102,12 @@ def _equity(returns: list[float]) -> list[float]:
 
 def bootstrap_metrics(returns: list[float], n_boot: int = 1000, block: int = 20, seed: int = 42, periods_per_year: int = 365) -> dict:
     """Stationary-bootstrap distributions of CAGR / Sharpe / max drawdown."""
+    if not returns:
+        raise ValueError("returns must be non-empty")
+    if isinstance(n_boot, bool) or not isinstance(n_boot, int) or n_boot < 1:
+        raise ValueError("n_boot must be a positive integer")
+    if isinstance(block, bool) or not isinstance(block, int) or block < 1:
+        raise ValueError("block must be a positive integer")
     rng = random.Random(seed)
     cagrs, sharpes, mdds = [], [], []
     n = len(returns)
@@ -131,6 +144,10 @@ def shuffle_test(returns: list[float], n_boot: int = 1000, seed: int = 42, perio
     few random orderings would have been as shallow — the return sequence
     itself (which trend-following trades on) carries risk information.
     """
+    if not returns:
+        raise ValueError("returns must be non-empty")
+    if isinstance(n_boot, bool) or not isinstance(n_boot, int) or n_boot < 1:
+        raise ValueError("n_boot must be a positive integer")
     rng = random.Random(seed)
     actual_mdd = max_drawdown(_equity(returns))
     mdds = []
@@ -158,8 +175,14 @@ def reality_check(candidate_returns: list[list[float]], n_boot: int = 200, block
     fraction of bootstrap maxima reaching the observed best Sharpe, with the
     observed statistic included via the finite-sample add-one correction.
     """
+    if not candidate_returns:
+        raise ValueError("candidate_returns must be non-empty")
+    if isinstance(n_boot, bool) or not isinstance(n_boot, int) or n_boot < 1:
+        raise ValueError("n_boot must be a positive integer")
     n_cands = len(candidate_returns)
     n = min(len(r) for r in candidate_returns)
+    if n < 2:
+        raise ValueError("candidate return streams must contain at least two aligned observations")
     rows = [r[:n] for r in candidate_returns]
     obs = [sharpe(r, periods_per_year) for r in rows]
     best_obs = max(obs)
@@ -183,6 +206,8 @@ def reality_check(candidate_returns: list[list[float]], n_boot: int = 200, block
 
 def start_end_sensitivity(returns: list[float], trims_days=(0, 90, 180), periods_per_year: int = 365) -> list[dict]:
     """Recompute headline metrics with the window's start and/or end trimmed."""
+    if any(isinstance(x, bool) or not isinstance(x, int) or x < 0 for x in trims_days):
+        raise ValueError("trims_days must contain non-negative integers")
     out = []
     for start in trims_days:
         for end in trims_days:
@@ -204,7 +229,14 @@ def start_end_sensitivity(returns: list[float], trims_days=(0, 90, 180), periods
 def parameter_stability(grid: dict, metric: str = "sharpe") -> dict:
     """Stability of a {(lookback, target): metrics} grid: dispersion plus
     mean absolute delta between grid-adjacent cells (neighborhood roughness)."""
-    values = sorted(m[metric] for m in grid.values())
+    if not grid:
+        raise ValueError("grid must be non-empty")
+    try:
+        values = sorted(float(m[metric]) for m in grid.values())
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"every grid cell must contain numeric metric {metric!r}") from exc
+    if any(not math.isfinite(v) for v in values):
+        raise ValueError("grid metric values must be finite")
     lookbacks = sorted({k[0] for k in grid})
     targets = sorted({k[1] for k in grid})
     deltas = []

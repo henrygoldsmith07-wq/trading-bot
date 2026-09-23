@@ -14,19 +14,59 @@ import math
 from statistics import mean, stdev
 
 
+def _validate_periods(periods_per_year: int) -> None:
+    if isinstance(periods_per_year, bool) or not isinstance(periods_per_year, int) or periods_per_year <= 0:
+        raise ValueError("periods_per_year must be a positive integer")
+
+
+def _validate_returns(returns: list[float]) -> None:
+    """Validate numeric observations without imposing a distributional range.
+
+    Tail/moment helpers are also used on synthetic stress observations where
+    values can lie below -1; functions that compound returns validate the
+    resulting equity path separately.
+    """
+    for i, value in enumerate(returns):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            raise ValueError(f"return {i} must be finite")
+
+
+def _validate_equity(equity: list[float]) -> None:
+    if not equity:
+        raise ValueError("equity must be non-empty")
+    for i, value in enumerate(equity):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            raise ValueError(f"equity {i} must be finite")
+        if float(value) < 0.0:
+            raise ValueError(f"equity {i} cannot be negative")
+    if float(equity[0]) <= 0.0:
+        raise ValueError("starting equity must be positive")
+
+
 def cagr(equity: list[float], days: float) -> float:
-    if days <= 0 or equity[0] <= 0 or equity[-1] <= 0:
+    _validate_equity(equity)
+    if not isinstance(days, (int, float)) or isinstance(days, bool) or not math.isfinite(float(days)):
+        raise ValueError("days must be finite")
+    if days <= 0:
         return 0.0
+    if equity[-1] == 0:
+        return -1.0
     return (equity[-1] / equity[0]) ** (365.0 / days) - 1.0
 
 
 def volatility(returns: list[float], periods_per_year: int) -> float:
+    _validate_periods(periods_per_year)
+    _validate_returns(returns)
     if len(returns) < 2:
         return 0.0
     return stdev(returns) * math.sqrt(periods_per_year)
 
 
 def sharpe(returns: list[float], periods_per_year: int, risk_free_annual: float = 0.0) -> float:
+    _validate_periods(periods_per_year)
+    _validate_returns(returns)
+    if not isinstance(risk_free_annual, (int, float)) or isinstance(risk_free_annual, bool) or not math.isfinite(float(risk_free_annual)):
+        raise ValueError("risk_free_annual must be finite")
     if len(returns) < 2:
         return 0.0
     sd = stdev(returns)
@@ -38,6 +78,7 @@ def sharpe(returns: list[float], periods_per_year: int, risk_free_annual: float 
 
 def max_drawdown(equity: list[float]) -> float:
     """Most negative peak-to-trough decline, as a fraction (e.g. -0.5 = -50%)."""
+    _validate_equity(equity)
     peak = equity[0]
     mdd = 0.0
     for v in equity:
@@ -48,6 +89,10 @@ def max_drawdown(equity: list[float]) -> float:
 
 def downside_deviation(returns: list[float], periods_per_year: int, risk_free_annual: float = 0.0) -> float:
     """Annualized downside deviation: RMS of returns below the cash rate."""
+    _validate_periods(periods_per_year)
+    _validate_returns(returns)
+    if not isinstance(risk_free_annual, (int, float)) or isinstance(risk_free_annual, bool) or not math.isfinite(float(risk_free_annual)):
+        raise ValueError("risk_free_annual must be finite")
     if not returns:
         return 0.0
     rf_daily = risk_free_annual / periods_per_year
@@ -56,6 +101,10 @@ def downside_deviation(returns: list[float], periods_per_year: int, risk_free_an
 
 
 def sortino(returns: list[float], periods_per_year: int, risk_free_annual: float = 0.0) -> float:
+    _validate_periods(periods_per_year)
+    _validate_returns(returns)
+    if not isinstance(risk_free_annual, (int, float)) or isinstance(risk_free_annual, bool) or not math.isfinite(float(risk_free_annual)):
+        raise ValueError("risk_free_annual must be finite")
     if len(returns) < 2:
         return 0.0
     dd = downside_deviation(returns, periods_per_year, risk_free_annual)
@@ -73,6 +122,9 @@ def calmar(cagr_value: float, max_drawdown_value: float) -> float:
 
 def var_hist(returns: list[float], alpha: float = 0.95) -> float:
     """Historical Value-at-Risk (descriptive only, not a risk limit)."""
+    _validate_returns(returns)
+    if not isinstance(alpha, (int, float)) or isinstance(alpha, bool) or not math.isfinite(float(alpha)) or not 0.0 < float(alpha) < 1.0:
+        raise ValueError("alpha must be in (0, 1)")
     if not returns:
         return 0.0
     ordered = sorted(returns)
@@ -82,6 +134,9 @@ def var_hist(returns: list[float], alpha: float = 0.95) -> float:
 
 def expected_shortfall(returns: list[float], alpha: float = 0.95) -> float:
     """Average loss in the worst (1-alpha) fraction of days."""
+    _validate_returns(returns)
+    if not isinstance(alpha, (int, float)) or isinstance(alpha, bool) or not math.isfinite(float(alpha)) or not 0.0 < float(alpha) < 1.0:
+        raise ValueError("alpha must be in (0, 1)")
     if not returns:
         return 0.0
     ordered = sorted(returns)
@@ -90,6 +145,7 @@ def expected_shortfall(returns: list[float], alpha: float = 0.95) -> float:
 
 
 def skewness(returns: list[float]) -> float:
+    _validate_returns(returns)
     if len(returns) < 3:
         return 0.0
     m = mean(returns)
@@ -102,6 +158,7 @@ def skewness(returns: list[float]) -> float:
 
 def kurtosis(returns: list[float]) -> float:
     """Raw kurtosis (normal = 3), not excess."""
+    _validate_returns(returns)
     if len(returns) < 4:
         return 3.0
     m = mean(returns)
@@ -142,6 +199,10 @@ def trade_stats(weights: list[float], returns: list[float], entry_epsilon: float
 
 
 def summarize(equity: list[float], returns: list[float], days: float, periods_per_year: int, risk_free_annual: float = 0.0) -> dict:
+    _validate_equity(equity)
+    _validate_returns(returns)
+    if len(equity) != len(returns) + 1:
+        raise ValueError("equity must contain exactly one more observation than returns")
     return {
         "final": equity[-1],
         "cagr": cagr(equity, days),

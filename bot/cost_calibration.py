@@ -7,8 +7,9 @@ models. This module closes the loop:
    close, execution print, best bid/ask/mid when available, spread, the
    decision->execution drift (the paper slippage proxy), turnover, realized
    volatility and average daily volume context.
-2. `calibrate()` compares the model's PREDICTED cost per unit turnover
-   against the mean observed proxy and reports the error in bp.
+2. `calibrate()` compares like with like: the model's TOTAL predicted cost
+   (fee + spread + slippage) against contractual fee + observed price-shortfall
+   proxy. The raw price proxy is still reported separately.
 3. It proposes V2 parameters (recalibrated friction rates) WITHOUT touching
    the frozen V1 configuration — recalibration is a suggestion written to
    cost_calibration.json for human review.
@@ -33,6 +34,10 @@ OBSERVATIONS_LOG = Path(
     os.environ.get("COST_OBSERVATIONS_LOG", "cost_observations.jsonl")
 )
 CALIBRATION_FILE = Path("cost_calibration.json")
+
+
+class CostObservationIntegrityError(ValueError):
+    """Raised when the append-only cost tape cannot be trusted."""
 
 
 def _now() -> str:
@@ -112,17 +117,30 @@ def append_observation(observation: dict, path: str | Path = OBSERVATIONS_LOG) -
 
 
 def load_observations(path: str | Path = OBSERVATIONS_LOG) -> list[dict]:
+    """Load the append-only cost tape; only a torn final write is ignorable."""
     p = Path(path)
     if not p.exists():
         return []
-    out = []
-    for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line:
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
+    raw = p.read_text(encoding="utf-8")
+    lines = raw.splitlines()
+    out: list[dict] = []
+    for line_no, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            if line_no == len(lines) and not raw.endswith(("\n", "\r")):
                 continue
+            raise CostObservationIntegrityError(
+                f"cost observation JSON is corrupt at line {line_no}"
+            ) from exc
+        if not isinstance(row, dict):
+            raise CostObservationIntegrityError(
+                f"cost observation line {line_no} is not an object"
+            )
+        out.append(row)
     return out
 
 
@@ -173,8 +191,9 @@ def calibrate(
         vals = [o[field] for o in rows if o.get(field) is not None]
         return sum(vals) / len(vals) if vals else None
 
-    mean_pred = predicted_model_bps  # constant under the flat V1 model
-    mean_obs = _mean("observed_cost_proxy_bps")
+    mean_pred = predicted_model_bps  # total V1 cost: fee + spread + slippage
+    mean_obs_price = _mean("observed_cost_proxy_bps")
+    mean_obs_total = (fee_bps + mean_obs_price) if mean_obs_price is not None else None
     mean_drift = _mean("decision_to_exec_drift_bps")
     mean_abs_drift = (
         sum(abs(o["decision_to_exec_drift_bps"]) for o in rows
@@ -183,14 +202,14 @@ def calibrate(
     )
     mean_spread = _mean("quoted_spread_bps")
 
-    error_bp = (mean_obs - mean_pred) if mean_obs is not None else None
-    ratio = (mean_obs / mean_pred) if (mean_obs is not None and mean_pred > 0) else None
+    error_bp = (mean_obs_total - mean_pred) if mean_obs_total is not None else None
+    ratio = (mean_obs_total / mean_pred) if (mean_obs_total is not None and mean_pred > 0) else None
 
-    # V2 proposal: keep the contractual fee; recalibrate the estimated
-    # frictions to what the paper tape actually showed.
+    # V2 proposal: keep the contractual fee; recalibrate only the estimated
+    # spread+slippage component from observed adverse price shortfall.
     v2 = {
         "fee": v1_frictions.get("fee", 0.0),
-        "effective_spread_plus_slippage_bps": _r(max(mean_obs, 0.0)) if mean_obs is not None else None,
+        "effective_spread_plus_slippage_bps": _r(max(mean_obs_price, 0.0)) if mean_obs_price is not None else None,
         "scale_vs_v1": _r(ratio),
         "status": "insufficient_data" if insufficient else "proposed",
     }
@@ -201,7 +220,9 @@ def calibrate(
         "min_observations": min_observations,
         "sufficient": not insufficient,
         "predicted_cost_bps": _r(mean_pred),
-        "observed_cost_proxy_bps": _r(mean_obs),
+        "observed_cost_proxy_bps": _r(mean_obs_price),
+        "observed_total_cost_proxy_bps": _r(mean_obs_total),
+        "contractual_fee_bps": _r(fee_bps),
         "error_bp": _r(error_bp),
         "scale_vs_v1": _r(ratio),
         "mean_decision_to_exec_drift_bps": _r(mean_drift),
@@ -209,7 +230,8 @@ def calibrate(
         "mean_quoted_spread_bps": _r(mean_spread),
         "v2_proposal": v2,
         "assumptions": [
-            "proxy = implementation shortfall vs the DECISION close",
+            "price proxy = implementation shortfall vs the DECISION close",
+            "total observed proxy = contractual fee + adverse price proxy",
             "valid when average one-bar signal drift is ~0 across many trades",
             "bid/ask recorded opportunistically; absent quotes fall back to decision-price proxy",
         ],
@@ -242,9 +264,11 @@ def format_report(report: dict) -> str:
         return "\n".join(lines)
     pred = report["predicted_cost_bps"]
     obs = report["observed_cost_proxy_bps"]
+    obs_total = report.get("observed_total_cost_proxy_bps")
     err = report["error_bp"]
-    lines.append(f"  predicted trading cost : {pred:.2f} bp (V1 flat model)")
-    lines.append(f"  observed slippage proxy: {obs:.2f} bp" if obs is not None else "  observed slippage proxy: n/a")
+    lines.append(f"  predicted trading cost : {pred:.2f} bp (fee + spread + slippage)")
+    lines.append(f"  observed price proxy   : {obs:.2f} bp" if obs is not None else "  observed price proxy   : n/a")
+    lines.append(f"  observed total proxy   : {obs_total:.2f} bp" if obs_total is not None else "  observed total proxy   : n/a")
     lines.append(f"  error                  : {err:+.2f} bp" if err is not None else "  error                  : n/a")
     if report.get("scale_vs_v1") is not None:
         lines.append(f"  scale vs V1            : x{report['scale_vs_v1']:.2f}")

@@ -39,9 +39,10 @@ jobs:
     timeout-minutes: 15
     steps:
       # ---- step 1: read the freeze pointer from main -----------------------
-      - name: Check out main (pointer only)
-        uses: actions/checkout@v4
+      - name: Check out default branch (pointer only)
+        uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 1
 
       - name: Read freeze pointer
@@ -89,7 +90,7 @@ jobs:
       # ---- step 2: become the frozen commit --------------------------------
       - name: Check out the frozen commit
         if: steps.pointer.outputs.commit != ''
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.pointer.outputs.commit }}
           fetch-depth: 0
@@ -102,14 +103,14 @@ jobs:
           # rather than to the stale snapshot baked into the frozen commit
           cp /tmp/forward_log.jsonl forward_log.jsonl 2>/dev/null || :
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: steps.pointer.outputs.commit != ''
         with:
           python-version: "3.12"
 
       - name: Cache market data
         if: steps.pointer.outputs.code_sha256 != ''
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .cache
           key: market-data-${{ github.run_id }}
@@ -147,7 +148,7 @@ jobs:
       - name: Append forward log to main
         if: steps.pointer.outputs.commit != '' && steps.calendar.outputs.trading == 'true'
         env:
-          BRANCH: ${{ github.ref_name }}
+          BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           [ -f forward_log.jsonl ] || { echo "no log produced this run"; exit 0; }
           cp forward_log.jsonl /tmp/forward_log.jsonl
@@ -155,7 +156,21 @@ jobs:
           [ -f cost_observations.jsonl ] && cp cost_observations.jsonl /tmp/cost_observations.jsonl
           git config user.name "paper-bot"
           git config user.email "actions@users.noreply.github.com"
-          git checkout -f "$BRANCH"
+          # Main may have advanced while the frozen step was running. Refresh
+          # before merging data so the bot never tries to push from a stale
+          # branch snapshot.
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+
+          # A re-freeze during this workflow changes the experiment identity.
+          # Never attach evidence produced by the old frozen code to the new
+          # freeze merely because both runs happened on the same calendar day.
+          CURRENT_FREEZE=$(python -c "import json; print(json.load(open('freeze.json')).get('git_commit_at_freeze', ''))")
+          if [ "$CURRENT_FREEZE" != "${{ steps.pointer.outputs.commit }}" ]; then
+            echo "::notice::freeze changed while this run was executing; preserving artifacts but not mutating main"
+            exit 0
+          fi
+
           python - <<'PY'
           import json, pathlib
           p = pathlib.Path('forward_log.jsonl')
@@ -174,11 +189,11 @@ jobs:
           if fpath.exists():
               cutoff = json.loads(fpath.read_text()).get('frozen_at_date')
               if cutoff:
-                  kept = [e for e in merged if (e.get('date') or '') >= cutoff]
+                  kept = [e for e in merged if (e.get('date') or '') > cutoff]
                   dropped = len(merged) - len(kept)
                   if dropped:
                       print(f"dropped {dropped} entr{'y' if dropped == 1 else 'ies'} "
-                            f"dated before the freeze ({cutoff})")
+                            f"dated on/before the freeze ({cutoff})")
                   merged = kept
           p.write_text(''.join(json.dumps(e) + '\n' for e in merged))
           print(f"forward log entries after merge: {len(merged)}")
@@ -218,7 +233,7 @@ jobs:
 
       - name: Upload artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: forward-state-${{ github.run_id }}
           path: |

@@ -12,6 +12,7 @@ Python runtime detects automatically. Deployed with the repo's classic
 zero-config layout (static `public/` + functions in `api/`).
 """
 import json
+import math
 import os
 import sys
 from datetime import UTC, datetime
@@ -36,6 +37,69 @@ ENGINE_KWARGS: dict[str, Any] = dict(
     risk_free_annual=0.03,
     rebalance_band=0.05,
 )
+
+
+class ForwardLogIntegrityError(ValueError):
+    """Raised when the committed prospective evidence tape is not trustworthy."""
+
+
+def _load_forward_entries(log_path: str, frozen_date: str | None) -> list[dict]:
+    """Load the forward tape without silently discarding damaged evidence."""
+    if not os.path.exists(log_path):
+        return []
+    entries: list[dict] = []
+    seen_dates: set[str] = set()
+    previous_date: str | None = None
+    with open(log_path, encoding="utf-8") as f:
+        for line_no, raw_line in enumerate(f, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ForwardLogIntegrityError(f"forward log JSON is corrupt at line {line_no}") from exc
+            if not isinstance(entry, dict):
+                raise ForwardLogIntegrityError(f"forward log line {line_no} is not an object")
+
+            day = entry.get("date")
+            if not isinstance(day, str):
+                raise ForwardLogIntegrityError(f"forward log line {line_no} has no valid date")
+            try:
+                datetime.fromisoformat(day)
+            except ValueError as exc:
+                raise ForwardLogIntegrityError(f"forward log line {line_no} has an invalid date") from exc
+            if day in seen_dates:
+                raise ForwardLogIntegrityError(f"forward log repeats date {day}")
+            if previous_date is not None and day <= previous_date:
+                raise ForwardLogIntegrityError("forward log dates are not strictly increasing")
+            if frozen_date and day <= frozen_date:
+                raise ForwardLogIntegrityError(
+                    f"forward log contains non-forward evidence ({day} <= freeze date {frozen_date})"
+                )
+
+            assets = entry.get("assets")
+            if not isinstance(assets, dict) or not assets:
+                raise ForwardLogIntegrityError(f"forward log line {line_no} has no asset detail")
+            if any(not isinstance(detail, dict) for detail in assets.values()):
+                raise ForwardLogIntegrityError(f"forward log line {line_no} has malformed asset detail")
+
+            port_ret = entry.get("port_ret")
+            if not isinstance(port_ret, (int, float)) or isinstance(port_ret, bool):
+                raise ForwardLogIntegrityError(f"forward log line {line_no} has invalid port_ret")
+            port_ret_f = float(port_ret)
+            if not math.isfinite(port_ret_f) or port_ret_f < -1.0:
+                raise ForwardLogIntegrityError(f"forward log line {line_no} has impossible port_ret")
+            entry["port_ret"] = port_ret_f
+
+            for key in ("outages", "missed_fills"):
+                if key in entry and not isinstance(entry[key], list):
+                    raise ForwardLogIntegrityError(f"forward log line {line_no} has invalid {key}")
+
+            entries.append(entry)
+            seen_dates.add(day)
+            previous_date = day
+    return entries
 
 
 def is_fully_observed(entry: dict) -> bool:
@@ -118,6 +182,63 @@ def classify_forward_days(entries: list[dict]) -> dict[str, int]:
     return {"full": full, "partial": partial, "dark": dark, "closed": closed}
 
 
+def _order_lifecycle_warnings(entries: list[dict]) -> dict:
+    """Audit order metadata without rewriting the append-only return tape.
+
+    Lifecycle metadata is provenance, not an input to portfolio return
+    arithmetic. Broken chronology is therefore surfaced as a warning count,
+    while the original rows remain byte-for-byte auditable.
+    """
+    count = 0
+    reasons: dict[str, int] = {}
+
+    def bump(reason: str) -> None:
+        nonlocal count
+        count += 1
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+    def parse(value) -> datetime | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return dt if dt.tzinfo is not None else None
+
+    for entry in entries:
+        orders = entry.get("orders", [])
+        if not isinstance(orders, list):
+            bump("orders_not_list")
+            continue
+        for order in orders:
+            if not isinstance(order, dict):
+                bump("order_not_object")
+                continue
+            signal = parse(order.get("signal_generated_ts"))
+            intent = parse(order.get("intent_ts"))
+            submitted = parse(order.get("submitted_ts"))
+            filled = parse(order.get("fill_ts"))
+            if None in (signal, intent, submitted, filled):
+                bump("unparseable_timestamp")
+                continue
+            assert signal is not None and intent is not None and submitted is not None and filled is not None
+            if not (signal < intent <= submitted <= filled):
+                bump("non_monotonic_timestamps")
+                continue
+            if filled.date().isoformat() != entry.get("date"):
+                bump("fill_date_mismatch")
+                continue
+            price = order.get("fill_price")
+            if not isinstance(price, (int, float)) or isinstance(price, bool) or not math.isfinite(float(price)) or float(price) <= 0:
+                bump("invalid_fill_price")
+                continue
+            if order.get("side") not in ("BUY", "SELL"):
+                bump("invalid_side")
+
+    return {"count": count, "reasons": reasons}
+
+
 def _graded_forward_view(forward: dict | None) -> dict | None:
     """The view of the forward record that grading is allowed to see.
 
@@ -180,7 +301,7 @@ def build_forward_summary(
             raise ValueError("config sha mismatch — manifest tampered")
         code_verified = True
         code_reason = None
-    except ValueError as exc:
+    except (ValueError, KeyError, TypeError, OSError) as exc:
         code_verified = False
         code_reason = str(exc)
         manifest = locals().get("manifest") or {}
@@ -193,19 +314,26 @@ def build_forward_summary(
     except Exception:
         runtime_matches = False
 
-    entries = []
-    if os.path.exists(log_path):
-        for line in open(log_path, encoding="utf-8"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entries.append(_json.loads(line))
-            except ValueError:
-                continue
-
     frozen_date = manifest.get("frozen_at_date")
     commit = (manifest.get("git_commit_at_freeze") or "")[:12] or None
+    try:
+        entries = _load_forward_entries(log_path, frozen_date)
+    except ForwardLogIntegrityError as exc:
+        return {
+            "available": True,
+            "started": False,
+            "frozen_date": frozen_date,
+            "code": commit,
+            "code_verified": code_verified,
+            "code_reason": code_reason,
+            "evidence_verified": False,
+            "evidence_reason": str(exc),
+            "runtime_matches_freeze": runtime_matches,
+            "days_untouched": None,
+            "parameter_changes": 0,
+            "config_sha256": (manifest.get("config_sha256") or "")[:16],
+            "reason": f"forward evidence integrity failure: {exc}",
+        }
 
     if not entries:
         return {
@@ -215,6 +343,8 @@ def build_forward_summary(
             "code": commit,
             "code_verified": code_verified,
             "code_reason": code_reason,
+            "evidence_verified": True,
+            "evidence_reason": None,
             "runtime_matches_freeze": runtime_matches,
             "days_untouched": None,
             "parameter_changes": 0,
@@ -253,6 +383,7 @@ def build_forward_summary(
     # impossible to re-collapse by accident.
     outages = sum(len(e.get("outages", [])) for e in entries)
     missed_fills = sum(len(e.get("missed_fills", [])) for e in entries)
+    lifecycle = _order_lifecycle_warnings(entries)
     days = classify_forward_days(entries)
 
     curve = []
@@ -281,6 +412,8 @@ def build_forward_summary(
         "code": commit,
         "code_verified": code_verified,
         "code_reason": code_reason,
+        "evidence_verified": True,
+        "evidence_reason": None,
         "runtime_matches_freeze": runtime_matches,
         "days_untouched": days_untouched,
         # len(entries) is SCHEDULED days. days_full is what the evidence is
@@ -308,6 +441,13 @@ def build_forward_summary(
         "benchmark_return": round(bench_return, 4) if bench_return is not None else None,
         "data_outages": outages,
         "missed_fills": missed_fills,
+        "order_lifecycle_anomalies": lifecycle["count"],
+        "order_lifecycle_anomaly_reasons": lifecycle["reasons"],
+        "evidence_warnings": (
+            [f"{lifecycle['count']} order lifecycle metadata anomal"
+             f"{'y' if lifecycle['count'] == 1 else 'ies'} detected; returns were not rewritten"]
+            if lifecycle["count"] else []
+        ),
         "curve": curve,
     }
 
@@ -373,8 +513,12 @@ def build_verdict_payload(forward: dict | None) -> dict | None:
             except (OSError, ValueError):
                 manifest = None
             cost_report = calibrate(obs, v1_frictions=frictions, freeze_manifest=manifest)
-    except Exception:
-        cost_report = None
+            cost_report["integrity_verified"] = True
+    except Exception as exc:
+        cost_report = {
+            "integrity_verified": False,
+            "integrity_reason": f"{type(exc).__name__}: {exc}",
+        }
 
     try:
         return build_verdict(

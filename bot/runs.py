@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -30,7 +31,7 @@ def _now() -> str:
 
 
 def _canonical(obj) -> str:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def run_record_hash(record: dict) -> str:
@@ -41,7 +42,7 @@ def run_record_hash(record: dict) -> str:
 def save_run_record(results: dict, runs_dir: str | Path = RUNS_DIR, run_id: str | None = None) -> str:
     """Persist results as runs/<id>/run.json. Auto ids embed a UTC timestamp;
     an explicit `run_id` (e.g. "canonical-v1") names an authoritative record."""
-    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     assets = len(results.get("universe", []))
     mode = "compare"
     if run_id is None:
@@ -55,7 +56,14 @@ def save_run_record(results: dict, runs_dir: str | Path = RUNS_DIR, run_id: str 
     record["record_sha256"] = run_record_hash(record)
     d = Path(runs_dir) / run_id
     d.mkdir(parents=True, exist_ok=True)
-    (d / "run.json").write_text(json.dumps(record, indent=2))
+    path = d / "run.json"
+    tmp = d / "run.json.tmp"
+    encoded = json.dumps(record, indent=2, allow_nan=False)
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(encoded)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
     return run_id
 
 

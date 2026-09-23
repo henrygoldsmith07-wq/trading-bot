@@ -55,8 +55,10 @@ def _bars(day_anchor_utc_noon, n=40):
     for i in range(1, n):
         closes.append(closes[-1] * (1.006 if i % 3 else 0.997))
     return [
-        {"open_time": day_anchor_utc_noon + i * 86_400_000 - 12 * 3600_000,  # midnight UTC of that day
+        {"open_time": day_anchor_utc_noon + i * 86_400_000 - 12 * 3600_000,
          "open": closes[i - 1] if i else closes[0],
+         "high": max(closes[i - 1] if i else closes[0], closes[i]),
+         "low": min(closes[i - 1] if i else closes[0], closes[i]),
          "close": closes[i],
          "quote_volume": closes[i] * 900.0}
         for i in range(n)
@@ -80,32 +82,24 @@ def env(tmp_path, monkeypatch):
 
 class TestSessionGate:
     def test_morning_run_is_pending_not_stale_execution(self, env):
-        """06:17-UTC-style run: today's NYSE bar cannot exist. The asset must
-        be PENDING — never an execution against yesterday's close."""
         m = _manifest(env, session="us_equity")
         candles = _bars(ANCHOR_NOON)
-        # now = noon of candle-day 30, BEFORE the 21:15 gate
         res = run_step(m, lambda s, src: (candles[:31], None),
                        now=_now_for(30, 13, 17), log_path=env / "l.jsonl")
         d = res["entry"]["assets"]["ETF1"]
         assert d["note"] == "session_pending"
         assert d["weight"] == 0.0 and d["sleeve_ret"] == 0.0
-        # nothing was traded or cost-measured
         assert len(load_log(env / "l.jsonl")[0].get("assets", {})) == 1
         assert all(o.get("symbol") != "ETF1" for o in [])
 
     def test_evening_run_executes_with_real_bar_and_matches_engine(self, env):
-        """After the US close the completed bar carries open+close; execution
-        must equal engine.run_strategy next_open on identical bars."""
         m = _manifest(env, session="us_equity")
         candles = _bars(ANCHOR_NOON, n=34)
-        # step through days 2..33 (two completed needed), then compare last bar
         p_last = 32
         for p in range(2, p_last + 1):
             run_step(m, lambda s, src, d=candles[: p + 1]: (d, None),
                      now=_now_for(p, 22, 0), log_path=env / "l.jsonl")
         fwd_entry = load_log(env / "l.jsonl")[-1]["assets"]["ETF1"]
-
         eng = run_strategy(candles[: p_last + 1], Step().weight_at,
                            fee=0.001, spread_bps=5.0, slippage_bps=5.0,
                            execution="next_open", risk_free_annual=0.03)
@@ -115,12 +109,10 @@ class TestSessionGate:
         assert fwd_entry["sleeve_ret"] == pytest.approx(eng_ret, abs=5e-9)
 
     def test_weekend_after_gate_still_pending(self, env):
-        """Saturday 22:00 UTC: gate time passed but NO bar will ever exist for
-        today — must remain pending instead of executing on Friday's close."""
         m = _manifest(env, session="us_equity")
         candles = _bars(ANCHOR_NOON, n=40)
-        sat = _now_for(33, 22, 0)  # 2026-09-12 is a Saturday for this anchor
-        assert sat.weekday() >= 5  # sanity: actually a weekend in this anchor
+        sat = _now_for(33, 22, 0)
+        assert sat.weekday() >= 5
         res = run_step(m, lambda s, src: (candles, None), now=sat, log_path=env / "l.jsonl")
         assert res["entry"]["assets"]["ETF1"]["note"] == "session_pending"
 
@@ -128,28 +120,22 @@ class TestSessionGate:
         m = _manifest(env, session="continuous")
         candles = _bars(ANCHOR_NOON, n=34)
         res = run_step(m, lambda s, src: (candles[:31], None),
-                       now=_now_for(30, 6, 17), log_path=env / "l.jsonl")  # 06:17 UTC style
+                       now=_now_for(30, 6, 17), log_path=env / "l.jsonl")
         d = res["entry"]["assets"]["ETF1"]
-        assert d.get("note") in (None,)  # traded
+        assert d.get("note") in (None,)
         assert d["weight"] in (0.0, 1.0)
 
     def test_session_pending_days_chain_marks_without_loss(self, env):
-        """A pending day followed by a trading day must cover the FULL price
-        span exactly once (mark-chaining, no double count, no gap)."""
         m = _manifest(env, session="us_equity")
         candles = _bars(ANCHOR_NOON, n=40)
         log = env / "l.jsonl"
-        # day 30 at noon -> pending; day 31 at 22:00 -> trades
         run_step(m, lambda s, src: (candles[:31], None), now=_now_for(30, 13, 0), log_path=log)
         r2 = run_step(m, lambda s, src: (candles[:32], None), now=_now_for(31, 22, 0), log_path=log)
         e = r2["entry"]["assets"]["ETF1"]
         expected = calculate_transition(
-            0.0, e["weight"],
-            previous_close=candles[30]["close"],      # mark from the pending day = decision close
-            execution_price=candles[31]["open"],
-            closing_price=candles[31]["close"],
-            costs=(0.001 + 0.001) * abs(e["weight"]),
-            cash_rate_period=0.03 / 365,
+            0.0, e["weight"], previous_close=candles[30]["close"],
+            execution_price=candles[31]["open"], closing_price=candles[31]["close"],
+            costs=(0.001 + 0.001) * abs(e["weight"]), cash_rate_period=0.03 / 365,
             cash_basis="previous",
         )
         assert e["sleeve_ret"] == pytest.approx(expected["return"], abs=1e-12)
@@ -162,7 +148,9 @@ class TestFreezeCarriesSession:
         create_freeze(
             assets=[{"symbol": "SPY", "source": "yahoo", "periods_per_year": 252,
                      "session": "us_equity", "strategy": BuyHold()}],
-            frictions={"fee": 0.001}, algorithm=build_algorithm(with_pool_version=False),
+            frictions={"fee": 0.001, "spread_bps": 0.0, "slippage_bps": 0.0,
+                       "execution": "next_open", "risk_free_annual": 0.0},
+            algorithm=build_algorithm(with_pool_version=False),
             path=tmp_path / "f.json", git_commit="s",
         )
         assert load_freeze(tmp_path / "f.json")["config"]["assets"][0]["session"] == "us_equity"

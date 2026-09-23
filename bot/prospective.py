@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -68,8 +70,118 @@ CHECKPOINTS = [("1 month", 30), ("3 months", 91), ("6 months", 182), ("12 months
 
 
 def _config_hash(config: dict) -> str:
-    blob = json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+    blob = json.dumps(config, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     return hashlib.sha256(blob).hexdigest()
+
+
+def _validate_freeze_config(config: dict) -> None:
+    """Validate the complete immutable experiment contract, not just its hash."""
+    from .algorithm import validate_algorithm
+
+    if not isinstance(config, dict):
+        raise ValueError("freeze config must be a mapping")
+    required = {"assets", "frictions", "algorithm"}
+    missing = required - set(config)
+    if missing:
+        raise ValueError(f"freeze config missing required key(s): {sorted(missing)}")
+
+    assets = config["assets"]
+    if not isinstance(assets, list) or not assets:
+        raise ValueError("freeze config assets must be a non-empty list")
+    seen: set[str] = set()
+    for index, asset in enumerate(assets):
+        if not isinstance(asset, dict):
+            raise ValueError(f"asset {index} must be a mapping")
+        required_asset = {"symbol", "source", "periods_per_year", "strategy"}
+        missing_asset = required_asset - set(asset)
+        if missing_asset:
+            raise ValueError(f"asset {index} missing key(s): {sorted(missing_asset)}")
+        symbol = asset["symbol"]
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise ValueError(f"asset {index} symbol must be non-empty")
+        if symbol in seen:
+            raise ValueError(f"duplicate frozen asset symbol: {symbol}")
+        seen.add(symbol)
+        source = asset["source"]
+        if not isinstance(source, str) or not source.strip():
+            raise ValueError(f"asset {symbol} source must be non-empty")
+        ppy = asset["periods_per_year"]
+        if isinstance(ppy, bool) or not isinstance(ppy, int) or ppy <= 0:
+            raise ValueError(f"asset {symbol} periods_per_year must be a positive integer")
+        session = asset.get("session", "continuous")
+        if session not in ("continuous", "us_equity"):
+            raise ValueError(f"asset {symbol} has unsupported session {session!r}")
+        try:
+            strategy_from_spec(asset["strategy"])
+        except Exception as exc:
+            raise ValueError(f"asset {symbol} has invalid strategy spec") from exc
+
+    frictions = config["frictions"]
+    if not isinstance(frictions, dict):
+        raise ValueError("freeze config frictions must be a mapping")
+    allowed_frictions = {
+        "fee", "spread_bps", "slippage_bps", "execution", "risk_free_annual"
+    }
+    unknown = set(frictions) - allowed_frictions
+    if unknown:
+        raise ValueError(f"unknown friction key(s): {sorted(unknown)}")
+    for required_key in ("fee", "execution"):
+        if required_key not in frictions:
+            raise ValueError(f"frictions missing required key: {required_key}")
+    for key in ("fee", "spread_bps", "slippage_bps", "risk_free_annual"):
+        value = frictions.get(key, 0.0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            raise ValueError(f"frictions.{key} must be finite")
+    if float(frictions["fee"]) < 0.0:
+        raise ValueError("frictions.fee must be non-negative")
+    if float(frictions.get("spread_bps", 0.0)) < 0.0:
+        raise ValueError("frictions.spread_bps must be non-negative")
+    if float(frictions.get("slippage_bps", 0.0)) < 0.0:
+        raise ValueError("frictions.slippage_bps must be non-negative")
+    if frictions["execution"] != "next_open":
+        raise ValueError(
+            "prospective freezes require frictions.execution='next_open'; "
+            "same-close execution is a historical optimistic baseline only"
+        )
+
+    validate_algorithm(config["algorithm"])
+    legacy_overlay = config.get("overlay")
+    if legacy_overlay is not None:
+        if not isinstance(legacy_overlay, dict):
+            raise ValueError("legacy overlay view must be a mapping")
+        if "target_vol" in legacy_overlay:
+            target = legacy_overlay["target_vol"]
+            if (
+                isinstance(target, bool)
+                or not isinstance(target, (int, float))
+                or not math.isfinite(float(target))
+                or float(target) <= 0.0
+            ):
+                raise ValueError("legacy overlay target_vol must be positive and finite")
+
+
+def _validate_freeze_manifest(manifest: dict) -> None:
+    if not isinstance(manifest, dict):
+        raise ValueError("freeze manifest must be a mapping")
+    try:
+        frozen_at = datetime.fromisoformat(manifest["frozen_at"])
+        frozen_date = date.fromisoformat(manifest["frozen_at_date"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("freeze manifest has invalid frozen_at/frozen_at_date") from exc
+    if frozen_at.tzinfo is None:
+        raise ValueError("freeze manifest frozen_at must be timezone-aware")
+    if frozen_at.astimezone(UTC).date() != frozen_date:
+        raise ValueError("freeze manifest frozen_at_date disagrees with frozen_at")
+    if manifest.get("code_fingerprint_algo") != CODE_FINGERPRINT_ALGO:
+        raise ValueError("freeze manifest has unknown code fingerprint algorithm")
+    if not isinstance(manifest.get("config_sha256"), str) or not manifest["config_sha256"]:
+        raise ValueError("freeze manifest missing config hash")
+    if not isinstance(manifest.get("code_sha256"), str) or not manifest["code_sha256"]:
+        raise ValueError("freeze manifest missing code fingerprint")
+    config = manifest.get("config")
+    if not isinstance(config, dict):
+        raise ValueError("freeze manifest config must be a mapping")
+    _validate_freeze_config(config)
 
 
 def create_freeze(
@@ -115,9 +227,14 @@ def create_freeze(
     }
     if research_context is not None:
         config["research_context"] = research_context
+    _validate_freeze_config(config)
+    freeze_now = now or datetime.now(UTC)
+    if freeze_now.tzinfo is None:
+        freeze_now = freeze_now.replace(tzinfo=UTC)
+    freeze_now = freeze_now.astimezone(UTC)
     manifest = {
-        "frozen_at": (now or datetime.now(UTC)).isoformat(),
-        "frozen_at_date": (now or datetime.now(UTC)).date().isoformat(),
+        "frozen_at": freeze_now.isoformat(),
+        "frozen_at_date": freeze_now.date().isoformat(),
         "git_commit_at_freeze": git_commit,
         "git_tag": git_tag,
         "image_digest": image_digest,
@@ -128,14 +245,25 @@ def create_freeze(
         "code_fingerprint_algo": CODE_FINGERPRINT_ALGO,
         "code_sha256": code_fingerprint(),
     }
-    Path(path).write_text(json.dumps(manifest, indent=2))
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    encoded = json.dumps(manifest, indent=2, allow_nan=False)
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(encoded)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, p)
     return manifest
 
 
 def load_freeze(path: str | Path = FREEZE_FILE, verify_code: bool = True) -> dict:
-    """Load and verify the manifest. Raises on config tampering and, unless
-    `verify_code=False`, on any implementation mismatch with the running tree."""
-    manifest = json.loads(Path(path).read_text())
+    """Load and verify the complete immutable experiment manifest."""
+    try:
+        manifest = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError("freeze manifest is unreadable") from exc
+    _validate_freeze_manifest(manifest)
     actual = _config_hash(manifest["config"])
     if actual != manifest.get("config_sha256"):
         raise ValueError("freeze manifest hash mismatch — config was modified after freezing")
@@ -145,15 +273,70 @@ def load_freeze(path: str | Path = FREEZE_FILE, verify_code: bool = True) -> dic
 
 
 def load_log(path: str | Path = LOG_FILE) -> list[dict]:
+    """Load the prospective tape with strict chronology and numeric checks."""
     p = Path(path)
     if not p.exists():
         return []
-    return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+    entries: list[dict] = []
+    previous_day: str | None = None
+    seen: set[str] = set()
+    for line_no, raw in enumerate(p.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"forward log JSON is corrupt at line {line_no}") from exc
+        if not isinstance(entry, dict):
+            raise ValueError(f"forward log line {line_no} is not an object")
+        day = entry.get("date")
+        if not isinstance(day, str):
+            raise ValueError(f"forward log line {line_no} has no date")
+        try:
+            date.fromisoformat(day)
+        except ValueError as exc:
+            raise ValueError(f"forward log line {line_no} has invalid date") from exc
+        if day in seen:
+            raise ValueError(f"forward log repeats date {day}")
+        if previous_day is not None and day <= previous_day:
+            raise ValueError("forward log dates are not strictly increasing")
+        port_ret = entry.get("port_ret")
+        if not isinstance(port_ret, (int, float)) or isinstance(port_ret, bool):
+            raise ValueError(f"forward log line {line_no} has invalid port_ret")
+        port_ret_f = float(port_ret)
+        if not math.isfinite(port_ret_f) or port_ret_f < -1.0:
+            raise ValueError(f"forward log line {line_no} has impossible port_ret")
+        if not isinstance(entry.get("assets"), dict) or not entry["assets"]:
+            raise ValueError(f"forward log line {line_no} has no asset detail")
+        entry["port_ret"] = port_ret_f
+        entries.append(entry)
+        seen.add(day)
+        previous_day = day
+    return entries
 
 
 def append_log(entry: dict, path: str | Path = LOG_FILE) -> None:
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(entry, allow_nan=False)
+
+    # Validate the existing tape before extending it. A complete final record
+    # without a newline is valid evidence, but it still needs a separator or
+    # the next JSON object would be glued onto it.
+    if p.exists():
+        load_log(p)
+        raw = p.read_text(encoding="utf-8")
+        if raw and not raw.endswith(("\n", "\r")):
+            with open(p, "a", encoding="utf-8") as separator:
+                separator.write("\n")
+                separator.flush()
+                os.fsync(separator.fileno())
+
+    with open(p, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def trailing_overlay_weight(port_rets: list[float], target: float, window: int = 20) -> float:
@@ -194,34 +377,66 @@ def replay_throttle_state(port_rets: list[float], th: dict) -> tuple[float, floa
     return equity, peak, throttled
 
 
+def _feed_sanity_problem(candles) -> str | None:
+    """Validate the ordered price history before any signal can consume it."""
+    if not isinstance(candles, list):
+        return "feed payload is not a list"
+    previous_ts: float | None = None
+    for index, candle in enumerate(candles):
+        if not isinstance(candle, dict):
+            return f"candle {index} is not an object"
+        try:
+            ts = float(candle["open_time"])
+            close = float(candle["close"])
+        except (KeyError, TypeError, ValueError):
+            return f"candle {index} missing numeric timestamp/close"
+        if not math.isfinite(ts) or ts < 0.0:
+            return f"candle {index} has invalid timestamp"
+        if not math.isfinite(close) or close <= 0.0:
+            return f"candle {index} has invalid close"
+        if previous_ts is not None and ts <= previous_ts:
+            return "feed timestamps are not strictly increasing"
+        previous_ts = ts
+    return None
+
+
 def _bar_sanity_problem(candle: dict) -> str | None:
-    """FAIL-CLOSED bar validation. Returns a problem string, or None when the
-    print is tradeable. Guards the execution path against impossible prices:
-    non-positive/non-finite OHLC, high < low, close outside [low, high] band
-    (with a small tolerance), and single-bar moves beyond ±50% vs the open."""
-    import math
+    """FAIL-CLOSED validation for the execution/mark bar."""
+    if not isinstance(candle, dict):
+        return "bar is not an object"
 
-    def bad(*vals: float) -> bool:
-        return any(v is None or not math.isfinite(v) or v <= 0 for v in vals)
+    def positive_finite(value) -> float | None:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        return numeric if math.isfinite(numeric) and numeric > 0.0 else None
 
-    o = candle.get("open")
-    hi, lo, c = candle.get("high"), candle.get("low"), candle.get("close")
-    if c is None:
-        return "missing close"
-    if not math.isfinite(float(c)) or float(c) <= 0:
-        return f"non-positive close ({c})"
-    if o is not None and hi is not None and lo is not None:
-        if bad(float(o), float(hi), float(lo)):
+    close = positive_finite(candle.get("close"))
+    if close is None:
+        return f"invalid close ({candle.get('close')})"
+
+    raw_open = candle.get("open")
+    raw_high = candle.get("high")
+    raw_low = candle.get("low")
+    present_ohl = [raw_open is not None, raw_high is not None, raw_low is not None]
+    if any(present_ohl) and not all(present_ohl):
+        return "partial OHLC fields"
+    if all(present_ohl):
+        open_px = positive_finite(raw_open)
+        high = positive_finite(raw_high)
+        low = positive_finite(raw_low)
+        if None in (open_px, high, low):
             return "non-finite/zero OHLC field"
-        if float(hi) < float(lo):
-            return f"high<low ({hi}<{lo})"
+        assert open_px is not None and high is not None and low is not None
+        if high < low:
+            return f"high<low ({high}<{low})"
         tol = 1.001
-        if not (float(lo) / tol <= float(c) <= float(hi) * tol):
-            return f"close {c} outside [low,high]=[{lo},{hi}]"
-        if o and (float(o) > 0):
-            move = abs(float(c) / float(o) - 1.0)
-            if move > 0.5:
-                return f"|open->close| {move:.0%} exceeds 50% sanity bound"
+        if not (low / tol <= close <= high * tol):
+            return f"close {close} outside [low,high]=[{low},{high}]"
+        move = abs(close / open_px - 1.0)
+        if move > 0.5:
+            return f"|open->close| {move:.0%} exceeds 50% sanity bound"
     return None
 
 
@@ -282,8 +497,25 @@ def run_step(
     if not allow_code_mismatch:
         verify_freeze_code(manifest)
     now = now or datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    now = now.astimezone(UTC)
     today = now.date().isoformat()
+    try:
+        freeze_day = date.fromisoformat(manifest["frozen_at_date"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("freeze manifest has no valid frozen_at_date") from exc
+    if now.date() <= freeze_day:
+        return {
+            "status": "not_after_freeze",
+            "freeze_date": freeze_day.isoformat(),
+            "date": today,
+        }
     log = load_log(log_path)
+    if any(e["date"] <= freeze_day.isoformat() for e in log):
+        raise ValueError("forward log contains evidence on/before the freeze date")
+    if log and log[-1]["date"] > today:
+        raise ValueError("forward log contains a future-dated entry")
     for e in log:
         if e["date"] == today:
             return {"status": "already_logged", "entry": e}
@@ -313,11 +545,24 @@ def run_step(
         session = a.get("session", "continuous")
         strategy = strategy_from_spec(a["strategy"])  # raises on tampered spec: no fallback
         prev_w = prev_weights.get(sym, 0.0)  # EFFECTIVE (post-band) weight held
-        candles, problem = fetcher(sym, a["source"])
+        try:
+            candles, problem = fetcher(sym, a["source"])
+        except Exception as exc:
+            candles, problem = [], f"fetch exception: {type(exc).__name__}"
         if problem:
             outages.append({"symbol": sym, "problem": problem})
             sleeve_rets.append(0.0)
             asset_details[sym] = {"weight": prev_w, "target": prev_w, "price": None, "sleeve_ret": 0.0, "slippage_bps": None, "note": problem}
+            continue
+        feed_problem = _feed_sanity_problem(candles)
+        if feed_problem:
+            outages.append({"symbol": sym, "problem": f"bad feed: {feed_problem}"})
+            sleeve_rets.append(0.0)
+            asset_details[sym] = {
+                "weight": prev_w, "target": prev_w, "price": None,
+                "sleeve_ret": 0.0, "slippage_bps": None,
+                "note": f"fail_closed:{feed_problem}",
+            }
             continue
 
         # ---- exchange-calendar gate ------------------------------------------
@@ -349,6 +594,25 @@ def run_step(
             alerts.append({"symbol": sym, "level": "future_dated_rows_dropped",
                            "dropped": len(candles) - len(usable)})
         candles = usable
+        if not candles:
+            outages.append({"symbol": sym, "problem": "no usable current/past candles"})
+            sleeve_rets.append(0.0)
+            asset_details[sym] = {
+                "weight": prev_w, "target": prev_w, "price": None,
+                "sleeve_ret": 0.0, "slippage_bps": None,
+                "note": "fail_closed:no usable candles",
+            }
+            continue
+        latest_date = datetime.fromtimestamp(candles[-1]["open_time"] / 1000, tz=UTC).date()
+        if session == "continuous" and latest_date != now.date():
+            problem = "missing current continuous-session bar"
+            outages.append({"symbol": sym, "problem": problem})
+            sleeve_rets.append(0.0)
+            asset_details[sym] = {
+                "weight": prev_w, "target": prev_w, "price": None,
+                "sleeve_ret": 0.0, "slippage_bps": None, "note": problem,
+            }
+            continue
 
         # use only completed candles for the decision
         completed = [c for c in candles if datetime.fromtimestamp(c["open_time"] / 1000, tz=UTC).date() < now.date()]
@@ -360,8 +624,16 @@ def run_step(
         # data-staleness alert: a print much older than one bar means the feed
         # is silently frozen; trade the stale weight but say so loudly
         age_days = (now - datetime.fromtimestamp(completed[-1]["open_time"] / 1000, tz=UTC)).total_seconds() / 86_400.0
-        if age_days > 3.0:
+        if session == "continuous" and age_days > 3.0:
             alerts.append({"symbol": sym, "level": "stale_data", "age_days": round(age_days, 1)})
+            problem = f"stale completed history ({age_days:.1f}d)"
+            outages.append({"symbol": sym, "problem": problem})
+            sleeve_rets.append(0.0)
+            asset_details[sym] = {
+                "weight": prev_w, "target": prev_w, "price": None,
+                "sleeve_ret": 0.0, "slippage_bps": None, "note": problem,
+            }
+            continue
 
         # ---- FAIL CLOSED on corrupted prints --------------------------------
         # An impossible final bar (non-positive close, high<low, |1d move|
@@ -379,8 +651,15 @@ def run_step(
             continue
 
         try:
-            w_target = max(0.0, min(1.0, strategy.weight(completed)))
-        except Exception as exc:  # noqa: BLE001 — one bad symbol must not kill the day
+            raw_target = strategy.weight(completed)
+            if (
+                isinstance(raw_target, bool)
+                or not isinstance(raw_target, (int, float))
+                or not math.isfinite(float(raw_target))
+            ):
+                raise ValueError(f"non-finite/non-numeric target {raw_target!r}")
+            w_target = max(0.0, min(1.0, float(raw_target)))
+        except Exception as exc:  # one bad symbol must not create an order
             alerts.append({"symbol": sym, "level": "strategy_error",
                            "detail": f"{type(exc).__name__}: {exc}"})
             w_target = prev_w  # hold previous weight; no new signal this bar
@@ -389,12 +668,8 @@ def run_step(
         w_eff = w_target if abs(w_target - prev_w) > band else prev_w
         decision_close = completed[-1]["close"]
         today_candle = candles[-1]
-        is_today = datetime.fromtimestamp(today_candle["open_time"] / 1000, tz=UTC).date() == now.date()
-        if is_today:
-            exec_price = open_of(today_candle, fallback=decision_close)  # fill at today's open
-        else:
-            exec_price = today_candle["close"]  # lagged feed: first available print
-        closing_price = today_candle["close"]  # latest snapshot (live print)
+        exec_price = open_of(today_candle, fallback=decision_close)  # frozen next-open convention
+        closing_price = today_candle["close"]  # latest snapshot (live print / closed equity bar)
         # Accounting anchor: the LAST MARKED price for this asset (previous
         # entry's snapshot), falling back to the decision close on the first
         # day or after an outage. Chaining marks means every price interval
@@ -446,8 +721,8 @@ def run_step(
                 "side": "BUY" if w_eff > prev_w else "SELL",
                 "signal_generated_ts": signal_ts,
                 "intent_ts": (datetime.fromtimestamp(
-                    completed[-1]["open_time"] / 1000 + 86_400_000, tz=UTC
-                )).isoformat(),  # when the order was intended to work
+                    completed[-1]["open_time"] / 1000 + 86_400.0, tz=UTC
+                )).isoformat(),  # next daily open after the signal close
                 "submitted_ts": now.isoformat(),
                 "fill_ts": now.isoformat(),
                 "fill_price": exec_price,

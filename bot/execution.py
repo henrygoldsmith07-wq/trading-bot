@@ -15,14 +15,23 @@ to the new position.
 """
 from __future__ import annotations
 
+import math
+
 
 def open_of(candle: dict, fallback: float) -> float:
-    """The candle's open print, or `fallback` when the feed omits/invalidates
-    it (some Yahoo rows carry no open). Same rule the engine has always used."""
+    """Return a valid open print, falling back only to a valid prior mark."""
+    if not math.isfinite(float(fallback)) or float(fallback) <= 0.0:
+        raise ValueError("fallback open price must be positive and finite")
     o = candle.get("open")
-    if o is None or o <= 0:
-        return fallback
-    return o
+    if o is None:
+        return float(fallback)
+    try:
+        value = float(o)
+    except (TypeError, ValueError):
+        return float(fallback)
+    if not math.isfinite(value) or value <= 0.0:
+        return float(fallback)
+    return value
 
 
 def calculate_transition(
@@ -54,9 +63,16 @@ def calculate_transition(
     Returns {return, overnight, intraday, turnover, cost, cash} so callers
     can log the decomposition, not just the total.
     """
+    for name, position in (("previous_position", previous_position), ("target_position", target_position)):
+        if not math.isfinite(float(position)) or not 0.0 <= float(position) <= 1.0:
+            raise ValueError(f"{name} must be finite and within [0, 1] (got {position})")
     for name, px in (("previous_close", previous_close), ("execution_price", execution_price), ("closing_price", closing_price)):
-        if px <= 0:
-            raise ValueError(f"{name} must be positive (got {px})")
+        if not math.isfinite(float(px)) or float(px) <= 0.0:
+            raise ValueError(f"{name} must be positive and finite (got {px})")
+    if not math.isfinite(float(costs)) or float(costs) < 0.0:
+        raise ValueError("costs must be finite and non-negative")
+    if not math.isfinite(float(cash_rate_period)) or float(cash_rate_period) <= -1.0:
+        raise ValueError("cash_rate_period must be finite and greater than -1")
     if cash_basis not in ("previous", "target"):
         raise ValueError("cash_basis must be 'previous' or 'target'")
     overnight = previous_position * (execution_price / previous_close - 1.0)

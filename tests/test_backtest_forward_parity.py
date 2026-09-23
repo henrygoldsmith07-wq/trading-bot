@@ -146,7 +146,7 @@ def test_engine_and_forward_are_the_same_bot(tmp_path, monkeypatch, sawtooth_reg
         frictions=dict(FRICTIONS),
         algorithm=algo,
         path=tmp_path / f"freeze_{int(band * 1000)}.json",
-        now=datetime(2026, 8, 23, tzinfo=UTC),
+        now=datetime(2026, 3, 1, tzinfo=UTC),
         git_commit="parity",
     )
     log_path = tmp_path / f"log_{int(band * 1000)}.jsonl"

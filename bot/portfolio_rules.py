@@ -73,6 +73,45 @@ def avg_pairwise_corr(hists: dict[str, list[float]], window: int) -> float | Non
     return sum(corrs) / len(corrs)
 
 
+def _capped_normalize(raw: dict[str, float], cap: float) -> dict[str, float]:
+    """Normalize positive raw scores to 1.0 while enforcing a hard per-asset cap.
+
+    A single clip-and-redistribute pass is insufficient: redistributing the
+    clipped slack can itself push another asset over the cap. This is a small
+    water-filling loop, so the invariant holds after every redistribution.
+    """
+    if not raw:
+        return {}
+    if cap <= 0.0 or cap * len(raw) < 1.0 - 1e-12:
+        raise ValueError("weight cap is infeasible for the number of assets")
+    if any(not math.isfinite(v) or v <= 0.0 for v in raw.values()):
+        raise ValueError("raw portfolio scores must be positive and finite")
+
+    remaining = set(raw)
+    weights: dict[str, float] = {}
+    mass = 1.0
+    while remaining:
+        raw_total = sum(raw[s] for s in remaining)
+        proposed = {s: mass * raw[s] / raw_total for s in remaining}
+        over = {s for s, w in proposed.items() if w > cap + 1e-15}
+        if not over:
+            weights.update(proposed)
+            break
+        for s in over:
+            weights[s] = cap
+        mass -= cap * len(over)
+        remaining -= over
+        if mass < -1e-12:
+            raise ValueError("weight cap normalization exhausted portfolio mass")
+        mass = max(0.0, mass)
+
+    total = sum(weights.values())
+    if total <= 0.0:
+        raise ValueError("portfolio weights could not be normalized")
+    # Floating-point cleanup only; the water-fill already enforces the cap.
+    return {s: w / total for s, w in weights.items()}
+
+
 def day_allocation(
     hist: dict[str, list[float]],
     present: list[str],
@@ -103,6 +142,16 @@ def day_allocation(
     combiner (`combine_portfolio_rule`) and the forward runner — one math,
     two callers, no drift.
     """
+    if n_assets <= 0:
+        raise ValueError("n_assets must be positive")
+    if len(set(present)) != len(present):
+        raise ValueError("present assets must be unique")
+    if len(present) > n_assets:
+        raise ValueError("present asset count cannot exceed n_assets")
+    missing_hist = [s for s in present if s not in hist]
+    if missing_hist:
+        raise ValueError(f"missing history for present assets: {','.join(sorted(missing_hist))}")
+
     weights: dict[str, float] = {}
     if present:
         # base weights: inverse vol (capped), same as combine_portfolio_invvol
@@ -118,14 +167,7 @@ def day_allocation(
                 vol = math.sqrt(max(var, 0.0) * 365)
                 raw[s] = 1.0 / max(vol, 1e-6)
             cap = max_multiple_of_equal / len(present)
-            total_raw = sum(raw.values())
-            weights = {s: min(cap, raw[s] / total_raw) for s in present}
-            free = [s for s in weights if weights[s] < cap]
-            slack = 1.0 - sum(weights.values())
-            free_total = sum(raw[s] for s in free)
-            if free and free_total > 0 and slack > 0:
-                for s in free:
-                    weights[s] += slack * raw[s] / free_total
+            weights = _capped_normalize(raw, cap)
         else:
             eq = 1.0 / len(present)
             weights = {s: eq for s in present}
@@ -138,6 +180,14 @@ def day_allocation(
                 mult = tilt_multipliers(ranks, max_tilt)
                 for s in present:
                     weights[s] *= mult[s]
+                # Multipliers average to one UNWEIGHTED, but inverse-vol base
+                # weights are unequal. Without this normalization the tilt can
+                # change gross exposure accidentally instead of only changing
+                # relative allocation.
+                tilted_total = sum(weights.values())
+                if tilted_total <= 0.0 or not math.isfinite(tilted_total):
+                    raise ValueError("tilted portfolio weights are invalid")
+                weights = {s: w / tilted_total for s, w in weights.items()}
 
     exposure = len(present) / n_assets
     if use_crisis:

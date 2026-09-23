@@ -5,12 +5,20 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install tooling
@@ -20,14 +28,25 @@ jobs:
       - name: Type check (mypy)
         run: mypy
       - name: Tests + coverage gate
-        run: pytest --cov=bot --cov-report=term-missing
+        run: pytest --junitxml=pytest-results.xml --cov=bot --cov-report=term-missing --cov-report=xml:coverage.xml
+      - name: Upload test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-diagnostics-${{ github.run_id }}
+          path: |
+            pytest-results.xml
+            coverage.xml
+          if-no-files-found: warn
+          retention-days: 7
       - name: README headline block derives from canonical run
         run: python scripts/derive_canonical_readme.py --check
 
   docker:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: quality
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build image and run the in-container quality gate
         run: docker build -t trading-bot .

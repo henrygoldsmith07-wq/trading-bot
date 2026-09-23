@@ -5,6 +5,7 @@ import pytest
 
 from bot.algorithm import build_algorithm
 from bot.prospective import (
+    append_log,
     checkpoints_due,
     create_freeze,
     load_freeze,
@@ -15,9 +16,10 @@ from bot.prospective import (
     slippage_stats,
     trailing_overlay_weight,
 )
-from bot.strategy import TrendVol, strategy_from_spec, strategy_to_spec
+from bot.strategy import BuyHold, TrendVol, strategy_from_spec, strategy_to_spec
 
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
+RUN_NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
 
 
 def _algo(**overrides):
@@ -40,7 +42,10 @@ def _mk_freeze(tmp_path, strategies=None):
     return manifest, tmp_path / "freeze.json"
 
 
-def _candles(closes, day_of_first=0):
+def _candles(closes, day_of_first=None):
+    if day_of_first is None:
+        today_index = int(RUN_NOW.timestamp() * 1000 // 86_400_000)
+        day_of_first = today_index - (len(closes) - 1)
     return [
         {"open_time": (day_of_first + i) * 86_400_000, "close": c} for i, c in enumerate(closes)
     ]
@@ -78,16 +83,124 @@ def test_strategy_spec_roundtrip():
         strategy_from_spec({"type": "NotAThing", "params": {}})
 
 
+def test_append_log_restores_missing_record_separator(tmp_path):
+    log = tmp_path / "log.jsonl"
+    first = {"date": "2026-08-23", "port_ret": 0.0, "assets": {"AAA": {}}}
+    second = {"date": "2026-08-24", "port_ret": 0.0, "assets": {"AAA": {}}}
+    log.write_text(json.dumps(first), encoding="utf-8")
+
+    append_log(second, log)
+
+    entries = load_log(log)
+    assert [entry["date"] for entry in entries] == ["2026-08-23", "2026-08-24"]
+
+
+def test_freeze_rejects_duplicate_assets(tmp_path):
+    from bot.algorithm import build_algorithm
+    from bot.strategy import BuyHold
+
+    assets = [
+        {"symbol": "AAA", "source": "test", "periods_per_year": 365, "strategy": BuyHold()},
+        {"symbol": "AAA", "source": "test", "periods_per_year": 365, "strategy": BuyHold()},
+    ]
+    with pytest.raises(ValueError, match="duplicate frozen asset"):
+        create_freeze(
+            assets=assets,
+            frictions={"fee": 0.0, "spread_bps": 0.0, "slippage_bps": 0.0,
+                       "execution": "next_open", "risk_free_annual": 0.0},
+            algorithm=build_algorithm(with_pool_version=False),
+            path=tmp_path / "dup.json",
+            now=NOW,
+            git_commit="dup",
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutator", "match"),
+    [
+        (lambda a, f: a[0].update({"periods_per_year": 0}), "periods_per_year"),
+        (lambda a, f: a[0].update({"session": "moon_market"}), "unsupported session"),
+        (lambda a, f: f.update({"fee": -0.01}), "non-negative"),
+        (lambda a, f: f.update({"spread_bps": float("nan")}), "finite"),
+        (lambda a, f: f.update({"execution": "close"}), "next_open"),
+        (lambda a, f: f.update({"mystery_cost": 1.0}), "unknown friction"),
+    ],
+)
+def test_freeze_rejects_invalid_asset_or_friction_contract(tmp_path, mutator, match):
+    from bot.algorithm import build_algorithm
+    from bot.strategy import BuyHold
+
+    assets = [{"symbol": "AAA", "source": "test", "periods_per_year": 365,
+               "strategy": BuyHold()}]
+    frictions = {"fee": 0.0, "spread_bps": 0.0, "slippage_bps": 0.0,
+                 "execution": "next_open", "risk_free_annual": 0.0}
+    mutator(assets, frictions)
+    with pytest.raises(ValueError, match=match):
+        create_freeze(
+            assets=assets,
+            frictions=frictions,
+            algorithm=build_algorithm(with_pool_version=False),
+            path=tmp_path / "invalid.json",
+            now=NOW,
+            git_commit="invalid",
+        )
+
+
+def test_load_freeze_rejects_timestamp_date_disagreement(tmp_path):
+    manifest, path = _mk_freeze(tmp_path, {"AAA": BuyHold(), "BBB": BuyHold()})
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["frozen_at_date"] = "2026-08-21"
+    raw["config_sha256"] = raw["config_sha256"]
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="disagrees"):
+        load_freeze(path, verify_code=False)
+
+
+def test_run_step_refuses_same_day_as_freeze(tmp_path):
+    strat = {"AAA": TrendVol(10, 5, 0.5), "BBB": TrendVol(10, 5, 0.5)}
+    manifest, _ = _mk_freeze(tmp_path, strat)
+    log = tmp_path / "log.jsonl"
+    res = run_step(
+        manifest,
+        _fetcher({"AAA": _mk_rising(400), "BBB": _mk_rising(400)}),
+        now=NOW,
+        log_path=log,
+    )
+    assert res["status"] == "not_after_freeze"
+    assert not log.exists()
+
+
 def test_run_step_logs_and_is_idempotent(tmp_path):
     strat = {"AAA": TrendVol(10, 5, 0.5), "BBB": TrendVol(10, 5, 0.5)}
     manifest, path = _mk_freeze(tmp_path, strat)
     log = tmp_path / "log.jsonl"
     rising = _mk_rising(400)
-    res1 = run_step(manifest, _fetcher({"AAA": rising, "BBB": rising}), now=NOW, log_path=log)
+    res1 = run_step(manifest, _fetcher({"AAA": rising, "BBB": rising}), now=RUN_NOW, log_path=log)
     assert res1["status"] == "logged"
-    res2 = run_step(manifest, _fetcher({"AAA": rising, "BBB": rising}), now=NOW, log_path=log)
+    res2 = run_step(manifest, _fetcher({"AAA": rising, "BBB": rising}), now=RUN_NOW, log_path=log)
     assert res2["status"] == "already_logged"
     assert len(load_log(log)) == 1
+
+
+def test_order_lifecycle_timestamps_are_chronological(tmp_path):
+    strat = {"AAA": TrendVol(10, 5, 0.5), "BBB": TrendVol(10, 5, 0.5)}
+    manifest, _ = _mk_freeze(tmp_path, strat)
+    rising = _mk_rising(400)
+    res = run_step(
+        manifest,
+        _fetcher({"AAA": rising, "BBB": rising}),
+        now=RUN_NOW,
+        log_path=tmp_path / "log.jsonl",
+    )
+    orders = res["entry"]["orders"]
+    assert orders, "rising series should produce at least one simulated order"
+    for order in orders:
+        signal = datetime.fromisoformat(order["signal_generated_ts"])
+        intent = datetime.fromisoformat(order["intent_ts"])
+        submitted = datetime.fromisoformat(order["submitted_ts"])
+        filled = datetime.fromisoformat(order["fill_ts"])
+        assert (intent - signal).total_seconds() == pytest.approx(1.0)
+        assert signal < intent <= submitted <= filled
 
 
 def _mk_rising(n, start=100.0, growth=1.004):
@@ -102,7 +215,7 @@ def test_run_step_records_outages(tmp_path):
     res = run_step(
         manifest,
         _fetcher({"AAA": rising, "BBB": rising}, problems={"BBB": "fetch failed: timeout"}),
-        now=NOW,
+        now=RUN_NOW,
         log_path=log,
     )
     entry = res["entry"]
@@ -114,11 +227,13 @@ def test_run_step_flags_missed_fill_after_data_gap(tmp_path):
     strat = {"AAA": TrendVol(10, 5, 0.5), "BBB": TrendVol(10, 5, 0.5)}
     manifest, path = _mk_freeze(tmp_path, strat)
     log = tmp_path / "log.jsonl"
-    # gapped history: 3-day hole between the last two completed candles
+    # Remove two completed bars while keeping a valid current-day print:
+    # the previous completed bar is still recent, but the last completed
+    # transition spans three calendar days (two missed fills).
     closes = [100.0 * 1.004 ** i for i in range(300)]
-    candles = _candles(closes)
-    candles[-1] = {"open_time": candles[-1]["open_time"] + 3 * 86_400_000, "close": closes[-1] * 1.01}
-    res = run_step(manifest, _fetcher({"AAA": candles, "BBB": _mk_rising(400)}), now=NOW, log_path=log)
+    full = _candles(closes)
+    candles = full[:-4] + full[-2:]
+    res = run_step(manifest, _fetcher({"AAA": candles, "BBB": _mk_rising(400)}), now=RUN_NOW, log_path=log)
     mf = res["entry"]["missed_fills"]
     assert any(m["symbol"] == "AAA" and m["delayed_days"] >= 2 for m in mf)
 
@@ -128,12 +243,63 @@ def test_run_step_uses_only_completed_candles_for_decision(tmp_path):
     manifest, _ = _mk_freeze(tmp_path, strat)
     log = tmp_path / "log.jsonl"
     rising = _mk_rising(400)
-    # today's in-progress candle has a wild price; decision must ignore it
-    candles = rising + [{"open_time": rising[-1]["open_time"] + 86_400_000, "close": 1e9}]
-    res = run_step(manifest, _fetcher({"AAA": candles, "BBB": rising}), now=NOW, log_path=log)
+    # Replace TODAY'S live mark with a wild price. It may affect marking, but
+    # the target must use only completed bars ending yesterday.
+    candles = [dict(row) for row in rising]
+    candles[-1]["close"] = 1e9
+    res = run_step(manifest, _fetcher({"AAA": candles, "BBB": rising}), now=RUN_NOW, log_path=log)
     det = res["entry"]["assets"]["AAA"]
-    assert det["price"] == 1e9  # executed at latest print...
-    assert det["weight"] <= 1.0  # ...but the decision stayed sane
+    assert det["price"] == 1e9
+    assert det["target"] == pytest.approx(TrendVol(10, 5, 0.5).weight(rising[:-1]))
+
+
+def test_run_step_blocks_malformed_feed_without_crashing(tmp_path):
+    strat = {"AAA": TrendVol(10, 5, 0.5), "BBB": TrendVol(10, 5, 0.5)}
+    manifest, _ = _mk_freeze(tmp_path, strat)
+    bad = _mk_rising(20)
+    bad[5] = "not-a-candle"
+    res = run_step(
+        manifest,
+        _fetcher({"AAA": bad, "BBB": _mk_rising(20)}),
+        now=RUN_NOW,
+        log_path=tmp_path / "log.jsonl",
+    )
+    detail = res["entry"]["assets"]["AAA"]
+    assert detail["weight"] == 0.0
+    assert detail["note"].startswith("fail_closed:")
+    assert any(o["symbol"] == "AAA" for o in res["entry"]["outages"])
+
+
+def test_run_step_blocks_stale_continuous_history_even_with_current_mark(tmp_path):
+    strat = {"AAA": TrendVol(10, 5, 0.5), "BBB": TrendVol(10, 5, 0.5)}
+    manifest, _ = _mk_freeze(tmp_path, strat)
+    full = _mk_rising(40)
+    # Keep history only through five days ago, then provide today's live mark.
+    stale = full[:-5] + [full[-1]]
+    res = run_step(
+        manifest,
+        _fetcher({"AAA": stale, "BBB": full}),
+        now=RUN_NOW,
+        log_path=tmp_path / "log.jsonl",
+    )
+    detail = res["entry"]["assets"]["AAA"]
+    assert detail["weight"] == 0.0
+    assert "stale completed history" in detail["note"]
+    assert any(a["symbol"] == "AAA" and a["level"] == "stale_data" for a in res["entry"]["alerts"])
+
+
+def test_run_step_nonfinite_strategy_target_holds_position(tmp_path, monkeypatch):
+    strat = {"AAA": TrendVol(10, 5, 0.5), "BBB": TrendVol(10, 5, 0.5)}
+    manifest, _ = _mk_freeze(tmp_path, strat)
+    monkeypatch.setattr(TrendVol, "weight", lambda self, candles: float("nan"))
+    res = run_step(
+        manifest,
+        _fetcher({"AAA": _mk_rising(40), "BBB": _mk_rising(40)}),
+        now=RUN_NOW,
+        log_path=tmp_path / "log.jsonl",
+    )
+    assert all(d["weight"] == 0.0 for d in res["entry"]["assets"].values())
+    assert len([a for a in res["entry"]["alerts"] if a["level"] == "strategy_error"]) == 2
 
 
 def test_slippage_stats_from_log():
@@ -179,4 +345,4 @@ def test_forward_runner_never_reselects(tmp_path):
     manifest, _ = _mk_freeze(tmp_path, strat)
     manifest["config"]["assets"][0]["strategy"] = {"type": "Mystery", "params": {}}
     with pytest.raises(ValueError):
-        run_step(manifest, _fetcher({"AAA": _mk_rising(400), "BBB": _mk_rising(400)}), now=NOW, log_path=tmp_path / "log.jsonl")
+        run_step(manifest, _fetcher({"AAA": _mk_rising(400), "BBB": _mk_rising(400)}), now=RUN_NOW, log_path=tmp_path / "log.jsonl")
