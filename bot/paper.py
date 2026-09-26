@@ -155,7 +155,7 @@ def _load_state(path: Path) -> dict | None:
     if not _finite(wrapped.get("cash")) or float(wrapped["cash"]) < -1e-6 or not isinstance(positions, dict):
         return None
     for sym, qty in positions.items():
-        if not isinstance(sym, str) or not _finite(qty) or float(qty) < -1e-12:
+        if not isinstance(sym, str) or not sym or not _finite(qty) or float(qty) < -1e-12:
             return None
     return wrapped
 

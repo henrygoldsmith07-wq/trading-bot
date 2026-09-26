@@ -634,6 +634,12 @@ class TestClassifyForwardDays:
         ])
         assert (out["full"], out["partial"], out["dark"], out["closed"]) == (0, 0, 0, 1)
 
+    def test_known_nyse_holiday_pending_is_closed_not_outage(self, api):
+        out = api.classify_forward_days([
+            self._day({"BTC": None, "SPY": "session_pending"}, day="2026-09-07")
+        ])
+        assert (out["full"], out["partial"], out["dark"], out["closed"]) == (0, 0, 0, 1)
+
     def test_pending_plus_real_failure_is_still_an_outage(self, api):
         """A shut session does not excuse a genuine failure elsewhere. Only a
         day on which NOTHING broke may be called a closed market."""

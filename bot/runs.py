@@ -45,8 +45,26 @@ def save_run_record(results: dict, runs_dir: str | Path = RUNS_DIR, run_id: str 
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     assets = len(results.get("universe", []))
     mode = "compare"
+    root = Path(runs_dir)
+    root.mkdir(parents=True, exist_ok=True)
     if run_id is None:
-        run_id = f"{ts}-{mode}-{assets}a"
+        base_id = f"{ts}-{mode}-{assets}a"
+        run_id = base_id
+        suffix = 0
+        while True:
+            d = root / run_id
+            try:
+                # Directory creation is the uniqueness claim.  Unlike a
+                # timestamp comparison this stays safe when the platform clock
+                # has coarse resolution and when two writers race.
+                d.mkdir(exist_ok=False)
+                break
+            except FileExistsError:
+                suffix += 1
+                run_id = f"{base_id}-{suffix:02d}"
+    else:
+        d = root / run_id
+        d.mkdir(parents=True, exist_ok=True)
     record = {
         "run_id": run_id,
         "created_at": _now(),
@@ -54,8 +72,6 @@ def save_run_record(results: dict, runs_dir: str | Path = RUNS_DIR, run_id: str 
         "tolerance": {"rel": 1e-12, "abs": 1e-12},
     }
     record["record_sha256"] = run_record_hash(record)
-    d = Path(runs_dir) / run_id
-    d.mkdir(parents=True, exist_ok=True)
     path = d / "run.json"
     tmp = d / "run.json.tmp"
     encoded = json.dumps(record, indent=2, allow_nan=False)

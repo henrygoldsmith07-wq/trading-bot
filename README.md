@@ -59,7 +59,7 @@ Bad forward results therefore reduce the number of figures on the page. They nev
 | `days_full` | every sleeve printed — worth one unit of evidence, and the only number the hero shows |
 | `days_partial` | some sleeve was in outage or held `session_pending`; recorded, but not counted |
 | `days_dark` | no sleeve printed — zero information, and graded as none |
-| `days_closed` | a genuine weekend/explicitly closed session — disclosed separately, neither evidence nor an outage |
+| `days_closed` | a genuine weekend, regular NYSE holiday, or explicitly closed session (`session_closed`) — disclosed separately, neither evidence nor an outage |
 
 `data_outages` in the payload counts **asset-day events**; `data_outage_days` counts **days**. They differ by up to the number of assets, and grading consumes the second — feeding it the first made the outage ratio meaningless.
 
@@ -292,9 +292,9 @@ levels:
    data flows back; code never changes mid-experiment.
 5. **Session-date scheduling.** New frozen runners execute shortly after
    midnight UTC and explicitly account the prior fully-closed calendar session
-   (`forward --as-of-date YYYY-MM-DD`). They also record weekend crypto returns
-   while US-ETF sleeves remain flat/pending, preserving a true daily return
-   tape. The workflow keeps the legacy 21:45 UTC weekday schedule for older
+   (`forward --as-of-date YYYY-MM-DD`). They also record weekend/holiday crypto
+   returns while US-ETF sleeves remain flat and are explicitly marked
+   `session_closed`, preserving a true daily return tape. The workflow keeps the legacy 21:45 UTC weekday schedule for older
    frozen commits that do not support that argument, so a workflow upgrade
    cannot silently change an experiment already in flight.
 

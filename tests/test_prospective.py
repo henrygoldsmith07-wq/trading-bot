@@ -5,9 +5,15 @@ import pytest
 
 from bot.algorithm import build_algorithm
 from bot.prospective import (
+    _coerce_session_date,
+    _last_weekday,
+    _observed_fixed_holiday,
+    _validate_freeze_config,
+    _validate_freeze_manifest,
     append_log,
     checkpoints_due,
     create_freeze,
+    forward_day_kind,
     forward_performance,
     load_freeze,
     load_log,
@@ -16,6 +22,7 @@ from bot.prospective import (
     run_step,
     slippage_stats,
     trailing_overlay_weight,
+    us_equity_market_closed,
 )
 from bot.strategy import BuyHold, TrendVol, strategy_from_spec, strategy_to_spec
 
@@ -157,6 +164,125 @@ def test_load_freeze_rejects_timestamp_date_disagreement(tmp_path):
         load_freeze(path, verify_code=False)
 
 
+def _valid_freeze_config_for_validation():
+    return {
+        "assets": [{
+            "symbol": "AAA",
+            "source": "test",
+            "periods_per_year": 365,
+            "session": "continuous",
+            "strategy": strategy_to_spec(BuyHold()),
+        }],
+        "frictions": {
+            "fee": 0.0,
+            "spread_bps": 0.0,
+            "slippage_bps": 0.0,
+            "execution": "next_open",
+            "risk_free_annual": 0.0,
+        },
+        "algorithm": _algo(),
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    [
+        (None, "mapping"),
+        (lambda c: c.pop("algorithm"), "missing required"),
+        (lambda c: c.update({"assets": []}), "non-empty list"),
+        (lambda c: c.update({"assets": ["bad"]}), "must be a mapping"),
+        (lambda c: c["assets"][0].pop("source"), "missing key"),
+        (lambda c: c["assets"][0].update({"symbol": ""}), "symbol must be non-empty"),
+        (lambda c: c["assets"][0].update({"source": ""}), "source must be non-empty"),
+        (lambda c: c["assets"][0].update({"strategy": {"type": "Nope", "params": {}}}), "invalid strategy"),
+        (lambda c: c.update({"frictions": []}), "frictions must be a mapping"),
+        (lambda c: c["frictions"].pop("fee"), "missing required key"),
+        (lambda c: c["frictions"].update({"spread_bps": -1.0}), "spread_bps must be non-negative"),
+        (lambda c: c["frictions"].update({"slippage_bps": -1.0}), "slippage_bps must be non-negative"),
+        (lambda c: c.update({"overlay": "bad"}), "legacy overlay view must be a mapping"),
+        (lambda c: c.update({"overlay": {"target_vol": 0.0}}), "target_vol must be positive"),
+    ],
+)
+def test_freeze_config_validation_fail_closed(mutate, match):
+    config = _valid_freeze_config_for_validation()
+    candidate = [] if mutate is None else config
+    if mutate is not None:
+        mutate(config)
+    with pytest.raises(ValueError, match=match):
+        _validate_freeze_config(candidate)
+
+
+def _valid_manifest_for_validation():
+    config = _valid_freeze_config_for_validation()
+    from bot.identity import CODE_FINGERPRINT_ALGO
+    from bot.prospective import _config_hash
+
+    return {
+        "frozen_at": "2026-09-01T12:00:00+00:00",
+        "frozen_at_date": "2026-09-01",
+        "code_fingerprint_algo": CODE_FINGERPRINT_ALGO,
+        "config_sha256": _config_hash(config),
+        "code_sha256": "abc",
+        "config": config,
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    [
+        (None, "mapping"),
+        (lambda m: m.pop("frozen_at"), "invalid frozen_at"),
+        (lambda m: m.update({"frozen_at": "2026-09-01T12:00:00"}), "timezone-aware"),
+        (lambda m: m.update({"code_fingerprint_algo": "old"}), "unknown code fingerprint"),
+        (lambda m: m.update({"config_sha256": ""}), "missing config hash"),
+        (lambda m: m.update({"code_sha256": ""}), "missing code fingerprint"),
+        (lambda m: m.update({"config": []}), "config must be a mapping"),
+    ],
+)
+def test_freeze_manifest_validation_fail_closed(mutate, match):
+    manifest = _valid_manifest_for_validation()
+    candidate = [] if mutate is None else manifest
+    if mutate is not None:
+        mutate(manifest)
+    with pytest.raises(ValueError, match=match):
+        _validate_freeze_manifest(candidate)
+
+
+def test_load_freeze_rejects_unreadable_manifest(tmp_path):
+    path = tmp_path / "bad-freeze.json"
+    path.write_text("{broken", encoding="utf-8")
+    with pytest.raises(ValueError, match="unreadable"):
+        load_freeze(path, verify_code=False)
+
+
+@pytest.mark.parametrize(
+    ("lines", "match"),
+    [
+        (["{broken"], "JSON is corrupt"),
+        (["[]"], "not an object"),
+        ([json.dumps({"port_ret": 0.0, "assets": {"A": {}}})], "has no date"),
+        ([json.dumps({"date": "bad", "port_ret": 0.0, "assets": {"A": {}}})], "invalid date"),
+        ([json.dumps({"date": "2026-09-01", "port_ret": True, "assets": {"A": {}}})], "invalid port_ret"),
+        ([json.dumps({"date": "2026-09-01", "port_ret": -1.1, "assets": {"A": {}}})], "impossible port_ret"),
+        ([json.dumps({"date": "2026-09-01", "port_ret": 0.0, "assets": {}})], "no asset detail"),
+        ([
+            json.dumps({"date": "2026-09-01", "port_ret": 0.0, "assets": {"A": {}}}),
+            json.dumps({"date": "2026-09-01", "port_ret": 0.0, "assets": {"A": {}}}),
+        ], "repeats date"),
+        ([
+            json.dumps({"date": "2026-09-02", "port_ret": 0.0, "assets": {"A": {}}}),
+            json.dumps({"date": "2026-09-01", "port_ret": 0.0, "assets": {"A": {}}}),
+        ], "not strictly increasing"),
+    ],
+)
+def test_load_log_rejects_corrupt_evidence(tmp_path, lines, match):
+    path = tmp_path / "bad-log.jsonl"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=match):
+        load_log(path)
+
+
+
 def test_run_step_refuses_same_day_as_freeze(tmp_path):
     strat = {"AAA": TrendVol(10, 5, 0.5), "BBB": TrendVol(10, 5, 0.5)}
     manifest, _ = _mk_freeze(tmp_path, strat)
@@ -262,6 +388,72 @@ def test_forward_sharpe_uses_observed_cadence_not_hardcoded_365():
     assert perf["periods_per_year"] == pytest.approx(365.2425 * 11 / 16)
     assert perf["periods_per_year"] < 365
     assert perf["sharpe"] is not None
+
+
+def test_us_equity_regular_holiday_calendar_matches_known_nyse_dates():
+    assert us_equity_market_closed(date(2026, 9, 7)) is True   # Labor Day
+    assert us_equity_market_closed(date(2027, 6, 18)) is True  # observed Juneteenth
+    assert us_equity_market_closed(date(2027, 12, 31)) is False  # Jan 1 2028 is Saturday; no prior-Friday closure
+    assert us_equity_market_closed(date(2028, 4, 14)) is True  # Good Friday
+    assert us_equity_market_closed(date(2026, 9, 8)) is False
+
+
+def test_session_date_coercion_accepts_supported_types_and_rejects_bad_values():
+    fallback = date(2026, 9, 26)
+    assert _coerce_session_date(None, fallback) == fallback
+    assert _coerce_session_date(datetime(2026, 9, 25, 23, 0, tzinfo=UTC), fallback) == date(2026, 9, 25)
+    assert _coerce_session_date(date(2026, 9, 24), fallback) == date(2026, 9, 24)
+    assert _coerce_session_date("2026-09-23", fallback) == date(2026, 9, 23)
+    with pytest.raises(ValueError, match="invalid session_date"):
+        _coerce_session_date("not-a-date", fallback)
+    with pytest.raises(ValueError, match="session_date must be"):
+        _coerce_session_date(123, fallback)  # type: ignore[arg-type]
+
+
+def test_calendar_helpers_cover_year_end_and_observed_fixed_holidays():
+    assert _last_weekday(2026, 12, 0) == date(2026, 12, 28)
+    assert _observed_fixed_holiday(7, 4, 2026) == date(2026, 7, 3)  # Saturday -> Friday
+    assert _observed_fixed_holiday(7, 4, 2027) == date(2027, 7, 5)  # Sunday -> Monday
+    assert _observed_fixed_holiday(7, 4, 2028) == date(2028, 7, 4)  # weekday unchanged
+    assert us_equity_market_closed(date(2027, 1, 1)) is True
+    assert us_equity_market_closed(date(2023, 1, 2)) is True  # Sunday New Year observed Monday
+
+
+def test_forward_day_quality_handles_new_and_legacy_closed_labels_fail_closed():
+    assert forward_day_kind({"date": "2026-09-07", "assets": {"SPY": {"note": "session_closed"}}}) == "closed"
+    assert forward_day_kind({"date": "2026-09-07", "assets": {"SPY": {"note": "session_pending"}}}) == "closed"
+    assert forward_day_kind({"date": "bad", "assets": {"SPY": {"note": "session_pending"}}}) == "dark"
+    assert forward_day_kind({
+        "date": "2026-09-07",
+        "assets": {"BTC": {}, "SPY": {"note": "session_closed"}},
+        "outages": [{"symbol": "SPY"}],
+    }) == "partial"
+
+
+def test_forward_performance_empty_dark_single_and_date_anchor_paths():
+    empty = forward_performance([])
+    assert empty["return"] is None and empty["return_quality"] == "none"
+
+    dark = forward_performance([
+        {"date": "2026-09-07", "port_ret": 0.0, "assets": {"A": {"note": "outage"}}},
+        {"date": "2026-09-08", "port_ret": 0.0, "assets": {"A": {"note": "outage"}}},
+    ])
+    assert dark["return"] is None and dark["return_quality"] == "unmeasured"
+
+    one = forward_performance([
+        {"date": "2026-09-08", "port_ret": 0.01, "assets": {"A": {}}},
+    ])
+    assert one["return"] == pytest.approx(0.01)
+    assert one["periods_per_year"] is None
+    assert one["sharpe"] is None
+    assert "fewer than two" in one["sharpe_reason"]
+
+    pair = forward_performance([
+        {"date": "2026-09-08", "port_ret": 0.01, "assets": {"A": {}}},
+        {"date": "2026-09-10", "port_ret": -0.002, "assets": {"A": {}}},
+    ], freeze_date=date(2026, 9, 7))
+    assert pair["periods_per_year"] == pytest.approx(365.2425 * 2 / 3)
+    assert pair["sharpe"] is not None
 
 
 def _mk_rising(n, start=100.0, growth=1.004):

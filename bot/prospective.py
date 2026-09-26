@@ -22,7 +22,7 @@ import hashlib
 import json
 import math
 import os
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from .cost_calibration import (
@@ -332,6 +332,83 @@ def _coerce_session_date(value: date | str | None, fallback: date) -> date:
     raise ValueError("session_date must be a date, ISO date string, or None")
 
 
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    """Return the nth weekday (Mon=0) in a month."""
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + 7 * (n - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    """Return the final weekday (Mon=0) in a month."""
+    if month == 12:
+        next_month = date(year + 1, 1, 1)
+    else:
+        next_month = date(year, month + 1, 1)
+    last = next_month - timedelta(days=1)
+    return last - timedelta(days=(last.weekday() - weekday) % 7)
+
+
+def _easter_sunday(year: int) -> date:
+    """Gregorian Easter (Anonymous Gregorian computus)."""
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    correction = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * correction) // 451
+    month = (h + correction - 7 * m + 114) // 31
+    day = ((h + correction - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def _observed_fixed_holiday(month: int, day: int, year: int) -> date:
+    holiday = date(year, month, day)
+    if holiday.weekday() == 5:  # Saturday -> Friday
+        return holiday - timedelta(days=1)
+    if holiday.weekday() == 6:  # Sunday -> Monday
+        return holiday + timedelta(days=1)
+    return holiday
+
+
+def us_equity_market_closed(day: date) -> bool:
+    """Deterministic regular NYSE full-day closure calendar.
+
+    This intentionally covers the exchange's recurring full-day holidays with
+    no third-party calendar dependency.  Unexpected one-off closures are NOT
+    guessed: if a weekday is absent but not in this calendar the runner leaves
+    it pending/partial, which is the safer evidence-integrity failure mode.
+
+    New Year's is special at year-end: when Jan 1 falls on Saturday, NYSE does
+    not move the closure back to Dec 31 (for example Dec 31 2027 stays open).
+    """
+    if day.weekday() >= 5:
+        return True
+
+    year = day.year
+    holidays = {
+        date(year, 1, 1) if date(year, 1, 1).weekday() < 5 else (
+            date(year, 1, 2) if date(year, 1, 1).weekday() == 6 else date.min
+        ),
+        _nth_weekday(year, 1, 0, 3),   # Martin Luther King Jr. Day
+        _nth_weekday(year, 2, 0, 3),   # Washington's Birthday / Presidents' Day
+        _easter_sunday(year) - timedelta(days=2),  # Good Friday
+        _last_weekday(year, 5, 0),     # Memorial Day
+        _observed_fixed_holiday(6, 19, year),  # Juneteenth
+        _observed_fixed_holiday(7, 4, year),   # Independence Day
+        _nth_weekday(year, 9, 0, 1),   # Labor Day
+        _nth_weekday(year, 11, 3, 4),  # Thanksgiving
+        _observed_fixed_holiday(12, 25, year),  # Christmas
+    }
+    return day in holidays
+
+
 def forward_day_kind(entry: dict) -> str:
     """Classify observation quality without deleting the recorded return."""
     assets = entry.get("assets") or {}
@@ -342,13 +419,17 @@ def forward_day_kind(entry: dict) -> str:
         return "full"
 
     noted = [detail for detail in assets.values() if detail.get("note") is not None]
+    only_closed = bool(noted) and all(detail.get("note") == "session_closed" for detail in noted)
     only_pending = bool(noted) and all(detail.get("note") == "session_pending" for detail in noted)
     explicit_closed = entry.get("dayStatus") == "market_closed"
     try:
-        weekend = date.fromisoformat(entry.get("date", "")).weekday() >= 5
+        entry_date = date.fromisoformat(entry.get("date", ""))
+        calendar_closed = us_equity_market_closed(entry_date)
     except ValueError:
-        weekend = False
-    if only_pending and not entry.get("outages") and (explicit_closed or weekend):
+        calendar_closed = False
+    if only_closed and not entry.get("outages"):
+        return "closed"
+    if only_pending and not entry.get("outages") and (explicit_closed or calendar_closed):
         return "closed"
     return "partial" if live else "dark"
 
@@ -695,6 +776,17 @@ def run_step(
         session = a.get("session", "continuous")
         strategy = strategy_from_spec(a["strategy"])  # raises on tampered spec: no fallback
         prev_w = prev_weights.get(sym, 0.0)  # EFFECTIVE (post-band) weight held
+        if session == "us_equity" and us_equity_market_closed(effective_date):
+            sleeve_rets.append(0.0)
+            asset_details[sym] = {
+                "weight": prev_w,
+                "target": prev_w,
+                "sleeve_ret": 0.0,
+                "slippage_bps": None,
+                "note": "session_closed",
+                "session": session,
+            }
+            continue
         try:
             candles, problem = fetcher(sym, a["source"])
         except Exception as exc:
@@ -993,14 +1085,17 @@ def run_step(
     port_ret = overlay_w * rule_ret - overlay_fee * abs(overlay_w - prev_overlay)
     # dayStatus: every scheduled day is recorded, interesting or not
     n_pending = sum(1 for d in asset_details.values() if d.get("note") == "session_pending")
+    n_closed = sum(1 for d in asset_details.values() if d.get("note") == "session_closed")
     n_outage_assets = sum(
         1 for d in asset_details.values()
-        if isinstance(d.get("note"), str) and d["note"] not in ("session_pending",)
+        if isinstance(d.get("note"), str) and d["note"] not in ("session_pending", "session_closed")
     )
     if len(outages) == n_assets and n_assets > 0:
         day_status = "data_outage"
     elif not orders and n_pending == len(asset_details) and n_pending > 0:
         day_status = "session_pending"
+    elif not orders and n_closed > 0 and n_outage_assets == 0:
+        day_status = "market_closed"
     elif not orders and n_outage_assets > 0:
         day_status = "partial_outage"
     elif not orders:

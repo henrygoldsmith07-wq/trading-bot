@@ -108,13 +108,13 @@ class TestSessionGate:
         assert fwd_entry["weight"] == pytest.approx(eng_w)
         assert fwd_entry["sleeve_ret"] == pytest.approx(eng_ret, abs=5e-9)
 
-    def test_weekend_after_gate_still_pending(self, env):
+    def test_weekend_is_explicitly_closed(self, env):
         m = _manifest(env, session="us_equity")
         candles = _bars(ANCHOR_NOON, n=40)
         sat = _now_for(33, 22, 0)
         assert sat.weekday() >= 5
         res = run_step(m, lambda s, src: (candles, None), now=sat, log_path=env / "l.jsonl")
-        assert res["entry"]["assets"]["ETF1"]["note"] == "session_pending"
+        assert res["entry"]["assets"]["ETF1"]["note"] == "session_closed"
 
     def test_continuous_crypto_trades_in_the_morning(self, env):
         m = _manifest(env, session="continuous")
