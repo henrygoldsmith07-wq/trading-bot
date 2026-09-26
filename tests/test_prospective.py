@@ -8,6 +8,7 @@ from bot.prospective import (
     append_log,
     checkpoints_due,
     create_freeze,
+    forward_performance,
     load_freeze,
     load_log,
     monthly_returns,
@@ -201,6 +202,66 @@ def test_order_lifecycle_timestamps_are_chronological(tmp_path):
         filled = datetime.fromisoformat(order["fill_ts"])
         assert (intent - signal).total_seconds() == pytest.approx(1.0)
         assert signal < intent <= submitted <= filled
+
+
+def test_explicit_session_date_survives_runner_crossing_midnight(tmp_path):
+    strat = {"AAA": TrendVol(10, 5, 0.5), "BBB": TrendVol(10, 5, 0.5)}
+    manifest, _ = _mk_freeze(tmp_path, strat)
+    closed_session = _mk_rising(400)
+    next_day_partial = dict(closed_session[-1])
+    next_day_partial["open_time"] += 86_400_000
+    next_day_partial["close"] *= 1.5
+    feed = closed_session + [next_day_partial]
+    delayed_now = datetime(2026, 8, 24, 0, 30, tzinfo=UTC)
+
+    result = run_step(
+        manifest,
+        _fetcher({"AAA": feed, "BBB": feed}),
+        now=delayed_now,
+        session_date=date(2026, 8, 23),
+        log_path=tmp_path / "log.jsonl",
+    )
+
+    assert result["entry"]["date"] == "2026-08-23"
+    assert result["entry"]["session_date"] == "2026-08-23"
+    assert result["entry"]["assets"]["AAA"]["price"] == pytest.approx(closed_session[-1]["close"])
+    assert datetime.fromisoformat(result["entry"]["ts"]).date().isoformat() == "2026-08-24"
+
+
+def test_forward_performance_preserves_partial_intervals_but_withholds_sharpe():
+    entries = [
+        {"date": "2026-09-07", "port_ret": 0.01, "assets": {"A": {"sleeve_ret": 0.01}}},
+        {
+            "date": "2026-09-08",
+            "port_ret": 0.02,
+            "assets": {"A": {"sleeve_ret": 0.02}, "B": {"note": "feed outage", "sleeve_ret": 0.0}},
+            "outages": [{"symbol": "B", "problem": "feed outage"}],
+        },
+        {"date": "2026-09-09", "port_ret": -0.005, "assets": {"A": {"sleeve_ret": -0.005}}},
+    ]
+    perf = forward_performance(entries, freeze_date="2026-09-06", risk_free_annual=0.03)
+    assert perf["return"] == pytest.approx(1.01 * 1.02 * 0.995 - 1.0)
+    assert len(perf["curve"]) == 3
+    assert perf["quality"]["partial"] == 1
+    assert perf["return_quality"] == "degraded"
+    assert perf["sharpe"] is None
+    assert "partial/dark" in perf["sharpe_reason"]
+
+
+def test_forward_sharpe_uses_observed_cadence_not_hardcoded_365():
+    dates = [
+        "2026-09-07", "2026-09-08", "2026-09-09", "2026-09-10", "2026-09-11",
+        "2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18",
+        "2026-09-22",
+    ]
+    entries = [
+        {"date": d, "port_ret": 0.001 if i % 2 == 0 else -0.0004, "assets": {"A": {"sleeve_ret": 0.0}}}
+        for i, d in enumerate(dates)
+    ]
+    perf = forward_performance(entries, freeze_date="2026-09-06", risk_free_annual=0.03)
+    assert perf["periods_per_year"] == pytest.approx(365.2425 * 11 / 16)
+    assert perf["periods_per_year"] < 365
+    assert perf["sharpe"] is not None
 
 
 def _mk_rising(n, start=100.0, growth=1.004):

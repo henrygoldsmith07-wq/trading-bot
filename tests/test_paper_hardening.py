@@ -175,6 +175,36 @@ class TestOrderPreflight:
 
 
 class TestCycleResilience:
+    def test_multi_buy_rebalance_is_symbol_order_invariant_with_fees(self, tmp_path):
+        data = {"A": _candles([100.0] * 5), "B": _candles([100.0] * 5)}
+
+        def execute(order, suffix):
+            pf = PaperPortfolio(
+                start_cash=1000.0,
+                fee=0.001,
+                state_file=tmp_path / f"state-{suffix}.json",
+                ledger_file=tmp_path / f"ledger-{suffix}.jsonl",
+            )
+            result = run_cycle(
+                order,
+                lambda _sym, _candles_: 0.5,
+                lambda sym: data[sym],
+                pf,
+                reports_dir=tmp_path / f"reports-{suffix}",
+                now=NOW,
+            )
+            return pf, result
+
+        left, left_result = execute(["A", "B"], "ab")
+        right, right_result = execute(["B", "A"], "ba")
+
+        assert left.cash == pytest.approx(right.cash, abs=1e-8)
+        assert left.positions == pytest.approx(right.positions, abs=1e-10)
+        assert left.positions["A"] == pytest.approx(left.positions["B"], abs=1e-10)
+        assert left.cash >= -1e-8
+        assert not any(a["level"] == "rebalance_weight_drift" for a in left_result["alerts"])
+        assert not any(a["level"] == "rebalance_weight_drift" for a in right_result["alerts"])
+
     def test_sells_execute_before_buys_even_when_symbol_order_is_reversed(self, tmp_path):
         pf = PaperPortfolio(
             start_cash=1000.0,
@@ -253,7 +283,7 @@ class TestCycleResilience:
         assert pf.positions["A"] == pytest.approx(5.0)
         assert pf.positions["B"] == pytest.approx(5.0)
         assert pf.cash == pytest.approx(0.0)
-        assert any(a["level"] == "target_weights_normalized" for a in result["alerts"])
+        assert any(a["level"] == "target_weights_scaled" for a in result["alerts"])
 
     def test_blocked_holding_reserves_portfolio_capacity(self, tmp_path):
         pf = PaperPortfolio(
@@ -294,9 +324,9 @@ class TestCycleResilience:
         pf.rebalance("A", 0.5, 100.0, idem_key="seed-a", market_prices={"A": 100.0})
 
         result = run_cycle(
-            ["B"],
+            ["A", "B"],
             lambda _sym, _candles_: 0.0,
-            lambda _sym: _candles([100.0] * 5),
+            lambda sym: [] if sym == "A" else _candles([100.0] * 5),
             pf,
             reports_dir=tmp_path / "reports",
             now=NOW,

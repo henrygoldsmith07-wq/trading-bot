@@ -103,83 +103,21 @@ def _load_forward_entries(log_path: str, frozen_date: str | None) -> list[dict]:
 
 
 def is_fully_observed(entry: dict) -> bool:
-    """True only when EVERY sleeve printed on this day.
+    from bot.prospective import forward_day_kind
 
-    `bot/prospective.py` builds the allocation from exactly this set
-    (`present = [sym for sym in assets if note is None]`), so a day with ten of
-    thirteen sleeves dark is a three-asset portfolio wearing a thirteen-asset
-    label. Both the day COUNT and the return SERIES are filtered through this
-    one predicate, so they can never drift apart.
-    """
-    assets = entry.get("assets") or {}
-    if not assets:
-        return False
-    return all(d.get("note") is None for d in assets.values())
+    return forward_day_kind(entry) == "full"
 
 
 def is_market_closed(entry: dict) -> bool:
-    """True when the only sleeves that did not print were waiting on a session
-    that produced no bar today: a weekend, an exchange holiday, or — if a run
-    fired before the close — a session that had not closed yet.
+    from bot.prospective import forward_day_kind
 
-    A fetch failure is never `session_pending`; it carries the error as its
-    note. So this predicate means "no bar exists and nothing broke", which is
-    the only thing the accounting below actually needs.
-
-    `bot/prospective.py` marks such a sleeve `session_pending` and holds the
-    previous weight: nothing failed, there was simply no session to observe.
-    That is categorically different from a fetch failure, and conflating them
-    is not a cosmetic error. The portfolio holds three US ETFs, so two days in
-    every seven are weekends; booked as outages that is ~29% of scheduled days,
-    comfortably above the 20% threshold at which the grade is withheld. A
-    closed exchange would then suppress the verdict permanently, and the
-    experiment would read as broken because of a calendar.
-
-    A closed day is also not EVIDENCE: the sleeves that did print (crypto
-    trades straight through) produced a return for part of the portfolio only,
-    and a partial-portfolio return must not be booked as a portfolio day.
-    """
-    assets = entry.get("assets") or {}
-    if not assets:
-        return False
-    noted = [d for d in assets.values() if d.get("note") is not None]
-    if not noted:
-        return False
-    return all(d.get("note") == "session_pending" for d in noted)
+    return forward_day_kind(entry) == "closed"
 
 
 def classify_forward_days(entries: list[dict]) -> dict[str, int]:
-    """Split scheduled days by how much of the portfolio was ACTUALLY observed.
+    from bot.prospective import classify_forward_days as _classify
 
-    A day carries full evidence only when every sleeve printed — no outage, no
-    session held pending. A day with ten of thirteen sleeves dark is a
-    three-asset portfolio wearing a thirteen-asset label.
-
-    Counting such a day as one whole forward trading day would let a broken
-    feed manufacture the very thing the forward test exists to measure: the
-    feed goes down, the count keeps climbing, and the hero number improves
-    while nothing is being observed.
-
-    `closed` is separate from `partial` and `dark` on purpose: on a day the
-    exchange never opened, nothing was broken and nothing was observed. It is
-    neither evidence nor an outage, so it must not be added to either count.
-    """
-    full = partial = dark = closed = 0
-    for e in entries:
-        assets = e.get("assets") or {}
-        if not assets:
-            dark += 1
-            continue
-        live = sum(1 for d in assets.values() if d.get("note") is None)
-        if live == len(assets):
-            full += 1
-        elif is_market_closed(e):
-            closed += 1
-        elif live:
-            partial += 1
-        else:
-            dark += 1
-    return {"full": full, "partial": partial, "dark": dark, "closed": closed}
+    return _classify(entries)
 
 
 def _order_lifecycle_warnings(entries: list[dict]) -> dict:
@@ -226,7 +164,20 @@ def _order_lifecycle_warnings(entries: list[dict]) -> dict:
             if not (signal < intent <= submitted <= filled):
                 bump("non_monotonic_timestamps")
                 continue
-            if filled.date().isoformat() != entry.get("date"):
+            try:
+                entry_day = datetime.fromisoformat(str(entry.get("date"))).date()
+            except ValueError:
+                bump("invalid_entry_date")
+                continue
+            # New runners may account a fully-closed session shortly after
+            # midnight UTC. The intended market date must match the entry;
+            # submission/fill timestamps are allowed to land on the following
+            # wall-clock day, but never before the session or days later.
+            if intent.date() != entry_day:
+                bump("intent_session_mismatch")
+                continue
+            fill_delay_days = (filled.date() - entry_day).days
+            if fill_delay_days < 0 or fill_delay_days > 1:
                 bump("fill_date_mismatch")
                 continue
             price = order.get("fill_price")
@@ -273,9 +224,6 @@ def build_forward_summary(
     tampered config or mismatched implementation surfaces as verified=false.
     Returns {"available": False, "reason": ...} until a freeze exists.
     """
-    from bot.metrics import max_drawdown as _mdd
-    from bot.metrics import sharpe as _sharpe
-
     if not os.path.exists(freeze_path):
         return {
             "available": False,
@@ -352,28 +300,23 @@ def build_forward_summary(
             "reason": "no forward days recorded yet",
         }
 
-    # Returns are measured on FULLY-OBSERVED days only. A sleeve in outage or
-    # held pending contributes sleeve_ret = 0.0 while still carrying its
-    # weight, so a partly-observed day records a FRACTION of the portfolio's
-    # true move. Averaging those in would attenuate volatility and pull the
-    # Sharpe toward zero — a feed going quiet would read as a strategy getting
-    # calmer, which is a flattering artefact of broken plumbing. Partly
-    # observed days are disclosed as a COUNT; they never enter the series.
-    observed = [e for e in entries if is_fully_observed(e)]
-    rets = [e["port_ret"] for e in observed]
-    equity = [1.0]
-    for r in rets:
-        equity.append(equity[-1] * (1.0 + r))
-    # Zero observed days means zero measured return — not a flat market.
-    # Reporting 0.0 would dress up "nothing was seen" as "nothing happened".
-    total_return = (equity[-1] - 1.0) if rets else None
-    fwd_sharpe = _sharpe(rets, 365) if len(rets) >= 2 else None
-    mdd = _mdd(equity) if rets else None
+    from bot.prospective import forward_performance
 
-    # The benchmark is compared over the SAME window the returns came from,
-    # not over scheduled days the portfolio was never fully running on.
-    first_date = observed[0]["date"] if observed else entries[0]["date"]
-    last_date = observed[-1]["date"] if observed else entries[-1]["date"]
+    risk_free_annual = float(manifest.get("config", {}).get("frictions", {}).get("risk_free_annual", 0.0))
+    perf = forward_performance(
+        entries,
+        freeze_date=frozen_date,
+        risk_free_annual=risk_free_annual,
+    )
+    # Cumulative performance compounds the append-only tape exactly as written.
+    # Observation quality is reported separately; deleting a partial row would
+    # delete a real mark-chained interval from the portfolio path.
+    total_return = perf["return"]
+    fwd_sharpe = perf["sharpe"]
+    mdd = perf["max_drawdown"]
+
+    first_date = entries[0]["date"]
+    last_date = entries[-1]["date"]
     today_d = (today or datetime.now(UTC)).date()
     frozen_d = datetime.fromisoformat(manifest["frozen_at"]).date() if "frozen_at" in manifest else None
     days_untouched = (today_d - frozen_d).days if frozen_d else None
@@ -384,13 +327,8 @@ def build_forward_summary(
     outages = sum(len(e.get("outages", [])) for e in entries)
     missed_fills = sum(len(e.get("missed_fills", [])) for e in entries)
     lifecycle = _order_lifecycle_warnings(entries)
-    days = classify_forward_days(entries)
-
-    curve = []
-    eq = 1.0
-    for e in observed:
-        eq *= 1.0 + e["port_ret"]
-        curve.append({"t": e["date"], "v": round(eq, 5)})
+    days = perf["quality"]
+    curve = perf["curve"]
 
     bench_return = None
     bench_label = "S&P 500 (same window)"
@@ -436,6 +374,12 @@ def build_forward_summary(
         "code_sha256": (manifest.get("code_sha256") or "")[:16],
         "forward_return": round(total_return, 4) if total_return is not None else None,
         "forward_sharpe": round(fwd_sharpe, 3) if fwd_sharpe is not None else None,
+        "forward_sharpe_reason": perf["sharpe_reason"],
+        "forward_periods_per_year": (
+            round(perf["periods_per_year"], 3)
+            if perf["periods_per_year"] is not None else None
+        ),
+        "forward_return_quality": perf["return_quality"],
         "max_drawdown": round(mdd, 4) if mdd is not None else None,
         "benchmark_label": bench_label,
         "benchmark_return": round(bench_return, 4) if bench_return is not None else None,

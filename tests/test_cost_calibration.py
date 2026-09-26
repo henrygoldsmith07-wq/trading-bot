@@ -241,14 +241,18 @@ class TestRunStepIntegration:
         obs_path = tmp_path / "cost_observations.jsonl"
         # deterministic but non-degenerate closes: alternating growth so
         # realized variance is strictly positive
+        # Include a current-session 1 July bar as required by the prospective
+        # continuous-market contract. The decision still uses only the 30
+        # completed bars through 30 June; the final bar supplies next-open and
+        # mark prices for the simulated 1 July execution.
         closes = [100.0]
-        for i in range(1, 30):
+        for i in range(1, 31):
             closes.append(closes[-1] * (1.008 if i % 2 else 1.012))
         candles = [
             {"open_time": T_BASE_MS + i * 86_400_000,
              "open": closes[i - 1] if i else 100.0, "close": closes[i],
              "volume": 1000.0, "quote_volume": closes[i] * 1000.0}
-            for i in range(30)
+            for i in range(31)
         ]
 
         quotes_seen = {}
@@ -278,7 +282,7 @@ class TestRunStepIntegration:
         assert o["realized_vol_annual"] is not None and o["realized_vol_annual"] > 0
         # UNITS: adv30_usd must be the mean of quote_volumes (already USD),
         # never quote_volume x close (which would inflate by ~price)
-        expected_adv = sum(c["quote_volume"] for c in candles) / len(candles)
+        expected_adv = sum(c["quote_volume"] for c in candles[:-1]) / len(candles[:-1])
         assert o["adv30_usd"] == pytest.approx(expected_adv, rel=1e-9)
 
 

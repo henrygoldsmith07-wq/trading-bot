@@ -59,10 +59,11 @@ Bad forward results therefore reduce the number of figures on the page. They nev
 | `days_full` | every sleeve printed — worth one unit of evidence, and the only number the hero shows |
 | `days_partial` | some sleeve was in outage or held `session_pending`; recorded, but not counted |
 | `days_dark` | no sleeve printed — zero information, and graded as none |
+| `days_closed` | a genuine weekend/explicitly closed session — disclosed separately, neither evidence nor an outage |
 
 `data_outages` in the payload counts **asset-day events**; `data_outage_days` counts **days**. They differ by up to the number of assets, and grading consumes the second — feeding it the first made the outage ratio meaningless.
 
-The consequence is deliberate: when a data source is unreachable the count stops, rather than climbing on days where nothing was measured.
+The consequence is deliberate: when a data source is unreachable the **evidence count** stops, rather than climbing on days where nothing was measured. Performance accounting is a separate problem: the append-only tape's `port_ret` rows are mark-chained intervals, so the cumulative return/equity curve compounds every recorded interval rather than deleting partial rows and accidentally deleting real crypto price movement. If a real partial/dark interval exists, the return is marked degraded and forward Sharpe is withheld until the tape is clean enough for that inference.
 
 ## Headline result (real data, out-of-sample, realistic frictions)
 
@@ -253,7 +254,7 @@ Rewritten around a persistent multi-asset paper portfolio:
 - **Fail-closed append-only order ledger** — every fill records idempotency key, deltas, post-trade balances, fees, and the decision explanation; only an unterminated final crash fragment may be ignored, while interior corruption aborts recovery
 - **Ledger-first crash recovery** — every durable fill is replay-validated for cash, position, notional, side, and idempotency continuity; if a crash leaves a valid-but-stale state snapshot behind, the fsynced ledger wins and repairs state
 - **Duplicate-order prevention** — decisions carry `(date|symbol|action|target)` keys derived from the cycle timestamp; re-running a cycle cannot double-fill
-- **Multi-asset-safe execution** — total portfolio equity is marked with the full price snapshot, missing held-position marks fail closed, SELLs fund BUYs before execution, zero-quantity cash-clamped orders never consume an idempotency key, and over-allocated independent targets are normalized to the unlevered portfolio capacity (including capacity locked by stale holdings)
+- **Multi-asset-safe execution** — total portfolio equity is marked with the full price snapshot, missing held-position marks fail closed, every target quantity is sized from one pre-trade equity snapshot, SELLs fund BUYs first, fee pressure scales the whole BUY basket proportionally (not whichever symbol runs last), zero-quantity cash-clamped orders never consume an idempotency key, and over-allocated targets are normalized to the unlevered portfolio capacity (including capacity locked by stale holdings)
 - **Failure isolation** — data-source and advisory-AI failures are audited without turning into orders or erasing an already-completed paper cycle
 - **Data-staleness alerts** — symbols with frozen feeds get their trading blocked for the cycle and land in the audit trail (also raised by `forward --step`)
 - **Decision explanations & atomic daily audit reports** — markdown under `reports/` with positions, fills, alerts, and why every decision was taken (holds included)
@@ -289,6 +290,13 @@ levels:
    (detached), runs `python -m bot verify-freeze` as a hard gate, trades one
    forward day on that code, then returns to main to append ONLY the log —
    data flows back; code never changes mid-experiment.
+5. **Session-date scheduling.** New frozen runners execute shortly after
+   midnight UTC and explicitly account the prior fully-closed calendar session
+   (`forward --as-of-date YYYY-MM-DD`). They also record weekend crypto returns
+   while US-ETF sleeves remain flat/pending, preserving a true daily return
+   tape. The workflow keeps the legacy 21:45 UTC weekday schedule for older
+   frozen commits that do not support that argument, so a workflow upgrade
+   cannot silently change an experiment already in flight.
 
 **Data sources use mirrors, because a refused host is not a market event.**
 Binance answers `HTTP 451` to whole datacentre ranges, GitHub Actions
@@ -357,7 +365,7 @@ annotated git tag (`freeze/<YYYYMMDD>`) + optional container image digest
 | Property-style tests | seeded randomized invariants | `tests/test_properties.py` |
 | Reproducible snapshots | `bot/snapshot.py` | pin data hashes + seed + metrics; verify drift |
 | Environment | `Dockerfile` | quality gate by default; override for paper runs |
-| Scheduled paper runs | `.github/workflows/scheduled-paper.yml` | daily forward step + committed log |
+| Scheduled paper runs | `.github/workflows/scheduled-paper.yml` | frozen-code forward step on fully closed sessions + committed log |
 
 ## AI commentary (optional, OpenRouter / NVIDIA)
 

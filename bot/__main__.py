@@ -1218,32 +1218,59 @@ def run_forward(args) -> int:
     from datetime import date as _date
 
     from .benchmark import equity_metrics, fetch_sp500, slice_window
-    from .prospective import alert_stats, checkpoints_due, load_freeze, load_log, monthly_returns, outage_stats, run_step, slippage_stats
+    from .prospective import (
+        alert_stats,
+        checkpoints_due,
+        forward_performance,
+        load_freeze,
+        load_log,
+        monthly_returns,
+        outage_stats,
+        run_step,
+        slippage_stats,
+    )
 
     manifest = load_freeze(args.freeze_file)
     freeze_date = _date.fromisoformat(manifest["frozen_at_date"])
 
     if args.step:
-        result = run_step(manifest, _forward_fetch, log_path=args.log_file)
-        e = result["entry"]
-        print(f"[{e['date']}] {result['status']}: port_ret {e['port_ret']:+.4%}, overlay {e['overlay_weight']:.2f}, "
-              f"assets {len(e['assets'])}, outages {len(e['outages'])}, missed_fills {len(e['missed_fills'])}")
+        session_date = _date.fromisoformat(args.as_of_date) if args.as_of_date else None
+        result = run_step(
+            manifest,
+            _forward_fetch,
+            log_path=args.log_file,
+            session_date=session_date,
+        )
+        e = result.get("entry")
+        if e is not None:
+            print(f"[{e['date']}] {result['status']}: port_ret {e['port_ret']:+.4%}, overlay {e['overlay_weight']:.2f}, "
+                  f"assets {len(e['assets'])}, outages {len(e['outages'])}, missed_fills {len(e['missed_fills'])}")
+        else:
+            print(f"Forward step: {result['status']} ({result.get('date', 'n/a')})")
 
     entries = load_log(args.log_file)
     if not entries:
         print("No forward entries yet — run `python -m bot forward --step` daily")
         return 0
 
-    eq = 1.0
-    for e in entries:
-        eq *= 1.0 + e["port_ret"]
-    rets = [e["port_ret"] for e in entries]
+    perf = forward_performance(
+        entries,
+        freeze_date=freeze_date,
+        risk_free_annual=float(manifest["config"]["frictions"].get("risk_free_annual", 0.0)),
+    )
+    total_return = perf["return"]
     as_of = _date.fromisoformat(entries[-1]["date"])
-    from .metrics import max_drawdown as _mdd
-    from .metrics import sharpe as _sharpe
 
     print(f"\nProspective validation: frozen {freeze_date} -> last step {as_of} ({len(entries)} forward days)")
-    print(f"  bot forward: {eq:.3f}x ({(eq - 1):+.1%}), Sharpe {_sharpe(rets, 365):.2f}, maxDD {_mdd([1.0] + [x for x in _cum(rets)]):.1%}")
+    if total_return is None:
+        print("  bot forward: return unavailable (no measured forward path)")
+    else:
+        sharpe_text = f"{perf['sharpe']:.2f}" if perf["sharpe"] is not None else "withheld"
+        mdd_text = f"{perf['max_drawdown']:.1%}" if perf["max_drawdown"] is not None else "n/a"
+        ppy_text = f"{perf['periods_per_year']:.1f}/yr" if perf["periods_per_year"] is not None else "n/a"
+        print(f"  bot forward: {1.0 + total_return:.3f}x ({total_return:+.1%}), Sharpe {sharpe_text}, maxDD {mdd_text}, cadence {ppy_text}")
+        if perf["sharpe"] is None and perf["sharpe_reason"]:
+            print(f"  Sharpe: {perf['sharpe_reason']}")
 
     cps = checkpoints_due(freeze_date, as_of)
     sp = fetch_sp500()
@@ -1254,7 +1281,8 @@ def run_forward(args) -> int:
         if not cp["due"]:
             print(f"  {cp['label']:>10}: pending ({cp['elapsed']}/{cp['days']} days)")
         elif spx:
-            print(f"  {cp['label']:>10}: bot {(eq - 1):+.1%} vs S&P {(spx['final'] - 1):+.1%}  [elapsed {cp['elapsed']}d]")
+            if total_return is not None:
+                print(f"  {cp['label']:>10}: bot {total_return:+.1%} vs S&P {(spx['final'] - 1):+.1%}  [elapsed {cp['elapsed']}d]")
 
     slip = slippage_stats(entries)
     out = outage_stats(entries)
@@ -1448,6 +1476,11 @@ def main():
     fwd.add_argument("--report", action="store_true", help="print the checkpoint report")
     fwd.add_argument("--freeze-file", default="freeze.json")
     fwd.add_argument("--log-file", default="forward_log.jsonl")
+    fwd.add_argument(
+        "--as-of-date",
+        default=None,
+        help="ISO session date to account (decouples the market day from delayed runner wall-clock time)",
+    )
 
     args = parser.parse_args()
 

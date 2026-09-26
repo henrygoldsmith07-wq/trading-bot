@@ -18,12 +18,14 @@ name: Scheduled paper run
 
 on:
   schedule:
-    # 21:45 UTC — AFTER the NYSE close (16:00 ET = 20:00/21:00 UTC depending
-    # on DST). The portfolio mixes 24/7 crypto with US ETFs; running here means
-    # every asset's daily bar contains its ACTUAL open and close, so next_open
-    # execution in the forward test matches the backtest exactly. Crypto's
-    # post-close tail is handled by mark-chained accounting.
-    - cron: "45 21 * * *"
+    # Migration-safe dual schedule. Legacy frozen code keeps the 21:45 UTC
+    # weekday run. New frozen code supports an explicit session date and runs
+    # at 00:30 UTC every day, accounting the prior calendar session after the
+    # UTC crypto day is closed. Weekend US-ETF sleeves remain flat/pending while
+    # crypto is marked normally, so the return tape keeps true daily cadence.
+    # The resolver below selects exactly one cadence from the frozen CLI.
+    - cron: "45 21 * * 1-5"
+    - cron: "30 0 * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -65,28 +67,6 @@ jobs:
         if: steps.pointer.outputs.commit == ''
         run: echo "::notice::no freeze manifest — nothing to advance today"
 
-      # The portfolio mixes 24/7 crypto with three US ETFs. On a Saturday or
-      # Sunday the ETF sleeves are structurally 'session_pending' — there is
-      # no session to observe — so the day can never be fully observed. The
-      # runner would still record it: a return computed from the 10 crypto
-      # sleeves only, carrying a 13-asset label, booked as a forward day and
-      # counted as a data outage. Two days in seven is ~29% of scheduled days,
-      # which sits above the 20% outage threshold and would hold the verdict
-      # grade down permanently — an exchange being closed is not a broken
-      # feed. Do not trade on days the equity sleeves cannot trade.
-      # (NYSE holidays are not knowable here; api/summary.py classifies those
-      # as market-closed rather than outage when they do occur.)
-      - name: Skip days the equity sleeves cannot trade
-        id: calendar
-        run: |
-          dow=$(date -u +%u)  # 1=Monday .. 7=Sunday
-          if [ "$dow" -ge 6 ]; then
-            echo "trading=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::weekend ($(date -u +%A)) — equity sessions closed, no forward day recorded"
-          else
-            echo "trading=true" >> "$GITHUB_OUTPUT"
-          fi
-
       # ---- step 2: become the frozen commit --------------------------------
       - name: Check out the frozen commit
         if: steps.pointer.outputs.commit != ''
@@ -121,13 +101,50 @@ jobs:
         if: steps.pointer.outputs.commit != ''
         run: python -m bot verify-freeze --freeze-file freeze.json
 
+      - name: Resolve the market session date
+        if: steps.pointer.outputs.commit != ''
+        id: session
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          NEW_SCHEDULE='30 0 * * *'
+          LEGACY_SCHEDULE='45 21 * * 1-5'
+
+          if python -m bot forward --help | grep -q -- '--as-of-date'; then
+            if [ "$EVENT_NAME" = 'schedule' ] && [ "$EVENT_SCHEDULE" != "$NEW_SCHEDULE" ]; then
+              echo "trading=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::explicit-session runner waits for the 00:30 UTC schedule"
+              exit 0
+            fi
+            TARGET_DATE=$(date -u -d 'yesterday' +%F)
+            echo "trading=true" >> "$GITHUB_OUTPUT"
+            echo "mode=explicit" >> "$GITHUB_OUTPUT"
+            echo "date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
+            echo "::notice::accounting fully closed session $TARGET_DATE"
+          else
+            if [ "$EVENT_NAME" = 'schedule' ] && [ "$EVENT_SCHEDULE" != "$LEGACY_SCHEDULE" ]; then
+              echo "trading=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::legacy frozen runner remains on its 21:45 UTC schedule"
+              exit 0
+            fi
+            echo "trading=true" >> "$GITHUB_OUTPUT"
+            echo "mode=legacy" >> "$GITHUB_OUTPUT"
+            echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+          fi
+
       # ---- step 4: one forward day on frozen code --------------------------
       - name: Advance the prospective paper portfolio one day
-        if: steps.pointer.outputs.commit != '' && steps.calendar.outputs.trading == 'true'
+        if: steps.pointer.outputs.commit != '' && steps.session.outputs.trading == 'true'
         env:
           LOG_FILE: forward_log.jsonl
         run: |
-          python -m bot forward --step --freeze-file freeze.json --log-file "$LOG_FILE"
+          if [ '${{ steps.session.outputs.mode }}' = 'explicit' ]; then
+            python -m bot forward --step --as-of-date '${{ steps.session.outputs.date }}' --freeze-file freeze.json --log-file "$LOG_FILE"
+          else
+            python -m bot forward --step --freeze-file freeze.json --log-file "$LOG_FILE"
+          fi
           python -m bot forward --report --freeze-file freeze.json --log-file "$LOG_FILE"
 
       # ---- step 4b: record today's universe (point-in-time dataset) -------
@@ -140,13 +157,13 @@ jobs:
       # That is exactly how five consecutive runs produced one recorded day.
       # The forward log is the evidence — nothing auxiliary may hold it hostage.
       - name: Snapshot today's universe
-        if: steps.pointer.outputs.commit != '' && steps.calendar.outputs.trading == 'true'
+        if: steps.pointer.outputs.commit != '' && steps.session.outputs.trading == 'true'
         continue-on-error: true
         run: python -m bot universe-snapshot --top 20 --log universe_log.jsonl
 
       # ---- step 5: return to main; append ONLY the log (data, not code) ----
       - name: Append forward log to main
-        if: steps.pointer.outputs.commit != '' && steps.calendar.outputs.trading == 'true'
+        if: steps.pointer.outputs.commit != '' && steps.session.outputs.trading == 'true'
         env:
           BRANCH: ${{ github.event.repository.default_branch }}
         run: |

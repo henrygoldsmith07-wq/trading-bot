@@ -223,6 +223,22 @@ def test_clean_order_lifecycle_has_no_warning(api):
     assert api._order_lifecycle_warnings(entries) == {"count": 0, "reasons": {}}
 
 
+def test_order_lifecycle_allows_next_day_wall_clock_fill_for_prior_session(api):
+    entries = [{
+        "date": "2026-09-07",
+        "orders": [{
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "signal_generated_ts": "2026-09-06T23:59:59+00:00",
+            "intent_ts": "2026-09-07T00:00:00+00:00",
+            "submitted_ts": "2026-09-08T00:30:00+00:00",
+            "fill_ts": "2026-09-08T00:30:00+00:00",
+            "fill_price": 100.0,
+        }],
+    }]
+    assert api._order_lifecycle_warnings(entries) == {"count": 0, "reasons": {}}
+
+
 class TestForwardSummary:
     def test_unavailable_without_freeze(self, api, tmp_path):
         res = api.build_forward_summary(freeze_path=str(tmp_path / "none.json"))
@@ -267,30 +283,23 @@ class TestForwardSummary:
         assert res["missed_fills"] == 1
         assert res["benchmark_return"] == pytest.approx(0.03)
         assert -1.0 <= res["max_drawdown"] <= 0.0
-        # The curve is the series the metrics were computed from — same days,
-        # same order. A partly-observed day is disclosed as a COUNT; it is
-        # never plotted as though the whole portfolio had been running.
+        # The curve compounds the append-only tape exactly as written. A
+        # partial row cannot simply be deleted because later sleeves chain from
+        # prior marks; removing it would remove a real interval from the path.
         entries = [json.loads(ln) for ln in lp.read_text().splitlines() if ln.strip()]
-        observed = [e for e in entries if api.is_fully_observed(e)]
-        assert len(observed) == 11
-        assert len(res["curve"]) == 11
-        assert [c["t"] for c in res["curve"]] == [e["date"] for e in observed]
-        # compounding check, driven by the log rather than by position parity
+        assert len(res["curve"]) == 12
+        assert [c["t"] for c in res["curve"]] == [e["date"] for e in entries]
         eq = 1.0
-        for i, e in enumerate(observed):
+        for i, e in enumerate(entries):
             eq *= 1.0 + e["port_ret"]
             assert res["curve"][i]["v"] == pytest.approx(round(eq, 5), abs=1e-6)
         assert res["forward_return"] == pytest.approx(eq - 1, abs=1e-4)
+        assert res["forward_return_quality"] == "degraded"
+        assert res["forward_sharpe"] is None
+        assert "partial/dark" in res["forward_sharpe_reason"]
 
-    def test_no_observed_days_withholds_metrics(self, api, tmp_path):
-        """Every sleeve dark on every day: nothing was measured, so no return,
-        no drawdown and no curve may be reported.
-
-        Returning 0.0 here would dress up "nothing was seen" as "nothing
-        happened" — and a green 0.00% on the dashboard would be a flattering
-        artefact of a dead feed, which is the exact failure this record exists
-        to make impossible.
-        """
+    def test_partial_only_tape_preserves_path_but_withholds_sharpe(self, api, tmp_path):
+        """Partial marks stay in the cumulative path but cannot support Sharpe."""
         from datetime import timedelta
 
         fp = tmp_path / "freeze.json"
@@ -323,11 +332,11 @@ class TestForwardSummary:
         assert res["days_full"] == 0
         assert res["days_partial"] == 5
         assert res["days_closed"] == 0       # a failure, not a shut exchange
-        assert res["forward_return"] is None
+        assert res["forward_return"] == pytest.approx((1.001 ** 5) - 1, abs=1e-4)
         assert res["forward_sharpe"] is None
-        assert res["max_drawdown"] is None
-        assert res["curve"] == []
-        # the window still falls back to scheduled days, never to a guess
+        assert res["forward_return_quality"] == "degraded"
+        assert res["max_drawdown"] == pytest.approx(0.0)
+        assert len(res["curve"]) == 5
         assert res["first_day"] == "2026-08-24"
 
     def test_closed_market_day_is_neither_evidence_nor_outage(self, api, tmp_path):
@@ -343,7 +352,7 @@ class TestForwardSummary:
         fp = tmp_path / "freeze.json"
         _write_freeze(fp)
         lp = tmp_path / "log.jsonl"
-        _write_log(lp, days=5, outage_day=None, pending_day=0)
+        _write_log(lp, days=5, first="2026-08-29", outage_day=None, pending_day=0)
         res = api.build_forward_summary(
             freeze_path=str(fp), log_path=str(lp),
             benchmark_fetch=lambda: [], today=datetime(2026, 9, 20, tzinfo=UTC),
@@ -356,7 +365,7 @@ class TestForwardSummary:
         assert res["data_outage_days"] == 0
         assert res["data_outage_events"] == 0
         assert res["n_days_recorded"] == 5      # still disclosed as scheduled
-        assert len(res["curve"]) == 4
+        assert len(res["curve"]) == 5
 
     def test_real_failure_alongside_pending_session_is_still_an_outage(self, api):
         """One sleeve waiting on a session does not excuse a genuine failure
@@ -373,10 +382,11 @@ class TestForwardSummary:
             "missed_fills": [],
         }
         assert api.is_market_closed(entry) is False
-        # ...whereas the same day with no failure is a closed market
+        # ...whereas an explicitly classified closed session is not an outage
         clean = json.loads(json.dumps(entry))
         clean["assets"]["GLD"] = {"note": "session_pending", "sleeve_ret": 0.0}
         clean["outages"] = []
+        clean["dayStatus"] = "market_closed"
         assert api.is_market_closed(clean) is True
 
     def test_manifest_tamper_surfaces_not_verified(self, api, tmp_path):
@@ -598,8 +608,11 @@ class TestVerdictPayload:
 class TestClassifyForwardDays:
     """A day is worth one unit of evidence only when every sleeve printed."""
 
-    def _day(self, notes: dict[str, str | None]) -> dict:
-        return {"assets": {s: {"note": n} for s, n in notes.items()}}
+    def _day(self, notes: dict[str, str | None], day: str | None = None) -> dict:
+        out = {"assets": {s: {"note": n} for s, n in notes.items()}}
+        if day is not None:
+            out["date"] = day
+        return out
 
     def test_all_sleeves_live_is_a_full_day(self, api):
         out = api.classify_forward_days([self._day({"A": None, "B": None})])
@@ -609,12 +622,16 @@ class TestClassifyForwardDays:
         out = api.classify_forward_days([self._day({"A": None, "B": "outage"})])
         assert (out["full"], out["partial"], out["dark"]) == (0, 1, 0)
 
-    def test_session_pending_only_is_a_closed_market_not_an_outage(self, api):
-        """A sleeve held at its previous weight produced no return today — so
-        the day is not evidence. But when NOTHING failed, that is a shut
-        exchange (weekend/holiday), not a broken feed: disclosed separately,
-        counted as neither evidence nor outage."""
+    def test_weekday_session_pending_is_partial_not_silently_called_closed(self, api):
+        """On a weekday, pending-only is an operational/session-timing issue
+        unless closure is explicit; it must not masquerade as a holiday."""
         out = api.classify_forward_days([self._day({"A": None, "B": "session_pending"})])
+        assert (out["full"], out["partial"], out["dark"], out["closed"]) == (0, 1, 0, 0)
+
+    def test_weekend_session_pending_is_closed_not_outage(self, api):
+        out = api.classify_forward_days([
+            self._day({"A": None, "B": "session_pending"}, day="2026-08-29")
+        ])
         assert (out["full"], out["partial"], out["dark"], out["closed"]) == (0, 0, 0, 1)
 
     def test_pending_plus_real_failure_is_still_an_outage(self, api):
@@ -638,10 +655,10 @@ class TestClassifyForwardDays:
             self._day({"A": None, "B": "outage"}),      # partial
             self._day({"A": "outage", "B": "outage"}),  # dark
             self._day({"A": None, "B": None}),          # full
-            self._day({"A": None, "B": "session_pending"}),  # closed market
+            self._day({"A": None, "B": "session_pending"}),  # weekday timing issue
         ]
         out = api.classify_forward_days(days)
-        assert (out["full"], out["partial"], out["dark"], out["closed"]) == (2, 1, 1, 1)
+        assert (out["full"], out["partial"], out["dark"], out["closed"]) == (2, 2, 1, 0)
 
     def test_empty_log(self, api):
         assert api.classify_forward_days([]) == {"full": 0, "partial": 0, "dark": 0, "closed": 0}

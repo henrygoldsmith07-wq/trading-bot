@@ -316,6 +316,142 @@ def load_log(path: str | Path = LOG_FILE) -> list[dict]:
     return entries
 
 
+def _coerce_session_date(value: date | str | None, fallback: date) -> date:
+    """Resolve the market-session date this step is intended to account."""
+    if value is None:
+        return fallback
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError(f"invalid session_date {value!r}") from exc
+    raise ValueError("session_date must be a date, ISO date string, or None")
+
+
+def forward_day_kind(entry: dict) -> str:
+    """Classify observation quality without deleting the recorded return."""
+    assets = entry.get("assets") or {}
+    if not assets:
+        return "dark"
+    live = sum(1 for detail in assets.values() if detail.get("note") is None)
+    if live == len(assets):
+        return "full"
+
+    noted = [detail for detail in assets.values() if detail.get("note") is not None]
+    only_pending = bool(noted) and all(detail.get("note") == "session_pending" for detail in noted)
+    explicit_closed = entry.get("dayStatus") == "market_closed"
+    try:
+        weekend = date.fromisoformat(entry.get("date", "")).weekday() >= 5
+    except ValueError:
+        weekend = False
+    if only_pending and not entry.get("outages") and (explicit_closed or weekend):
+        return "closed"
+    return "partial" if live else "dark"
+
+
+def classify_forward_days(entries: list[dict]) -> dict[str, int]:
+    counts = {"full": 0, "partial": 0, "dark": 0, "closed": 0}
+    for entry in entries:
+        counts[forward_day_kind(entry)] += 1
+    return counts
+
+
+def forward_performance(
+    entries: list[dict],
+    *,
+    freeze_date: date | str | None = None,
+    risk_free_annual: float = 0.0,
+) -> dict:
+    """Canonical performance view of the append-only forward tape.
+
+    Every recorded ``port_ret`` is compounded.  Removing a partial record
+    would remove a real mark-chained interval from the path.  Quality counts
+    instead decide whether inferential statistics such as Sharpe are safe to
+    publish.
+    """
+    from .metrics import max_drawdown, sharpe
+
+    quality = classify_forward_days(entries)
+    if not entries:
+        return {
+            "return": None,
+            "sharpe": None,
+            "sharpe_reason": "no forward observations",
+            "max_drawdown": None,
+            "curve": [],
+            "periods_per_year": None,
+            "quality": quality,
+            "return_quality": "none",
+        }
+
+    if quality["dark"] == len(entries):
+        return {
+            "return": None,
+            "sharpe": None,
+            "sharpe_reason": "all forward observations are dark/unmeasured",
+            "max_drawdown": None,
+            "curve": [],
+            "periods_per_year": None,
+            "quality": quality,
+            "return_quality": "unmeasured",
+        }
+
+    dates = [date.fromisoformat(entry["date"]) for entry in entries]
+    rets = [float(entry["port_ret"]) for entry in entries]
+    equity = 1.0
+    equity_path = [1.0]
+    curve = []
+    for entry, ret in zip(entries, rets, strict=True):
+        equity *= 1.0 + ret
+        equity_path.append(equity)
+        curve.append({"t": entry["date"], "v": round(equity, 5)})
+
+    anchor: date | None = None
+    if isinstance(freeze_date, str):
+        anchor = date.fromisoformat(freeze_date)
+    elif isinstance(freeze_date, date):
+        anchor = freeze_date
+    if anchor is not None and anchor < dates[-1]:
+        span_days = (dates[-1] - anchor).days
+        n_periods = len(entries)
+    elif len(dates) >= 2:
+        span_days = (dates[-1] - dates[0]).days
+        n_periods = len(entries) - 1
+    else:
+        span_days = 0
+        n_periods = 0
+    periods_per_year = 365.2425 * n_periods / span_days if span_days > 0 and n_periods > 0 else None
+
+    degraded = quality["partial"] > 0 or quality["dark"] > 0
+    if len(rets) < 2:
+        fwd_sharpe = None
+        sharpe_reason = "fewer than two forward observations"
+    elif degraded:
+        fwd_sharpe = None
+        sharpe_reason = "withheld because the tape contains partial/dark data intervals"
+    elif periods_per_year is None or periods_per_year <= 0.0:
+        fwd_sharpe = None
+        sharpe_reason = "cannot infer a stable observation frequency"
+    else:
+        fwd_sharpe = sharpe(rets, max(1, int(round(periods_per_year))), risk_free_annual)
+        sharpe_reason = None
+
+    return {
+        "return": equity - 1.0,
+        "sharpe": fwd_sharpe,
+        "sharpe_reason": sharpe_reason,
+        "max_drawdown": max_drawdown(equity_path),
+        "curve": curve,
+        "periods_per_year": periods_per_year,
+        "quality": quality,
+        "return_quality": "degraded" if degraded else "complete",
+    }
+
+
 def append_log(entry: dict, path: str | Path = LOG_FILE) -> None:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -419,28 +555,39 @@ def _bar_sanity_problem(candle: dict) -> str | None:
     raw_open = candle.get("open")
     raw_high = candle.get("high")
     raw_low = candle.get("low")
-    present_ohl = [raw_open is not None, raw_high is not None, raw_low is not None]
-    if any(present_ohl) and not all(present_ohl):
-        return "partial OHLC fields"
-    if all(present_ohl):
-        open_px = positive_finite(raw_open)
+    # `open` is independently optional in the engine contract: next-open
+    # execution uses it when available and otherwise falls back to the prior
+    # valid mark. High/low are auxiliary sanity fields and therefore must not
+    # make a perfectly valid {open_time, open, close} bar fail closed.
+    open_px = positive_finite(raw_open) if raw_open is not None else None
+    if raw_open is not None and open_px is None:
+        return "non-finite/zero open field"
+    if (raw_high is None) != (raw_low is None):
+        return "partial high/low fields"
+    if raw_high is not None and raw_low is not None:
         high = positive_finite(raw_high)
         low = positive_finite(raw_low)
-        if None in (open_px, high, low):
-            return "non-finite/zero OHLC field"
-        assert open_px is not None and high is not None and low is not None
+        if None in (high, low):
+            return "non-finite/zero high/low field"
+        assert high is not None and low is not None
         if high < low:
             return f"high<low ({high}<{low})"
         tol = 1.001
         if not (low / tol <= close <= high * tol):
             return f"close {close} outside [low,high]=[{low},{high}]"
+    if open_px is not None:
         move = abs(close / open_px - 1.0)
         if move > 0.5:
             return f"|open->close| {move:.0%} exceeds 50% sanity bound"
     return None
 
 
-def _session_pending(session: str, now: datetime, candles: list[dict]) -> bool:
+def _session_pending(
+    session: str,
+    now: datetime,
+    candles: list[dict],
+    session_date: date | None = None,
+) -> bool:
     """True when this asset's current daily bar cannot exist yet.
 
     - 'continuous' (crypto, UTC days): always live — the bar opens at 00:00.
@@ -453,15 +600,16 @@ def _session_pending(session: str, now: datetime, candles: list[dict]) -> bool:
         return False
     if session != "us_equity":
         return False
-    after_close = now.hour > 21 or (now.hour == 21 and now.minute >= 15)
+    target_date = session_date or now.date()
+    after_close = target_date < now.date() or now.hour > 21 or (now.hour == 21 and now.minute >= 15)
     if not candles:
         return True
     last_date = datetime.fromtimestamp(candles[-1]["open_time"] / 1000, tz=UTC).date()
-    if last_date == now.date() and not after_close:
+    if last_date == target_date and not after_close:
         # a same-day print before the gate is an intraday partial; treat as
         # pending so we never split a session that hasn't closed
         return True
-    if last_date != now.date():
+    if last_date != target_date:
         return True
     return False
 
@@ -479,6 +627,7 @@ def run_step(
     allow_code_mismatch: bool = False,
     kwargs_quote_fetcher=None,
     cost_observation_path: str | Path | None = None,
+    session_date: date | str | None = None,
 ) -> dict:
     if cost_observation_path is None:
         from .cost_calibration import OBSERVATIONS_LOG
@@ -500,12 +649,13 @@ def run_step(
     if now.tzinfo is None:
         now = now.replace(tzinfo=UTC)
     now = now.astimezone(UTC)
-    today = now.date().isoformat()
+    effective_date = _coerce_session_date(session_date, now.date())
+    today = effective_date.isoformat()
     try:
         freeze_day = date.fromisoformat(manifest["frozen_at_date"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("freeze manifest has no valid frozen_at_date") from exc
-    if now.date() <= freeze_day:
+    if effective_date <= freeze_day:
         return {
             "status": "not_after_freeze",
             "freeze_date": freeze_day.isoformat(),
@@ -572,7 +722,7 @@ def run_step(
         # available close would silently replace next_open with a stale fill.
         # In that state the asset is PENDING: hold the previous weight, mark
         # nothing, and let tomorrow's mark-chained transition cover the span.
-        if _session_pending(session, now, candles):
+        if _session_pending(session, now, candles, effective_date):
             sleeve_rets.append(0.0)
             asset_details[sym] = {
                 "weight": prev_w, "target": prev_w, "sleeve_ret": 0.0,
@@ -588,7 +738,11 @@ def run_step(
         # intraday-timestamped bar later today-but-after-now also fails.
         # Fail closed instead: keep only prints at or before `now`.
         now_ms = int(now.timestamp() * 1000)
-        usable = [c for c in candles if c["open_time"] <= now_ms]
+        usable = [
+            c for c in candles
+            if c["open_time"] <= now_ms
+            and datetime.fromtimestamp(c["open_time"] / 1000, tz=UTC).date() <= effective_date
+        ]
         future_dropped = len(usable) < len(candles)
         if future_dropped:
             alerts.append({"symbol": sym, "level": "future_dated_rows_dropped",
@@ -604,7 +758,7 @@ def run_step(
             }
             continue
         latest_date = datetime.fromtimestamp(candles[-1]["open_time"] / 1000, tz=UTC).date()
-        if session == "continuous" and latest_date != now.date():
+        if session == "continuous" and latest_date != effective_date:
             problem = "missing current continuous-session bar"
             outages.append({"symbol": sym, "problem": problem})
             sleeve_rets.append(0.0)
@@ -615,7 +769,10 @@ def run_step(
             continue
 
         # use only completed candles for the decision
-        completed = [c for c in candles if datetime.fromtimestamp(c["open_time"] / 1000, tz=UTC).date() < now.date()]
+        completed = [
+            c for c in candles
+            if datetime.fromtimestamp(c["open_time"] / 1000, tz=UTC).date() < effective_date
+        ]
         if len(completed) < 2:
             outages.append({"symbol": sym, "problem": "insufficient completed candles"})
             sleeve_rets.append(0.0)
@@ -623,7 +780,8 @@ def run_step(
             continue
         # data-staleness alert: a print much older than one bar means the feed
         # is silently frozen; trade the stale weight but say so loudly
-        age_days = (now - datetime.fromtimestamp(completed[-1]["open_time"] / 1000, tz=UTC)).total_seconds() / 86_400.0
+        completed_date = datetime.fromtimestamp(completed[-1]["open_time"] / 1000, tz=UTC).date()
+        age_days = float((effective_date - completed_date).days)
         if session == "continuous" and age_days > 3.0:
             alerts.append({"symbol": sym, "level": "stale_data", "age_days": round(age_days, 1)})
             problem = f"stale completed history ({age_days:.1f}d)"
@@ -640,7 +798,20 @@ def run_step(
         # beyond a wide sanity bound, non-finite fields) must never become an
         # execution price. The asset sits out this session; the incident is
         # logged as an outage so the audit trail shows the gap.
-        last_bar = candles[-1]
+        session_rows = [
+            c for c in candles
+            if datetime.fromtimestamp(c["open_time"] / 1000, tz=UTC).date() == effective_date
+        ]
+        if not session_rows:
+            problem = "no bar for requested session date"
+            outages.append({"symbol": sym, "problem": problem})
+            sleeve_rets.append(0.0)
+            asset_details[sym] = {
+                "weight": prev_w, "target": prev_w, "price": None,
+                "sleeve_ret": 0.0, "slippage_bps": None, "note": problem,
+            }
+            continue
+        last_bar = session_rows[-1]
         sanity_problem = _bar_sanity_problem(last_bar)
         if sanity_problem:
             outages.append({"symbol": sym, "problem": f"bad candle: {sanity_problem}"})
@@ -667,7 +838,7 @@ def run_step(
         # the target moves further from the HELD weight than the band
         w_eff = w_target if abs(w_target - prev_w) > band else prev_w
         decision_close = completed[-1]["close"]
-        today_candle = candles[-1]
+        today_candle = session_rows[-1]
         exec_price = open_of(today_candle, fallback=decision_close)  # frozen next-open convention
         closing_price = today_candle["close"]  # latest snapshot (live print / closed equity bar)
         # Accounting anchor: the LAST MARKED price for this asset (previous
@@ -839,6 +1010,7 @@ def run_step(
     entry = {
         "ts": now.isoformat(),
         "date": today,
+        "session_date": today,
         "assets": asset_details,
         "port_ret": port_ret,
         "rule_ret": rule_ret,

@@ -351,6 +351,90 @@ class PaperPortfolio:
             raise ValueError("portfolio equity is not finite/non-negative")
         return float(target_weight) * eq / px_value
 
+    def rebalance_quantity(
+        self,
+        symbol: str,
+        target_quantity: float,
+        price: float,
+        idem_key: str,
+        *,
+        target_weight: float,
+        reason: str = "",
+        ts: datetime | None = None,
+        min_notional: float = 1.0,
+    ) -> dict | None:
+        """Execute a pre-sized target quantity without re-valuing the portfolio.
+
+        Portfolio-level rebalances use this after computing every target from
+        one common pre-trade equity snapshot.  That prevents the fee/cash effect
+        of an earlier symbol from changing the size of a later symbol.
+        """
+        if idem_key in self._idem_keys:
+            return {"skipped": "duplicate_order", "idem_key": idem_key}
+        if not _positive_finite(price):
+            return {"skipped": f"no usable price for {symbol}"}
+        if not _finite(target_quantity) or float(target_quantity) < -1e-12:
+            return {"skipped": "invalid_target_quantity"}
+        if not _finite(target_weight) or not 0.0 <= float(target_weight) <= 1.0:
+            return {"skipped": "invalid_target_weight"}
+        if not _finite(min_notional) or float(min_notional) < 0.0:
+            return {"skipped": "invalid_min_notional"}
+
+        price = float(price)
+        min_notional = float(min_notional)
+        target_quantity = max(0.0, float(target_quantity))
+        current_qty = self.positions.get(symbol, 0.0)
+        delta_qty = target_quantity - current_qty
+        notional = abs(delta_qty) * price
+        if notional < min_notional:
+            return {"skipped": "below_min_notional", "notional": notional}
+
+        side = "BUY" if delta_qty > 0 else "SELL"
+        cash_before = self.cash
+        if side == "BUY":
+            # Portfolio planners reserve fees before reaching this method. The
+            # clamp remains as a final fail-safe for rounding or direct callers.
+            max_delta_qty = cash_before / ((1.0 + self.fee) * price)
+            if delta_qty > max_delta_qty:
+                delta_qty = max_delta_qty
+                notional = delta_qty * price
+            if abs(delta_qty) < 1e-12 or notional < min_notional:
+                return {"skipped": "insufficient_cash", "notional": notional}
+            fee_paid = notional * self.fee
+            self.cash = cash_before - notional - fee_paid
+        else:
+            fee_paid = notional * self.fee
+            self.cash += notional - fee_paid
+
+        self.positions[symbol] = current_qty + delta_qty
+        if abs(self.positions[symbol]) < 1e-12:
+            del self.positions[symbol]
+
+        fill_ts = ts or _utc_now()
+        if fill_ts.tzinfo is None:
+            fill_ts = fill_ts.replace(tzinfo=UTC)
+        fill = {
+            "kind": "fill",
+            "ts": fill_ts.isoformat(),
+            "date": fill_ts.astimezone(UTC).date().isoformat(),
+            "idem_key": idem_key,
+            "symbol": symbol,
+            "side": side,
+            "qty": round(delta_qty, 12),
+            "price": price,
+            "notional": round(notional, 6),
+            "fee": round(fee_paid, 8),
+            "cash_before": round(cash_before, 8),
+            "cash_after": round(self.cash, 8),
+            "position_after": round(self.positions.get(symbol, 0.0), 12),
+            "target_weight": float(target_weight),
+            "reason": reason,
+        }
+        self.ledger.append(fill)
+        self._idem_keys.add(idem_key)
+        self.persist()
+        return fill
+
     def rebalance(
         self,
         symbol: str,
@@ -385,57 +469,16 @@ class PaperPortfolio:
             target_qty = self.target_position_for(symbol, target_weight, prices)
         except ValueError as e:
             return {"skipped": str(e)}
-        current_qty = self.positions.get(symbol, 0.0)
-        delta_qty = target_qty - current_qty
-        notional = abs(delta_qty) * price
-        if notional < min_notional:
-            return {"skipped": "below_min_notional", "notional": notional}
-
-        side = "BUY" if delta_qty > 0 else "SELL"
-        cash_before = self.cash
-        notional = abs(delta_qty) * price
-        if side == "BUY":
-            # affordability cap: additional qty whose notional+fee fits in cash;
-            # a clamp must NEVER flip a buy into an implicit sell
-            max_delta_qty = cash_before / ((1.0 + self.fee) * price)
-            if delta_qty > max_delta_qty:
-                delta_qty = max_delta_qty
-                notional = delta_qty * price
-            if abs(delta_qty) < 1e-12 or notional < min_notional:
-                return {"skipped": "insufficient_cash", "notional": notional}
-            fee_paid = notional * self.fee
-            self.cash = cash_before - notional - fee_paid
-        else:
-            fee_paid = notional * self.fee
-            self.cash += notional - fee_paid
-        self.positions[symbol] = current_qty + delta_qty
-        if abs(self.positions[symbol]) < 1e-12:
-            del self.positions[symbol]
-
-        fill_ts = ts or _utc_now()
-        if fill_ts.tzinfo is None:
-            fill_ts = fill_ts.replace(tzinfo=UTC)
-        fill = {
-            "kind": "fill",
-            "ts": fill_ts.isoformat(),
-            "date": fill_ts.astimezone(UTC).date().isoformat(),
-            "idem_key": idem_key,
-            "symbol": symbol,
-            "side": side,
-            "qty": round(delta_qty, 12),
-            "price": price,
-            "notional": round(notional, 6),
-            "fee": round(fee_paid, 8),
-            "cash_before": round(cash_before, 8),
-            "cash_after": round(self.cash, 8),
-            "position_after": round(self.positions.get(symbol, 0.0), 12),
-            "target_weight": target_weight,
-            "reason": reason,
-        }
-        self.ledger.append(fill)
-        self._idem_keys.add(idem_key)
-        self.persist()
-        return fill
+        return self.rebalance_quantity(
+            symbol,
+            target_qty,
+            price,
+            idem_key,
+            target_weight=float(target_weight),
+            reason=reason,
+            ts=ts,
+            min_notional=min_notional,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -545,6 +588,23 @@ def decide_orders(
                     "symbol": sym,
                     "action": "blocked_invalid_target",
                     "explanation": f"{why} invalid_target_weight={w}",
+                }
+            )
+            continue
+        # A flat symbol with a zero target is a price-independent no-op. Keep
+        # this exception deliberately narrow and AFTER the global held-mark
+        # and target validation above: it must never let an unmarked holding
+        # elsewhere in the portfolio bypass the fail-closed invariant.
+        current_qty = current_positions.get(sym, 0.0)
+        if abs(current_qty) <= 1e-12 and float(w) == 0.0:
+            decisions.append(
+                {
+                    "symbol": sym,
+                    "action": "hold",
+                    "target_weight": 0.0,
+                    "current_weight": 0.0,
+                    "explanation": f"{why} current_weight=0.000",
+                    "idem_key": build_idem_key(sym, "REBAL", 0.0, date),
                 }
             )
             continue
@@ -749,7 +809,7 @@ def run_cycle(
     prices = {
         s: float(cs[-1]["close"])
         for s, cs in candles_by_symbol.items()
-        if cs and _positive_finite(cs[-1].get("close"))
+        if cs and isinstance(cs[-1], dict) and _positive_finite(cs[-1].get("close"))
     }
 
     # Blocked holdings cannot be safely traded this cycle, but they still
@@ -799,25 +859,103 @@ def run_cycle(
         as_of=now,
     )
     fills = []
-    # Reallocations must release cash before consuming it. Otherwise a BUY
-    # encountered before its funding SELL can clamp to zero and poison the
-    # day's idempotency key despite no position change.
+    # Size the ENTIRE rebalance from one pre-trade equity snapshot. Sequential
+    # calls to `rebalance()` would re-value after each fee/fill, so two BUYs in
+    # different symbol orders could end at different quantities. Sells release
+    # cash first; if fees make the requested BUY basket unaffordable, every BUY
+    # delta is scaled by the same factor rather than whichever symbol ran last.
+    trade_decisions = [d for d in decisions if d["action"] in ("SELL", "BUY")]
+    planned: list[dict] = []
+    if trade_decisions:
+        snapshot_equity = portfolio.equity(prices)
+        if not _positive_finite(snapshot_equity):
+            alerts.append({"level": "rebalance_blocked_invalid_equity"})
+            trade_decisions = []
+        else:
+            snapshot_equity = float(snapshot_equity)
+            projected_cash = float(portfolio.cash)
+            buy_notional = 0.0
+            raw_plan = []
+            for d in trade_decisions:
+                sym = d["symbol"]
+                px = float(prices[sym])
+                current_value = float(portfolio.positions.get(sym, 0.0)) * px
+                target_value = float(d["target_weight"]) * snapshot_equity
+                delta_value = target_value - current_value
+                raw_plan.append((d, px, current_value, target_value, delta_value))
+                if delta_value < 0.0:
+                    projected_cash += (-delta_value) * (1.0 - portfolio.fee)
+                elif delta_value > 0.0:
+                    buy_notional += delta_value
+
+            required_buy_cash = buy_notional * (1.0 + portfolio.fee)
+            buy_scale = (
+                min(1.0, projected_cash / required_buy_cash)
+                if required_buy_cash > 1e-12 else 1.0
+            )
+            if buy_scale < 1.0 - 1e-12:
+                alerts.append(
+                    {
+                        "level": "buy_targets_scaled_for_fees",
+                        "detail": f"scale={buy_scale:.8f} projected_cash={projected_cash:.6f}",
+                    }
+                )
+
+            for d, px, current_value, target_value, delta_value in raw_plan:
+                if delta_value > 0.0:
+                    planned_value = current_value + delta_value * buy_scale
+                else:
+                    planned_value = target_value
+                planned_weight = planned_value / snapshot_equity
+                planned.append(
+                    {
+                        "decision": d,
+                        "price": px,
+                        "target_quantity": planned_value / px,
+                        "planned_weight": planned_weight,
+                    }
+                )
+
     execution_order = sorted(
-        (d for d in decisions if d["action"] in ("SELL", "BUY")),
-        key=lambda d: 0 if d["action"] == "SELL" else 1,
+        planned,
+        key=lambda item: (
+            0 if item["decision"]["action"] == "SELL" else 1,
+            item["decision"]["symbol"],
+        ),
     )
-    for d in execution_order:
-        res = portfolio.rebalance(
+    for item in execution_order:
+        d = item["decision"]
+        res = portfolio.rebalance_quantity(
             d["symbol"],
-            d["target_weight"],
-            prices[d["symbol"]],
+            item["target_quantity"],
+            item["price"],
             idem_key=d["idem_key"],
+            target_weight=item["planned_weight"],
             reason=d["explanation"],
             ts=now,
-            market_prices=prices,
         )
         if res is not None:
             fills.append(res)
+
+    # Post-trade invariant: the resulting portfolio should remain close to the
+    # planned weights. A large deviation means the paper broker no longer
+    # represents the decision layer and must be visible in the audit trail.
+    if planned:
+        final_equity = portfolio.equity(prices)
+        if _positive_finite(final_equity):
+            errors = []
+            for item in planned:
+                sym = item["decision"]["symbol"]
+                actual = portfolio.positions.get(sym, 0.0) * item["price"] / float(final_equity)
+                errors.append(abs(actual - item["planned_weight"]))
+            max_error = max(errors, default=0.0)
+            if max_error > 0.005:
+                alerts.append(
+                    {
+                        "level": "rebalance_weight_drift",
+                        "detail": f"max_abs_weight_error={max_error:.6f}",
+                    }
+                )
 
     trade_fills = [f for f in fills if f.get("kind") == "fill"]
     report = daily_audit_report(portfolio, prices, decisions, trade_fills, alerts, as_of=now)
