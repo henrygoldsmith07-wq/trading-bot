@@ -56,7 +56,7 @@ def test_payload_never_uses_the_word_live(monkeypatch, api):
 
 
 def test_build_summary_prefers_canonical_record(monkeypatch, api):
-    """When runs/canonical-v1 exists, headline NUMBERS come from the sealed
+    """When runs/canonical-v2 exists, headline NUMBERS come from the sealed
     record — same source as the README table — while curve/current stay fresh."""
     import os
 
@@ -73,7 +73,7 @@ def test_build_summary_prefers_canonical_record(monkeypatch, api):
     iv = record["results"]["metrics"]["inv_vol_rm"]
     assert s["oos"]["sharpe"] == pytest.approx(iv["sharpe"], abs=1e-6)
     assert s["oos"]["cagr"] == pytest.approx(iv["cagr"], abs=1e-9)
-    assert "canonical-v1" in s["canonical_run_id"]
+    assert "canonical-v2" in s["canonical_run_id"]
     assert len(s.get("rules_table", [])) >= 1
     # curve remains the live-computed research curve (may differ from record)
     assert len(s["curve"]) >= 2
@@ -514,7 +514,7 @@ class TestVerdictPayload:
     def test_shape(self, api):
         import os
 
-        if not os.path.exists(os.path.join(api.ROOT, "runs", "canonical-v1", "run.json")):
+        if not os.path.exists(os.path.join(api.ROOT, "runs", "canonical-v2", "run.json")):
             pytest.skip("canonical run not generated yet")
         v = api.build_verdict_payload(None)
         assert v is not None, "a sealed canonical record exists, so a verdict must be gradeable"
@@ -530,7 +530,7 @@ class TestVerdictPayload:
     def test_broken_seal_forces_invalidated(self, api):
         import os
 
-        if not os.path.exists(os.path.join(api.ROOT, "runs", "canonical-v1", "run.json")):
+        if not os.path.exists(os.path.join(api.ROOT, "runs", "canonical-v2", "run.json")):
             pytest.skip("canonical run not generated yet")
         v = api.build_verdict_payload({
             "available": True, "started": True, "code_verified": False,
@@ -544,7 +544,7 @@ class TestVerdictPayload:
         """The hero number and the verdict must move together."""
         import os
 
-        if not os.path.exists(os.path.join(api.ROOT, "runs", "canonical-v1", "run.json")):
+        if not os.path.exists(os.path.join(api.ROOT, "runs", "canonical-v2", "run.json")):
             pytest.skip("canonical run not generated yet")
         # days_full, not len(entries): the grade must follow the days that were
         # ACTUALLY observed, so a dark sleeve cannot advance the evidence.
@@ -573,7 +573,7 @@ class TestVerdictPayload:
         """
         import os
 
-        if not os.path.exists(os.path.join(api.ROOT, "runs", "canonical-v1", "run.json")):
+        if not os.path.exists(os.path.join(api.ROOT, "runs", "canonical-v2", "run.json")):
             pytest.skip("canonical run not generated yet")
         dark = api.build_verdict_payload({
             "available": True, "started": True, "code_verified": True,

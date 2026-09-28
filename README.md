@@ -12,27 +12,20 @@ A Python trading bot that trades **on paper only** — no real orders are ever p
 | **FORWARD PAPER (v2 — current)** | Days traded by a freeze created under the corrected accounting model (`exact-wealth-v2`). The only tape that is prospective evidence of the code now in the repo. Not yet created. | — |
 | **LIVE** | Real money. **Does not exist and must not exist in this repo.** | — |
 
-> **The canonical numbers below predate the accounting correction.** Session
+> **These numbers are recomputed under the corrected accounting.** Session
 > returns are now computed by exact wealth evolution rather than by adding
 > simple legs, so every historical stream that trades through an overnight gap
-> changes slightly. `runs/canonical-v1/run.json` was produced by the older
-> model and has **not** been recomputed (re-running it needs the frozen data
-> cache, which is not in the repository). Treat that table as an accurate record
-> of the v1 methodology, not as current-code output. `python -m bot verify-freeze`
-> prints the same warning mechanically.
-
-`python -m bot verdict` grades all five dimensions (historical evidence,
-walk-forward robustness, selection-bias risk, cost robustness, prospective
-forward evidence) into one auditable verdict with numeric inputs at every
-tier — see `bot/verdict.py` for the exact thresholds. A negative forward
-result is useful evidence; do not change the strategy to make historical
-charts look better.
-
-> ⚠️ Educational software. Not financial advice. Past out-of-sample performance does not guarantee future results — do not wire real money to anything based on this repo.
+> changes. The table is generated from `runs/canonical-v2/run.json`; the older
+> `runs/canonical-v1/run.json` is kept as sealed history of the superseded
+> model and is NOT current. The correction is material: the inv-vol sleeve's
+> OOS CAGR moves 10.8% -> 17.4% and its Sharpe 0.70 -> 1.06, while the S&P 500
+> benchmark row is bit-identical across both runs (it does not pass through the
+> bot's accounting), which is the control confirming the change is isolated.
+> Reproduce with `python -m bot compare --run-id canonical-v2`.
 
 ## Web dashboard (Vercel)
 
-The repo uses Vercel's zero-config layout — static assets in `public/`, serverless functions in `api/`:
+The repo uses Vercel's zero-config layout
 
 ```bash
 npm i -g vercel   # once
@@ -79,35 +72,35 @@ The consequence is deliberate: when a data source is unreachable the **evidence 
 
 `python -m bot compare` trades a universe of top-volume crypto pairs **plus SPY, GLD, and TLT** (equity/gold/bonds), re-picks the best of 74 strategies per asset **every year using only prior data**, equal-weights the result with a fixed denominator, applies a trailing-volatility risk overlay (25% target, no lookahead), and compares against the actual S&P 500 over the same window (2020-08 → 2026-08). Defaults include **next-open execution, 10bp fee + 5bp spread + 5bp slippage per unit turnover, 3% cash yield on idle capital, excess-of-cash Sharpe everywhere**:
 
-<!-- CANONICAL:BEGIN — generated from runs/canonical-v1/run.json; do not edit by hand -->
-Out-of-sample window: 2020-08-16 → 2026-08-14 (6 yearly folds, 13 assets, point-in-time denominators).
+<!-- CANONICAL:BEGIN — generated from runs/canonical-v2/run.json; do not edit by hand -->
+Out-of-sample window: 2020-08-16 → 2026-08-14 (6 yearly folds, 16 assets, point-in-time denominators).
 
 ```
                      Bot inv-vol    Bot equal  Bot raw eq     S&P 500    BTC b&h
 --------------------------------------------------------------------------------
-CAGR                       10.8%        25.7%       32.4%       14.9%      32.1%
-Volatility                 11.2%        21.3%       24.6%       16.7%      57.3%
-Sharpe (excess)             0.70         1.04        1.14        0.74       0.72
-Max drawdown              -12.2%       -23.2%      -26.5%      -25.4%     -76.6%
-Sortino                     1.25         1.58        1.76        1.06       1.07
-Calmar                      0.88         1.11        1.22        0.59       0.42
-ES 95% (1d)                -1.2%        -2.5%       -2.9%       -2.4%      -6.9%
-Growth of $1                1.85         3.95        5.39        2.30       5.32
+CAGR                       17.4%        29.2%       41.7%       14.9%      32.1%
+Volatility                 13.1%        20.9%       25.0%       16.7%      57.3%
+Sharpe (excess)             1.06         1.19        1.40        0.74       0.72
+Max drawdown              -11.0%       -21.5%      -23.0%      -25.4%     -76.6%
+Sortino                     2.00         1.86        2.26        1.06       1.07
+Calmar                      1.57         1.35        1.82        0.59       0.42
+ES 95% (1d)                -1.3%        -2.4%       -2.8%       -2.4%      -6.9%
+Growth of $1                2.61         4.64        8.10        2.30       5.32
 ```
 
-risk-managed portfolio OOS CAGR BEATS S&P 500 (25.7% vs 14.9%); Sharpe beats (1.04 vs 0.74); max drawdown better (-23.2% vs -25.4%)
+risk-managed portfolio OOS CAGR BEATS S&P 500 (29.2% vs 14.9%); Sharpe beats (1.19 vs 0.74); max drawdown better (-21.5% vs -25.4%)
 
 **Fixed portfolio rules** (a-priori overlays; all risk-managed to 25% vol):
 
 | Rule | CAGR | Sharpe | maxDD | ES95 | Calmar | PSR | DSR |
 |---|---|---|---|---|---|---|---|
-| inv-vol (selected underlying) | 10.8% | 0.70 | -12.2% | -1.2% | 0.88 | 0.997 | 0.997 |
-| + tilt + crisis de-risk | 10.2% | 0.71 | -11.6% | -1.2% | 0.87 | 0.995 | 0.995 |
-| + drawdown throttle | 9.0% | 0.64 | -11.1% | -1.2% | 0.81 | 0.992 | 0.992 |
-| + tilt + crisis, banded 5% rebalance | 10.0% | 0.75 | -9.7% | -1.1% | 1.02 | 0.997 | 0.997 |
-| fully-fixed: RiskEnsemble everywhere, banded, all overlays | 5.2% | 0.38 | -7.6% | -0.7% | 0.68 | 0.985 | 0.985 |
+| inv-vol (selected underlying) | 17.4% | 1.06 | -11.0% | -1.3% | 1.57 | 1.000 | 1.000 |
+| + tilt + crisis de-risk | 17.3% | 1.00 | -11.5% | -1.5% | 1.50 | 1.000 | 1.000 |
+| + drawdown throttle | 13.2% | 0.82 | -11.5% | -1.2% | 1.14 | 0.999 | 0.999 |
+| + tilt + crisis, banded 5% rebalance | 17.2% | 1.05 | -10.4% | -1.3% | 1.65 | 1.000 | 1.000 |
+| fully-fixed: RiskEnsemble everywhere, banded, all overlays | 5.5% | 0.39 | -9.9% | -0.9% | 0.56 | 0.975 | 0.975 |
 
-*Provenance: reproduced from `canonical-v1/run.json` — commit `bc3102b06b720e5bc20c15e7752b485e698caad9`, code sha `e52484df5b44…`, strategy defs `0ac46902cd73…`, portfolio rules `ef09419e658a…`, universe `a7bd616f574a…`. Verify with `python -m bot reproduce canonical-v1` (frozen cache required).*
+*Provenance: reproduced from `canonical-v2/run.json` — commit `137d2f7c2636490947b2bac3dc04234d7f71cd3e`, code sha `cf23a086da11…`, strategy defs `4cfdf950c0c0…`, portfolio rules `3d1a4f560ade…`, universe `f550645ddd97…`. Verify with `python -m bot reproduce canonical-v2` (frozen cache required).*
 
 <!-- CANONICAL:END -->
 

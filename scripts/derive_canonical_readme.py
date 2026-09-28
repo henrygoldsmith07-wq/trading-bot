@@ -4,7 +4,7 @@ Usage:
   python scripts/derive_canonical_readme.py            # rewrite README block
   python scripts/derive_canonical_readme.py --check    # fail if out of sync
 
-The canonical record lives at runs/canonical-v1/run.json and is the single
+The canonical record lives at runs/canonical-v2/run.json and is the single
 source of truth for headline numbers. Everything between the CANONICAL
 markers in README.md is regenerated from it — hand edits inside the block
 will be overwritten (and --check fails in CI when they exist).
@@ -14,9 +14,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-RECORD = ROOT / "runs" / "canonical-v1" / "run.json"
+RECORD = ROOT / "runs" / "canonical-v2" / "run.json"
 README = ROOT / "README.md"
-BEGIN = "<!-- CANONICAL:BEGIN — generated from runs/canonical-v1/run.json; do not edit by hand -->"
+BEGIN = "<!-- CANONICAL:BEGIN — generated from runs/canonical-v2/run.json; do not edit by hand -->"
 END = "<!-- CANONICAL:END -->"
 
 
@@ -120,7 +120,7 @@ def main() -> int:
         print("README already in sync with canonical run")
         return 0
     if check:
-        print("FAIL: README headline block is out of sync with runs/canonical-v1/run.json")
+        print("FAIL: README headline block is out of sync with runs/canonical-v2/run.json")
         return 1
     README.write_text(new, encoding="utf-8")
     print("README headline block regenerated from canonical run")

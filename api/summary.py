@@ -27,7 +27,7 @@ from bot.walkforward import absolute_folds, walk_forward_at  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FREEZE_FILE = os.path.join(ROOT, "freeze.json")
 FORWARD_LOG = os.path.join(ROOT, "forward_log.jsonl")
-CANONICAL_RUN = os.path.join(ROOT, "runs", "canonical-v1", "run.json")
+CANONICAL_RUN = os.path.join(ROOT, "runs", "canonical-v2", "run.json")
 
 ENGINE_KWARGS: dict[str, Any] = dict(
     fee=0.001,
@@ -444,7 +444,7 @@ def build_verdict_payload(forward: dict | None) -> dict | None:
         from bot.runs import load_run_record
         from bot.verdict import build_verdict
 
-        record = load_run_record("canonical-v1", runs_dir=os.path.join(ROOT, "runs"))
+        record = load_run_record("canonical-v2", runs_dir=os.path.join(ROOT, "runs"))
     except Exception:
         return None  # no sealed canonical record -> nothing can be graded
 
@@ -506,7 +506,7 @@ def build_verdict_payload(forward: dict | None) -> dict | None:
 
 def _canonical_overlay(summary: dict) -> dict:
     """Override historical headline METRICS from the committed canonical run
-    record (runs/canonical-v1/run.json) when present. The curve, the current
+    record (runs/canonical-v2/run.json) when present. The curve, the current
     reading and the fold list are still computed per request (cheap,
     single-symbol); the authoritative NUMBERS come from the sealed record —
     same source as the README table."""
