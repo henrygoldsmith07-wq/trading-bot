@@ -51,7 +51,7 @@ The dashboard is a measurement instrument, not a funnel. Four rules are pinned b
 | Three evidence labels only — `research` / `out-of-sample` / `forward`. The word "live" appears nowhere in `public/index.html`. | A fourth label would imply the system trades real money. |
 | No inputs, buttons or forms; no browser-side exchange calls. | Nothing on the page may let a visitor deposit, paste keys, or start trading. |
 | Hero = forward paper days + verdict; the forward day count is the largest type on the page and CAGR never reaches the hero. | The headline must be the evidence quantity, not the most flattering backtest figure. |
-| The hero counts days on which **every** sleeve printed, not scheduled days. | A day with sleeves dark is calendar attendance, not evidence. Counting it would let a broken feed manufacture the number the page exists to report. |
+| The hero counts days on which **every** sleeve printed, not scheduled days, and only counts them at all if the freeze's accounting model is still current. A superseded experiment's days are shown as **0 current trading days** with the reason stated, so the hero can never advertise a v1 tape as validation of v2 code. | | A day with sleeves dark is calendar attendance, not evidence. Counting it would let a broken feed manufacture the number the page exists to report. |
 | Exactly one recommended reading: the deflated-Sharpe caveat, not the 25.7% line. | The search-corrected number is the one that decides whether anything here is real. |
 
 **The page gets quieter as the evidence gets worse.** `assess()` assigns one of three volumes — silent, quiet, full — from the forward record alone:

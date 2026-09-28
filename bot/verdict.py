@@ -155,8 +155,30 @@ def grade_forward(
     parameter_changes: int = 0,
     outage_days: int = 0,
     evidence_verified: bool = True,
+    methodologically_current: bool = True,
+    experiment_version: str | None = None,
+    superseded_by: str | None = None,
 ) -> dict:
-    """Grade prospective evidence. Days are TRADING days actually logged."""
+    """Grade prospective evidence. Days are TRADING days actually logged.
+
+    METHODOLOGICAL CURRENCY IS A SEPARATE GATE FROM INTEGRITY.
+
+    A tape can be perfectly intact (config hash valid, seal present) and still
+    not be evidence of the code now running: it may have been produced under an
+    execution-accounting model the repo has since corrected. That is not
+    tampering, so it is deliberately NOT graded COMPROMISED — calling it
+    compromised would print "INVALIDATED" for a system that is merely
+    un-revalidated, which is its own kind of dishonesty.
+
+    Instead the days are NOT COUNTED. A superseded experiment is honest
+    evidence of the implementation that produced it and of nothing else, so
+    the honest grade for the running system is "Insufficient — zero current
+    forward days", with the reason stating exactly why. Understating
+    prospective evidence is the safe direction to be wrong in.
+
+    `methodologically_current` fails CLOSED: if the caller cannot establish
+    currency, the days are not counted.
+    """
     if not evidence_verified:
         return {"grade": "COMPROMISED", "inputs": {"evidence_verified": False},
                 "reason": "forward evidence integrity verification failed — evidence void"}
@@ -166,6 +188,23 @@ def grade_forward(
     if parameter_changes != 0:
         return {"grade": "COMPROMISED", "inputs": {"parameter_changes": parameter_changes},
                 "reason": "parameters changed after freeze — forward evidence void"}
+    if not methodologically_current:
+        version = experiment_version or "unknown"
+        target = superseded_by or "a newer methodology"
+        return {
+            "grade": "Insufficient",
+            "inputs": {
+                "methodologically_current": False,
+                "experiment_version": version,
+                "superseded_by": target,
+                "days_recorded_not_counted": days_recorded,
+            },
+            "reason": (
+                f"experiment {version} is SUPERSEDED by {target}; its {days_recorded} forward "
+                f"days are valid evidence of the implementation that produced them, "
+                f"NOT of the code now running, and are not counted here"
+            ),
+        }
     inputs = {"days_recorded": days_recorded, "outage_days": outage_days}
     outage_ratio = outage_days / days_recorded if days_recorded else 0.0
     if days_recorded < 30:
@@ -253,16 +292,26 @@ def build_verdict(
         }
     elif forward and forward.get("available") and forward.get("started"):
         n_days = int(forward.get("n_days_recorded", 0))
+        # Methodological currency fails CLOSED: if the payload does not carry
+        # the field at all, we cannot establish that the tape speaks for the
+        # running code, so its days are not counted. The honest response to
+        # "we cannot tell" is not to award prospective evidence.
+        currency_known = "methodologically_current" in forward
         f = grade_forward(
             days_recorded=n_days,
             code_verified=bool(forward.get("code_verified")),
             evidence_verified=bool(forward.get("evidence_verified", True)),
             parameter_changes=int(forward.get("parameter_changes", 0)),
             outage_days=int(forward.get("data_outages", 0)),
+            methodologically_current=currency_known and bool(forward.get("methodologically_current")),
+            experiment_version=forward.get("experiment_version"),
+            superseded_by=forward.get("superseded_by"),
         )
         f_out = {"grade": f["grade"], "inputs": {**f["inputs"], "days_recorded": n_days},
                  "reason": f["reason"],
-                 "label": f"{f['grade']} — {_days_phrase(n_days)}"}
+                 # The label is rendered as the hero, so it must not advertise
+                 # days the grade just declined to count.
+                 "label": f"{f['grade']} — {_days_phrase(0 if not currency_known or not forward.get('methodologically_current') else n_days)}"}
     else:
         reason = (forward or {}).get("reason") or "no freeze/forward log"
         f_out = {"grade": "Insufficient", "inputs": {}, "reason": reason,

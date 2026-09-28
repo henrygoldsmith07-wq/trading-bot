@@ -551,10 +551,12 @@ class TestVerdictPayload:
         thin = api.build_verdict_payload({
             "available": True, "started": True, "code_verified": True,
             "parameter_changes": 0, "days_full": 12, "data_outage_days": 0,
+            "methodologically_current": True,
         })
         thick = api.build_verdict_payload({
             "available": True, "started": True, "code_verified": True,
             "parameter_changes": 0, "days_full": 400, "data_outage_days": 0,
+            "methodologically_current": True,
         })
         assert thin is not None and thick is not None
         assert thin["details"]["forward"]["grade"] == "Insufficient"

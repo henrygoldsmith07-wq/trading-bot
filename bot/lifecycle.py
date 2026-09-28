@@ -148,17 +148,3 @@ def audit_log_lifecycle(entries: list[dict]) -> dict:
         "flagged_examples": {k: sorted(set(v))[:5] for k, v in sorted(flagged.items())},
         "any_flagged": n_flagged > 0,
     }
-
-
-def trusted_orders(entries: list[dict]) -> list[dict]:
-    """Only the orders whose lifecycle metadata passes the audit.
-
-    Callers measuring latency/slippage/cost use this, so a corrupted legacy
-    timestamp cannot contribute to a distribution.
-    """
-    out = []
-    for entry in entries:
-        for order in entry.get("orders", []) or []:
-            if order_is_trustworthy(order, entry.get("date")):
-                out.append(order)
-    return out

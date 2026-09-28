@@ -137,7 +137,8 @@ class TestBuildVerdict:
             ledger_search_n=29,
             cost_report={"n_turnover_events": 11, "error_bp": -20.41, "sufficient": False},
             forward={"available": True, "started": True, "n_days_recorded": 24,
-                     "code_verified": True, "parameter_changes": 0, "data_outages": 3},
+                     "code_verified": True, "parameter_changes": 0, "data_outages": 3,
+                     "methodologically_current": True},
         )
         vd = v["verdict"]
         assert vd["historical_evidence"] == "Moderate"      # capped
@@ -158,7 +159,8 @@ class TestBuildVerdict:
             canonical_rule_stats=RULES, canonical_per_asset=PER_ASSET,
             canonical_n_folds=6, pool_size=85, ledger_search_n=29, cost_report=None,
             forward={"available": True, "started": True, "n_days_recorded": n,
-                     "code_verified": True, "parameter_changes": 0, "data_outages": 0},
+                     "code_verified": True, "parameter_changes": 0, "data_outages": 0,
+                     "methodologically_current": True},
         )
         assert v["verdict"]["prospective_forward_evidence"].endswith(phrase)
         assert phrase in v["details"]["forward"]["reason"]

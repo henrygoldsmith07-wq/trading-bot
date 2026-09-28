@@ -11,6 +11,7 @@ import json
 
 import pytest
 
+from api.summary import build_forward_summary
 from bot.experiments import (
     ACCOUNTING_MODEL_ADDITIVE,
     ACCOUNTING_MODEL_EXACT,
@@ -26,9 +27,9 @@ from bot.lifecycle import (
     audit_log_lifecycle,
     lifecycle_problems,
     order_is_trustworthy,
-    trusted_orders,
 )
 from bot.prospective import load_log, slippage_stats
+from bot.verdict import build_verdict, grade_forward
 
 
 def _order(**over):
@@ -123,16 +124,15 @@ class TestCommittedForwardTape:
         assert stats["excluded_lifecycle_orders"] > 0
         assert REASON_FUTURE in stats["lifecycle_problems"]
 
-    def test_trusted_orders_is_empty_for_the_committed_tape(self):
-        assert trusted_orders(load_log("forward_log.jsonl")) == []
+    def test_no_order_in_the_committed_tape_is_trustworthy(self):
+        assert audit_log_lifecycle(load_log("forward_log.jsonl"))["n_orders_trusted"] == 0
 
-    def test_mixed_tape_keeps_only_the_trustworthy_orders(self):
+    def test_mixed_tape_counts_only_the_trustworthy_orders(self):
         entries = [{
             "date": "2026-09-07",
             "orders": [_order(symbol="GOOD"),
                        _order(symbol="BAD", intent_ts="2029-01-01T00:00:00+00:00")],
         }]
-        assert [o["symbol"] for o in trusted_orders(entries)] == ["GOOD"]
         audit = audit_log_lifecycle(entries)
         assert audit["n_orders"] == 2 and audit["n_orders_trusted"] == 1
 
@@ -210,6 +210,127 @@ class TestSlippageStatsWithGoodData:
         stats = slippage_stats(entries)
         assert stats["count"] == 1
         assert stats["excluded_lifecycle_orders"] == 0
+
+
+class TestSupersededExperimentIsNotProspectiveEvidence:
+    """A superseded tape must not be graded as current prospective evidence.
+
+    This is the gap that let the dashboard advertise 11 forward days of a v1
+    experiment whose accounting model the repo had already corrected.
+    """
+
+    def _forward(self, **over):
+        base = {
+            "available": True, "started": True, "n_days_recorded": 11,
+            "code_verified": True, "evidence_verified": True, "parameter_changes": 0,
+            "data_outages": 0, "methodologically_current": False,
+            "experiment_version": "v1", "superseded_by": "exact-wealth-v2",
+        }
+        base.update(over)
+        return base
+
+    def _verdict(self, forward):
+        return build_verdict(
+            canonical_rule_stats=[{"name": "+ tilt + crisis, banded 5% rebalance",
+                                   "dsr": 0.99, "psr": 0.99, "cagr": 0.1, "max_drawdown": -0.1}],
+            canonical_per_asset=[{"sharpe": 1.0}],
+            canonical_n_folds=6, pool_size=85, ledger_search_n=34,
+            cost_report=None, forward=forward,
+        )
+
+    def test_superseded_days_are_not_counted(self):
+        f = self._verdict(self._forward())["details"]["forward"]
+        assert f["grade"] == "Insufficient"
+        assert f["inputs"]["methodologically_current"] is False
+        assert f["inputs"]["days_recorded_not_counted"] == 11
+
+    def test_superseded_reason_names_the_experiment_and_successor(self):
+        reason = self._verdict(self._forward())["details"]["forward"]["reason"]
+        assert "v1" in reason and "exact-wealth-v2" in reason and "SUPERSEDED" in reason
+
+    def test_superseded_label_does_not_advertise_uncounted_days(self):
+        # The label is the dashboard hero: it must not read "11 trading days"
+        # directly above a reason saying those days were not counted.
+        v = self._verdict(self._forward())
+        assert v["verdict"]["prospective_forward_evidence"] == "Insufficient — 0 trading days"
+        assert "11" not in v["verdict"]["prospective_forward_evidence"]
+
+    def test_superseded_is_not_compromised(self):
+        # Nothing is tampered or false, so this must NOT print INVALIDATED --
+        # that would be its own kind of dishonesty about a merely
+        # un-revalidated system.
+        assert self._verdict(self._forward())["verdict"]["overall"] != "invalidated"
+
+    def test_missing_currency_field_fails_closed(self):
+        fwd = self._forward()
+        del fwd["methodologically_current"]  # a producer bug must not award evidence
+        assert self._verdict(fwd)["details"]["forward"]["grade"] == "Insufficient"
+
+    def test_current_experiment_still_counts_its_days(self):
+        f = self._verdict(self._forward(methodologically_current=True,
+                                        experiment_version="v2",
+                                        superseded_by=None))["details"]["forward"]
+        assert f["grade"] == "Insufficient"  # 11 days is still < 30
+        assert "days_recorded_not_counted" not in f["inputs"]
+        assert f["inputs"]["days_recorded"] == 11
+
+    def test_grade_forward_defaults_to_current_for_direct_callers(self):
+        assert grade_forward(days_recorded=200)["grade"] == "Strong"
+
+    def test_broken_seal_outranks_supersession(self):
+        g = grade_forward(days_recorded=200, code_verified=False, methodologically_current=False)
+        assert g["grade"] == "COMPROMISED"
+
+
+class TestSupersessionReachesTheDashboard:
+    def test_payload_declares_the_experiment(self):
+        f = build_forward_summary()
+        for key in ("experiment_version", "accounting_model",
+                    "methodologically_current", "superseded_by"):
+            assert key in f, f"dashboard payload must declare {key}"
+
+    def test_committed_freeze_is_reported_as_superseded(self):
+        f = build_forward_summary()
+        assert f["experiment_version"] == "v1"
+        assert f["accounting_model"] == "additive-legs-v1"
+        assert f["methodologically_current"] is False
+        assert f["superseded_by"] == "exact-wealth-v2"
+
+
+class TestTurnoverBasisAgreesWithCosts:
+    """`stats["turnover"]` must reconcile with the fees actually charged."""
+
+    def _run(self, opens, target, closes=None):
+        from bot.engine import run_strategy
+
+        day, base = 86_400_000, 1_600_000_000_000
+        n = len(closes) if closes is not None else len(opens)
+        px = closes or [100.0] * n
+        candles = [{"open_time": base + i * day, "open": opens[i], "close": px[i],
+                    "high": max(opens[i], px[i]), "low": min(opens[i], px[i])}
+                   for i in range(n)]
+        return run_strategy(candles, lambda c, i: target, fee=0.002,
+                            execution="next_open", start_index=1)
+
+    def test_turnover_reconciles_with_bar_costs(self):
+        res = self._run([100.0, 105.0, 95.0, 110.0, 90.0, 100.0, 100.0], 0.5)
+        assert res["turnover"] == pytest.approx(sum(res["bar_costs"]) / 0.002, abs=1e-12)
+
+    def test_turnover_is_not_the_undrifted_weight_difference(self):
+        res = self._run([100.0, 105.0, 95.0, 110.0, 90.0, 100.0, 100.0], 0.5)
+        undrifted = sum(abs(res["weights"][i] - (res["weights"][i - 1] if i else 0.0))
+                        for i in range(len(res["weights"])))
+        assert res["turnover"] > undrifted
+
+    def test_no_gap_turnover_is_unchanged(self):
+        # open == previous close on every bar, so nothing drifts and the
+        # traded notional is exactly the undrifted weight difference.
+        px = [100.0, 100.0, 100.0, 105.0, 105.0, 110.0]
+        opens = [px[0]] + px[:-1]  # every open equals the prior close
+        res = self._run(opens, 1.0, closes=px)
+        undrifted = sum(abs(res["weights"][i] - (res["weights"][i - 1] if i else 0.0))
+                        for i in range(len(res["weights"])))
+        assert res["turnover"] == pytest.approx(undrifted, abs=1e-12)
 
 
 if __name__ == "__main__":

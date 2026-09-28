@@ -126,6 +126,7 @@ def run_strategy(
     weights = []
     targets = []
     bar_costs = []
+    bar_turnovers = []
     prev_w = 0.0
     closes = [c["close"] for c in candles]
     for i in range(start_index, n):
@@ -179,12 +180,19 @@ def run_strategy(
         weights.append(w)
         targets.append(w_target)
         bar_costs.append(t["cost"])
+        # Traded notional as a fraction of STARTING wealth: the drifted
+        # turnover measured against opening wealth. This is the quantity the
+        # fee was actually charged on, so `sum(bar_costs) / cost_rate`
+        # reconciles with it exactly. Summing the undrifted weight
+        # differences instead made this statistic disagree with `bar_costs`
+        # by construction.
+        bar_turnovers.append(t["turnover"] * t["wealth_open"])
         prev_w = w
 
     days = (candles[n - 1]["open_time"] - candles[start_index - 1]["open_time"]) / DAY_MS
     stats = summarize(equity, returns, days, periods_per_year, risk_free_annual)
     stats["exposure"] = sum(weights) / len(weights) if weights else 0.0
-    stats["turnover"] = sum(abs(weights[i] - (weights[i - 1] if i else 0.0)) for i in range(len(weights)))
+    stats["turnover"] = sum(bar_turnovers)
     stats["equity"] = equity
     stats["returns"] = returns
     stats["weights"] = weights
@@ -192,5 +200,6 @@ def run_strategy(
     # cost charged). Backtest/forward parity tests compare on these.
     stats["targets"] = targets
     stats["bar_costs"] = bar_costs
+    stats["bar_turnovers"] = bar_turnovers
     stats["return_days"] = [(candles[i]["open_time"], returns[k]) for k, i in enumerate(range(start_index, n))]
     return stats

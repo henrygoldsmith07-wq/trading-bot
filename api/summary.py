@@ -136,13 +136,14 @@ def _order_lifecycle_warnings(entries: list[dict]) -> dict:
         reasons[reason] = reasons.get(reason, 0) + 1
 
     def parse(value) -> datetime | None:
-        if not isinstance(value, str) or not value:
-            return None
-        try:
-            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return dt if dt.tzinfo is not None else None
+        # Single source of truth for lifecycle timestamp parsing. This used
+        # to be a local copy, which meant the dashboard and bot/lifecycle.py
+        # could drift on edge cases (Z-suffix handling, naive-timestamp
+        # rejection). The library is the reference; this function keeps the
+        # dashboard's richer per-order labels on top of it.
+        from bot.lifecycle import parse_lifecycle_ts
+
+        return parse_lifecycle_ts(value)
 
     for entry in entries:
         orders = entry.get("orders", [])
@@ -264,6 +265,28 @@ def build_forward_summary(
 
     frozen_date = manifest.get("frozen_at_date")
     commit = (manifest.get("git_commit_at_freeze") or "")[:12] or None
+    # EXPERIMENT PROVENANCE. A sealed manifest can be perfectly intact and
+    # still not be evidence of the code now running: v1's tape was produced
+    # under an execution-accounting model the repo has since corrected. This
+    # block makes that visible to the dashboard and the verdict, which
+    # previously had no way to tell a current tape from a superseded one.
+    try:
+        from bot.experiments import describe_freeze
+
+        exp = describe_freeze(manifest)
+    except Exception:  # fail closed: unknown currency must not read as current
+        exp = {
+            "experiment_version": "unknown",
+            "accounting_model": "unknown",
+            "methodologically_current": False,
+            "superseded_by": "an unverified methodology",
+        }
+    experiment = {
+        "experiment_version": exp.get("experiment_version"),
+        "accounting_model": exp.get("accounting_model"),
+        "methodologically_current": bool(exp.get("methodologically_current", False)),
+        "superseded_by": exp.get("superseded_by"),
+    }
     try:
         entries = _load_forward_entries(log_path, frozen_date)
     except ForwardLogIntegrityError as exc:
@@ -280,6 +303,7 @@ def build_forward_summary(
             "days_untouched": None,
             "parameter_changes": 0,
             "config_sha256": (manifest.get("config_sha256") or "")[:16],
+            **experiment,
             "reason": f"forward evidence integrity failure: {exc}",
         }
 
@@ -297,6 +321,7 @@ def build_forward_summary(
             "days_untouched": None,
             "parameter_changes": 0,
             "config_sha256": (manifest.get("config_sha256") or "")[:16],
+            **experiment,
             "reason": "no forward days recorded yet",
         }
 
@@ -353,6 +378,7 @@ def build_forward_summary(
         "evidence_verified": True,
         "evidence_reason": None,
         "runtime_matches_freeze": runtime_matches,
+        **experiment,
         "days_untouched": days_untouched,
         # len(entries) is SCHEDULED days. days_full is what the evidence is
         # actually worth: only those observed every sleeve. The hero shows the
