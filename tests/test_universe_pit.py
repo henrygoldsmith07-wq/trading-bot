@@ -203,6 +203,63 @@ class TestMembershipMaskIsReal:
             assert r == pytest.approx(0.01, abs=1e-15)
 
 
+class TestDenominatorOnlyControlIsDeprecated:
+    """The legacy control must announce that it is NOT the real mask.
+
+    It stays for back-compat, but a future caller passing it by accident would
+    otherwise get a portfolio that *looks* point-in-time while still paying
+    ineligible assets, with nothing in the output to say so.
+    """
+
+    def _streams(self):
+        t0, t1 = DAY_MS * 0, DAY_MS * 30
+        return {"A": {t0: 0.01, t1: 0.01}, "LATE": {t1: 0.50}}, [t0, t1]
+
+    @pytest.mark.parametrize("combiner", ["combine_portfolio", "combine_portfolio_invvol"])
+    def test_walkforward_combiners_warn(self, combiner):
+        from bot import walkforward as wf
+
+        streams, timeline = self._streams()
+        with pytest.warns(DeprecationWarning, match="denominator_by_day is deprecated"):
+            getattr(wf, combiner)(streams, timeline, 2, denominator_by_day={t: 2 for t in timeline})
+
+    def test_portfolio_rule_combiner_warns(self):
+        from bot.portfolio_rules import combine_portfolio_rule
+
+        streams, timeline = self._streams()
+        with pytest.warns(DeprecationWarning, match="denominator_by_day is deprecated"):
+            combine_portfolio_rule(streams, timeline, 2, use_tilt=False, use_crisis=False,
+                                   denominator_by_day={t: 2 for t in timeline})
+
+    def test_warning_names_the_stronger_control(self):
+        from bot import walkforward as wf
+
+        streams, timeline = self._streams()
+        with pytest.warns(DeprecationWarning, match="eligible_by_day"):
+            wf.combine_portfolio(streams, timeline, 2, denominator_by_day={t: 2 for t in timeline})
+
+    def test_the_real_mask_never_warns(self):
+        import warnings as _w
+
+        from bot import walkforward as wf
+
+        streams, timeline = self._streams()
+        with _w.catch_warnings():
+            _w.simplefilter("error", DeprecationWarning)
+            wf.combine_portfolio(streams, timeline, 2,
+                                 eligible_by_day={t: {"A"} for t in timeline})
+
+    def test_default_call_never_warns(self):
+        import warnings as _w
+
+        from bot import walkforward as wf
+
+        streams, timeline = self._streams()
+        with _w.catch_warnings():
+            _w.simplefilter("error", DeprecationWarning)
+            wf.combine_portfolio(streams, timeline, 2)
+
+
 class TestEligibilityFromSnapshots:
     def test_snapshots_become_dated_membership(self, tmp_path):
         from datetime import UTC, datetime

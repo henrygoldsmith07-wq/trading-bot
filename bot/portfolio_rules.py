@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 
-from .universe_pit import assert_membership_consistent
+from .universe_pit import assert_membership_consistent, warn_denominator_only_control
 
 
 def _trailing_cum_ret(hist: list[float], lookback: int) -> float | None:
@@ -253,6 +253,7 @@ def combine_portfolio_rule(
     equity = 1.0
     peak = 1.0
     throttled = False
+    warn_denominator_only_control(denominator_by_day, "combine_portfolio_rule")
     for t in timeline:
         if eligible_by_day is not None:
             if t not in eligible_by_day:

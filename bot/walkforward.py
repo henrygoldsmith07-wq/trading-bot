@@ -18,7 +18,7 @@ from .engine import DAY_MS, run_strategy
 from .metrics import cagr, max_drawdown, sharpe, volatility
 from .portfolio_rules import _capped_normalize
 from .strategy import build_candidates
-from .universe_pit import assert_membership_consistent
+from .universe_pit import assert_membership_consistent, warn_denominator_only_control
 
 
 def _validate_timeline(candles: list[dict]) -> list[int]:
@@ -332,6 +332,7 @@ def combine_portfolio(
     """
     if isinstance(n_assets, bool) or not isinstance(n_assets, int) or n_assets <= 0:
         raise ValueError("n_assets must be a positive integer")
+    warn_denominator_only_control(denominator_by_day, "combine_portfolio")
     out = []
     for t in timeline:
         if eligible_by_day is not None:
@@ -392,6 +393,7 @@ def combine_portfolio_invvol(
         raise ValueError("window must be an integer >= 2")
     if not isinstance(max_multiple_of_equal, (int, float)) or isinstance(max_multiple_of_equal, bool) or not math.isfinite(float(max_multiple_of_equal)) or float(max_multiple_of_equal) < 1.0:
         raise ValueError("max_multiple_of_equal must be finite and >= 1")
+    warn_denominator_only_control(denominator_by_day, "combine_portfolio_invvol")
 
     syms = list(asset_dailies)
     hist: dict[str, list[float]] = {s: [] for s in syms}

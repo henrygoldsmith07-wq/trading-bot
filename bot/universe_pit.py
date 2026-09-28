@@ -50,6 +50,7 @@ evidence.
 from __future__ import annotations
 
 import json
+import warnings
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -203,6 +204,42 @@ def assert_membership_consistent(
             f"PIT membership violated at {day}: symbols {sorted(extra)} contribute "
             f"but are not eligible; contributors must be a subset of {sorted(eligible)}"
         )
+
+
+def warn_denominator_only_control(
+    denominator_by_day: dict[int, int] | None,
+    combiner: str,
+) -> None:
+    """Flag the LEGACY denominator-only point-in-time control as deprecated.
+
+    `denominator_by_day` takes per-day ELIGIBLE COUNTS. It rescales exposure by
+    present/eligible(day), but it does NOT control membership: an asset that
+    was not yet listed, not yet liquid, or already dead on date `t` still
+    contributes its return, merely diluted. The result still *looks*
+    point-in-time, which is precisely what makes it dangerous — see
+    `tests/test_universe_pit.py::test_denominator_only_control_would_have_let_late_asset_pay`,
+    which demonstrates an ineligible late listing being paid under this control.
+
+    `eligible_by_day` is the real mask: ineligible assets are removed from the
+    day's contributors before weighting, so they earn neither return nor weight
+    and their capital stays in cash.
+
+    Deprecating rather than removing, because the parameter is public and the
+    three combiners are used by callers that predate the mask. Nothing in the
+    repo passes it any more; it stays only as a back-compat trap that announces
+    itself.
+    """
+    if denominator_by_day is None:
+        return
+    warnings.warn(
+        f"{combiner}: denominator_by_day is deprecated and gives a WEAKER "
+        f"point-in-time control than eligible_by_day. It rescales exposure but "
+        f"still lets an ineligible asset contribute its return, so a portfolio "
+        f"built with it is not truly point-in-time. Pass eligible_by_day "
+        f"(bot/universe_pit.py) instead.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 
 def point_in_time_universe(
