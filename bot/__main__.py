@@ -196,20 +196,25 @@ def compute_compare_results(args, fetch=None, log=print, save_run=True):
 
     port_returns = combine_portfolio(asset_dailies, timeline, n_selected)
     iv_returns = combine_portfolio_invvol(asset_dailies, timeline, n_selected)
-    # point-in-time survivorship control: per-day eligible counts from each
-    # asset's OWN history (listing age, trailing dollar volume, alive-at-day)
+    # point-in-time survivorship control: per-day ELIGIBILITY from each asset's
+    # OWN history (listing age, trailing dollar volume, alive-at-day). This is
+    # a real MEMBERSHIP MASK, not just a denominator: an asset that is not
+    # eligible on day t is removed from that day's contributors entirely, so
+    # it cannot contribute return or allocation before it was holdable.
     from .universe_pit import point_in_time_universe
 
     pit = point_in_time_universe({s: c for s, (c, _) in histories.items()}, timeline)
+    eligible_by_day = {t: set(pit[t]) for t in timeline}
     denominator_by_day = {t: max(1, len(pit[t])) for t in timeline}
     elig_counts = [denominator_by_day[t] for t in timeline]
     if elig_counts:
         log(f"\nPoint-in-time eligibility (listed+aged+liquid at each date): "
               f"min {min(elig_counts)}, median {sorted(elig_counts)[len(elig_counts)//2]}, max {max(elig_counts)} of {n_selected} fetched")
-        log("  denominators scale by eligible-per-day — today's winners cannot join 2020 early")
-    port_returns = combine_portfolio(asset_dailies, timeline, n_selected, denominator_by_day=denominator_by_day)
-    iv_returns = combine_portfolio_invvol(asset_dailies, timeline, n_selected, denominator_by_day=denominator_by_day)
-    base_rule: dict = dict(use_tilt=True, use_crisis=True, denominator_by_day=denominator_by_day)
+        log("  ineligible sleeves are MASKED OUT of that day (no return, no weight); "
+            "their capital stays in cash rather than being redistributed")
+    port_returns = combine_portfolio(asset_dailies, timeline, n_selected, eligible_by_day=eligible_by_day)
+    iv_returns = combine_portfolio_invvol(asset_dailies, timeline, n_selected, eligible_by_day=eligible_by_day)
+    base_rule: dict = dict(use_tilt=True, use_crisis=True, eligible_by_day=eligible_by_day)
     full_returns = combine_portfolio_rule(asset_dailies, timeline, n_selected, **base_rule)
     throttle_returns = combine_portfolio_rule(asset_dailies, timeline, n_selected, use_dd_throttle=True, **base_rule)
     banded_returns = combine_portfolio_rule(banded_dailies, timeline, n_selected, **base_rule)
@@ -1178,6 +1183,20 @@ def run_verify_freeze(args) -> int:
     except FileNotFoundError:
         print(f"FAIL: {args.freeze_file} not found — nothing frozen to verify against")
         return 1
+    # Experiment identity is reported FIRST, and unconditionally, because a
+    # failed code seal hides everything after it — and "this tape is no longer
+    # evidence of the current implementation" is the single most important
+    # thing a reader of a superseded experiment needs to know.
+    from .experiments import current_freeze_status, describe_freeze
+
+    exp = describe_freeze(raw)
+    print(f"experiment : {exp['experiment_version']} (accounting model {exp['accounting_model']})")
+    if not exp["methodologically_current"]:
+        print(f"STATUS     : {current_freeze_status(raw)}")
+        print(f"             {exp['supersede_reason']}")
+        print("             The tape is valid evidence of the implementation that produced")
+        print("             it, NOT of the corrected implementation. A v2 freeze is needed")
+        print("             for prospective evidence of the current code.")
     try:
         # config hash first for the clearer message on tampering
         from .prospective import _config_hash

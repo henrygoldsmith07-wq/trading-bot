@@ -12,6 +12,40 @@ next_open semantics (the realistic convention):
 Close-mode (the optimistic baseline) is the degenerate case where execution
 happens AT the previous close: zero-length overnight, the whole move accrues
 to the new position.
+
+EXACT WEALTH ACCOUNTING (not an additive approximation)
+------------------------------------------------------
+The session return is built by evolving actual wealth through the session, not
+by adding per-leg simple returns. The previous implementation returned
+
+    previous_weight * (open/prev_close - 1) + target_weight * (close/open - 1)
+
+which is a first-order approximation. Across a 5% overnight gap it drops the
+cross term w_prev*w_tgt*gap*intraday, systematically UNDERSTATING the return
+for any position held through both legs:
+
+    prev_close=100, open=105, close=110, held 1.0, zero fees
+    exact close-to-close      = 110/100 - 1        = +10.0000%
+    previous additive result  = 0.05 + 0.047619    = +9.7619%   <-- wrong
+
+`calculate_transition` now performs the full self-financing sequence:
+
+    1. wealth_open_from_previous_close = 1.0            (unit wealth, scaled)
+    2. overnight P&L on the PREVIOUS position
+    3. opening portfolio wealth  W_open
+    4. opening asset / cash split at the execution price
+    5. rebalance to the target weight AT the execution price
+    6. turnover measured on the DRIFTED opening allocation
+    7. costs charged against post-trade wealth (they are wealth, not returns)
+    8. post-trade position / cash
+    9. intraday P&L on the NEW position
+   10. closing wealth  W_close, and the exact session return W_close/W_start - 1
+
+The unit of account is wealth starting at 1.0, so the returned `return` is the
+exact multiplicative session return. `overnight` / `intraday` / `cost` / `cash`
+remain available as the *wealth-denominated contributions* to that return, so
+the decomposition still adds up — but as a sum of wealth deltas divided by the
+starting wealth, which is what "adding up" was always supposed to mean.
 """
 from __future__ import annotations
 
@@ -75,18 +109,89 @@ def calculate_transition(
         raise ValueError("cash_rate_period must be finite and greater than -1")
     if cash_basis not in ("previous", "target"):
         raise ValueError("cash_basis must be 'previous' or 'target'")
-    overnight = previous_position * (execution_price / previous_close - 1.0)
-    intraday = target_position * (closing_price / execution_price - 1.0)
-    turnover = abs(target_position - previous_position)
-    cost = costs * turnover
-    held = previous_position if cash_basis == "previous" else target_position
-    cash = (1.0 - held) * cash_rate_period
-    total = overnight + intraday + cash - cost
+
+    w_prev = float(previous_position)
+    w_target = float(target_position)
+    p_close = float(previous_close)
+    p_exec = float(execution_price)
+    p_close_end = float(closing_price)
+    cost_rate = float(costs)
+    cash_rate = float(cash_rate_period)
+
+    # (1) Unit wealth carried in from the previous session's close. Working in
+    # units of starting wealth is what makes every later quantity a true
+    # fraction of the portfolio rather than an approximation of one.
+    wealth_start = 1.0
+
+    # (2) Overnight P&L on the position actually held overnight, and (3) the
+    # opening portfolio wealth. Cash is the uninvested remainder; under the
+    # "previous" basis it accrued the idle yield overnight (it was held
+    # through the gap), under "target" the idle fraction follows the new
+    # allocation instead and accrues nothing here.
+    asset_value_open = w_prev * (p_exec / p_close)
+    cash_fraction = 1.0 - w_prev
+    cash_value_open = cash_fraction * (1.0 + (cash_rate if cash_basis == "previous" else 0.0))
+    wealth_open = asset_value_open + cash_value_open
+    # Wealth-denominated contributions, so overnight + cost + intraday + cash
+    # reproduces `return` exactly instead of approximately.
+    overnight = asset_value_open - w_prev
+    cash_leg = cash_value_open - cash_fraction
+
+    # (4) Opening allocation DRIFTED to the execution price. A position sized
+    # at yesterday's close is no longer that weight after a gap, so turnover
+    # and the rebalance must be measured against the drifted weight. Using
+    # the undrifted target-previous difference mis-charges cost in proportion
+    # to the gap.
+    drifted_weight = asset_value_open / wealth_open
+
+    # (5) Rebalance at the execution price to the target weight, and (6) the
+    # turnover that requires — the trade is the change in drifted weight.
+    turnover = abs(w_target - drifted_weight)
+    traded_notional = turnover * wealth_open
+
+    # (7) Costs are paid out of wealth at the execution price: selling frees
+    # cash, buying consumes it, and either way the fee reduces the account.
+    # Charging it against opening wealth (rather than subtracting it from a
+    # return) is what keeps the next steps exactly self-financing.
+    wealth_after_cost = wealth_open - cost_rate * traded_notional
+    # `cost` stays a POSITIVE magnitude (fee charged) to match its long-standing
+    # meaning for callers; it is subtracted from the wealth walk above.
+    cost = cost_rate * traded_notional
+
+    # (8) Post-trade position/cash at the execution price, now expressed as a
+    # fraction of the post-cost wealth so the remaining legs compound on the
+    # wealth that actually survived the fee.
+    if wealth_after_cost <= 0.0 or not math.isfinite(wealth_after_cost):
+        raise ValueError("costs and turnover exhausted portfolio wealth")
+    asset_post = w_target * wealth_after_cost
+    cash_post = (1.0 - w_target) * wealth_after_cost
+
+    # (9) Intraday P&L on the new position, plus cash accrual on whichever
+    # basis was requested.
+    asset_value_close = asset_post * (p_close_end / p_exec)
+    cash_value_close = cash_post * (1.0 + (cash_rate if cash_basis == "target" else 0.0))
+    wealth_close = asset_value_close + cash_value_close
+    intraday = (asset_value_close - asset_post) + (cash_value_close - cash_post)
+    if cash_basis == "target":
+        cash_leg += cash_value_close - cash_post
+
+    # (10) The exact session return: closing wealth over opening wealth.
+    total = wealth_close / wealth_start - 1.0
+
     return {
         "return": total,
         "overnight": overnight,
         "intraday": intraday,
         "turnover": turnover,
         "cost": cost,
-        "cash": cash,
+        "cash": cash_leg,
+        # Full wealth walk — lets callers audit the accounting rather than
+        # trust the scalar. Kept flat (no nesting) for JSONL round-tripping.
+        "wealth_start": wealth_start,
+        "wealth_open": wealth_open,
+        "wealth_after_cost": wealth_after_cost,
+        "wealth_close": wealth_close,
+        "drifted_weight": drifted_weight,
+        "asset_value_open": asset_value_open,
+        "asset_value_close": asset_value_close,
     }

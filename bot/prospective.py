@@ -32,6 +32,7 @@ from .cost_calibration import (
     build_observation as build_observation_fn,
 )
 from .execution import calculate_transition, open_of
+from .experiments import CURRENT_ACCOUNTING_MODEL
 from .identity import CODE_FINGERPRINT_ALGO, code_fingerprint, verify_freeze_code
 from .portfolio_rules import day_allocation
 from .strategy import strategy_from_spec, strategy_to_spec
@@ -194,6 +195,7 @@ def create_freeze(
     image_digest: str | None = None,
     git_tag: str | None = None,
     research_context: dict | None = None,
+    experiment_version: str = "v2",
 ) -> dict:
     """Write the freeze manifest. `assets`: [{symbol, source, periods_per_year,
     strategy (object)}].
@@ -240,6 +242,13 @@ def create_freeze(
         "image_digest": image_digest,
         "retune_policy": "FORWARD PERIOD IS NEVER USED FOR SELECTION OR TUNING",
         "code_policy": "RUNNER MUST EXECUTE THE FROZEN COMMIT; REFUSE ON CODE MISMATCH",
+        # Experiment identity. `accounting_model` says which execution-return
+        # semantics produced this tape, so a later reader can tell whether the
+        # evidence is still methodologically current. A v1 manifest lacks this
+        # field precisely BECAUSE it predates the correction — see
+        # bot/experiments.py.
+        "experiment_version": experiment_version,
+        "accounting_model": CURRENT_ACCOUNTING_MODEL,
         "config": config,
         "config_sha256": _config_hash(config),
         "code_fingerprint_algo": CODE_FINGERPRINT_ALGO,
@@ -990,7 +999,11 @@ def run_step(
                 "fill_ts": now.isoformat(),
                 "fill_price": exec_price,
                 "qty_weight_delta": round(w_eff - prev_w, 6),
-                "cost_fraction": round(cost_rate * abs(w_eff - prev_w), 8),
+                # The cost ACTUALLY charged as a fraction of opening wealth.
+                # Derived from the transition rather than re-derived from the
+                # undrifted weight change, so the tape cannot disagree with the
+                # return arithmetic it accompanies.
+                "cost_fraction": round(tr["cost"] / tr["wealth_open"], 10) if tr["wealth_open"] else 0.0,
                 "position_after": round(w_eff, 6),
             })
         # ---- cost observation: measure what V1 predicts vs the tape -------
@@ -1146,10 +1159,41 @@ def monthly_returns(entries: list[dict]) -> dict[str, float]:
 
 
 def slippage_stats(entries: list[dict]) -> dict:
-    obs = [d["slippage_bps"] for e in entries for d in e.get("assets", {}).values() if isinstance(d, dict) and d.get("slippage_bps") is not None]
+    """Decision->execution slippage, over observations with sound provenance.
+
+    A legacy row whose lifecycle timestamps are impossible (e.g. an
+    `intent_ts` decades in the future from a ms/second unit error) cannot
+    support a latency measurement, so that day's asset observations are
+    EXCLUDED rather than averaged in. The exclusion count is reported, never
+    hidden — a slippage number that silently dropped half its sample would be
+    worse than none.
+
+    Entries that carry no `orders` array at all have no lifecycle metadata to
+    invalidate, so their asset-level observations stand; only days with orders
+    that FAIL the audit are dropped.
+    """
+    from .lifecycle import audit_log_lifecycle, order_is_trustworthy
+
+    audit = audit_log_lifecycle(entries)
+    obs: list[float] = []
+    for entry in entries:
+        orders = entry.get("orders") or []
+        if orders and not all(order_is_trustworthy(o, entry.get("date")) for o in orders):
+            continue  # this day's lifecycle metadata is corrupt
+        for detail in entry.get("assets", {}).values():
+            if isinstance(detail, dict) and detail.get("slippage_bps") is not None:
+                obs.append(detail["slippage_bps"])
+    base = {
+        "excluded_lifecycle_orders": audit["n_orders_flagged"],
+        "lifecycle_problems": audit["flagged_by_reason"],
+    }
     if not obs:
-        return {"count": 0, "mean_abs_bps": None}
-    return {"count": len(obs), "mean_abs_bps": sum(abs(x) for x in obs) / len(obs)}
+        return {"count": 0, "mean_abs_bps": None, **base}
+    return {
+        "count": len(obs),
+        "mean_abs_bps": sum(abs(x) for x in obs) / len(obs),
+        **base,
+    }
 
 
 def outage_stats(entries: list[dict]) -> dict:

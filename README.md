@@ -8,8 +8,18 @@ A Python trading bot that trades **on paper only** — no real orders are ever p
 |---|---|---|
 | **BACKTEST** | Full-history research runs used to *search* for configurations. Counted in the research ledger; never evidence of edge on its own. | `validate`, `research`, ledger |
 | **OUT-OF-SAMPLE** | Walk-forward folds inside the search window — still part of the selection process. | `compare`, canonical record |
-| **FORWARD PAPER** | Days traded by the frozen runner after `freeze.json` was sealed. The only evidence that grows without the researcher touching anything. | `forward_log.jsonl`, dashboard hero |
+| **FORWARD PAPER (v1 — SUPERSEDED)** | Days traded by the frozen runner after the 2026-09-06 freeze. Those days were produced by execution accounting that summed the overnight and intraday legs instead of evolving wealth exactly, so returns were understated on gapping bars. The tape is preserved unchanged as evidence of *that* implementation; it is **not** prospective validation of the current one. | `forward_log.jsonl`, `freeze.json` |
+| **FORWARD PAPER (v2 — current)** | Days traded by a freeze created under the corrected accounting model (`exact-wealth-v2`). The only tape that is prospective evidence of the code now in the repo. Not yet created. | — |
 | **LIVE** | Real money. **Does not exist and must not exist in this repo.** | — |
+
+> **The canonical numbers below predate the accounting correction.** Session
+> returns are now computed by exact wealth evolution rather than by adding
+> simple legs, so every historical stream that trades through an overnight gap
+> changes slightly. `runs/canonical-v1/run.json` was produced by the older
+> model and has **not** been recomputed (re-running it needs the frozen data
+> cache, which is not in the repository). Treat that table as an accurate record
+> of the v1 methodology, not as current-code output. `python -m bot verify-freeze`
+> prints the same warning mechanically.
 
 `python -m bot verdict` grades all five dimensions (historical evidence,
 walk-forward robustness, selection-bias risk, cost robustness, prospective
@@ -116,11 +126,12 @@ How the pipeline addresses each dimension:
 | Transaction costs | Combined fee+spread+slippage sweep (5/10/20/50/100bp) |
 | Spread & slippage | Charged per unit turnover alongside fees in the engine |
 | Latency | Signal delay sweep (0/1/2 days) — weight uses only data ≥ latency days old |
-| Execution realism | `next_open` mode: overnight gap accrues to yesterday's position, intraday to the new one |
+| Execution realism | `next_open` mode: overnight gap accrues to yesterday's position, intraday to the new one. The session return is the **exact** evolution of portfolio wealth, not the sum of the two legs (`bot/execution.py`), and turnover is measured on the allocation *drifted* to the execution price |
 | Stale prices | Assets whose history stopped >45d ago are flagged and excluded |
 | Missing data | Non-finite/non-positive closes dropped, timestamps deduped, history sorted on ingest |
 | Delisting | Missing days hold cash — a dead asset strands its sleeve, it never redistributes to survivors |
-| Survivorship bias | **Point-in-time eligibility** (`bot/universe_pit.py`): per-day denominators from listing age + trailing 30d dollar volume + alive-at-date — a 2023 listing only joins the 2023 portfolio, however famous it is today. **Forward snapshots** (`python -m bot universe-snapshot`, daily in CI) compound into a genuinely point-in-time dataset. Residual, disclosed: symbols purged from Binance's API before we ever fetched them remain invisible without an external archive |
+| Survivorship bias | **Point-in-time eligibility as a real membership mask** (`bot/universe_pit.py`): an asset not eligible on a date is removed from that day's contributors entirely, so it earns no return and carries no weight until it cleared listing age + trailing 30d dollar volume + alive-at-date. Unavailable sleeves hold cash. **Residual, disclosed:** the *seed* symbol list is still today's Binance ranking, so assets purged from the API before we first fetched them stay invisible — this reduces survivorship bias, it does not remove it. **Forward snapshots** (`python -m bot universe-snapshot`, daily in CI) are observed rather than reconstructed, and feed a genuinely historical universe (`eligibility_from_snapshots`) |
+| Order-lifecycle provenance | `signal ≤ intent ≤ submitted ≤ fill`, all timezone-aware. The committed v1 tape has a real unit-error bug (`intent_ts` ~2.7 years in the future); it is detected by `bot/lifecycle.py`, excluded from latency/slippage statistics, and left byte-for-byte intact |
 | Cash returns | Idle cash accrues a configurable risk-free rate (default 3%/yr); all Sharpe ratios are excess-of-cash |
 | Benchmark consistency | Same window, calendar-day CAGR, same risk-free rate; the index carries no costs and is labeled as such |
 
@@ -466,6 +477,15 @@ bot/
   engine.py      # daily-bar engine: next-open execution, spread/slippage/
                  # latency, fee-on-turnover, cash accrual, rebalance banding,
                  # optional vol-dependent costs & square-root impact
+  execution.py   # THE single transition calculation, shared by backtest and
+                 # forward: exact self-financing wealth accounting (overnight
+                 # gap -> opening wealth -> drifted-turnover rebalance -> fee
+                 # -> intraday -> closing wealth) plus the full wealth walk
+  lifecycle.py   # order-lifecycle timestamp provenance: signal/intent/
+                 # submitted/fill ordering, tz-awareness, legacy-corruption
+                 # detection, exclusion from latency statistics
+  experiments.py # experiment versioning: which freeze produced which tape
+                 # and whether that accounting model is still current
   metrics.py     # CAGR / excess Sharpe / Sortino / Calmar / VaR / ES
   walkforward.py # expanding-window walk-forward + survivorship-safe combiners
   portfolio_rules.py # XS-momentum tilt, crisis de-risk, drawdown throttle

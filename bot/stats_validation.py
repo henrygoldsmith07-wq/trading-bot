@@ -76,20 +76,31 @@ def dsr(returns: list[float], trial_sharpes_annual: list[float], n_trials: int, 
     return psr(returns, periods_per_year, sr_benchmark_annual=benchmark)
 
 
-def stationary_bootstrap_indices(n: int, block: int, rng: random.Random) -> list[int]:
-    """Politis-Romano stationary bootstrap: geometric block lengths with mean `block`."""
+def stationary_bootstrap_indices(n: int, block: int, rng: random.Random, domain: int | None = None) -> list[int]:
+    """Politis-Romano stationary bootstrap: geometric block lengths with mean `block`.
+
+    `n` is how many indices to EMIT; `domain` is how many source observations
+    they may point into. They are equal by default (resampling a series of its
+    own length), but a forecast must emit `horizon_days` indices drawn from the
+    FULL history rather than from a horizon-sized prefix — see
+    `mc_future_paths`. Keeping them separate is what lets block starts reach
+    late-history observations.
+    """
     if isinstance(n, bool) or not isinstance(n, int) or n < 1:
         raise ValueError("n must be a positive integer")
     if isinstance(block, bool) or not isinstance(block, int) or block < 1:
         raise ValueError("block must be a positive integer")
+    pool = n if domain is None else domain
+    if isinstance(pool, bool) or not isinstance(pool, int) or pool < 1:
+        raise ValueError("domain must be a positive integer")
     out: list[int] = []
-    i = rng.randrange(n)
+    i = rng.randrange(pool)
     while len(out) < n:
         out.append(i)
         if rng.random() < 1.0 / block:
-            i = rng.randrange(n)
+            i = rng.randrange(pool)
         else:
-            i = (i + 1) % n
+            i = (i + 1) % pool
     return out
 
 
@@ -179,10 +190,16 @@ def reality_check(candidate_returns: list[list[float]], n_boot: int = 200, block
         raise ValueError("candidate_returns must be non-empty")
     if isinstance(n_boot, bool) or not isinstance(n_boot, int) or n_boot < 1:
         raise ValueError("n_boot must be a positive integer")
+    if isinstance(block, bool) or not isinstance(block, int) or block < 1:
+        raise ValueError("block must be a positive integer")
     n_cands = len(candidate_returns)
     n = min(len(r) for r in candidate_returns)
     if n < 2:
         raise ValueError("candidate return streams must contain at least two aligned observations")
+    for i, r in enumerate(candidate_returns):
+        for j, x in enumerate(r):
+            if isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(float(x)):
+                raise ValueError(f"candidate {i} observation {j} must be finite")
     rows = [r[:n] for r in candidate_returns]
     obs = [sharpe(r, periods_per_year) for r in rows]
     best_obs = max(obs)

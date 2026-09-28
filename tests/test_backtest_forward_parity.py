@@ -215,18 +215,36 @@ def test_engine_and_forward_are_the_same_bot(tmp_path, monkeypatch, sawtooth_reg
                 trades_B += 1
 
             # --- costs identical -----------------------------------------
-            cost_B = COST_RATE * turnover_B
+            # The fee is charged on the traded NOTIONAL: turnover is measured
+            # against the allocation DRIFTED to the execution price, and that
+            # turnover is a fraction of the OPENING wealth — which is not 1.0
+            # after a gap, and which includes one period of cash accrual on
+            # the idle fraction. Reconstructing all of that independently here
+            # keeps this a check of the cost MODEL rather than a copy of
+            # whatever formula the implementation happens to use.
+            prev_close = data[s][k]["close"]
+            exec_px = open_of_candle(data[s][k + 1], prev_close)
+            prev_w = A["weights"][k - 1]
+            asset_open = prev_w * (exec_px / prev_close)
+            wealth_open = asset_open + (1.0 - prev_w) * (1.0 + RF_DAILY)
+            drifted = asset_open / wealth_open
+            cost_B = COST_RATE * abs(A["weights"][k] - drifted) * wealth_open
             assert cost_B == pytest.approx(A["bar_costs"][k], abs=TOL), (s, k, "cost")
             total_cost_A += A["bar_costs"][k]
             total_cost_B += cost_B
 
             # --- daily returns identical (full transition decomposition) --
+            # `costs` is the flat base rate, always: the fee is charged inside
+            # calculate_transition in proportion to the DRIFTED turnover, so a
+            # bar whose target weight did not change can still pay a fee after
+            # a gap. Gating the expected cost on the undrifted weight change
+            # would encode the old (wrong) model.
             expected_tr = calculate_transition(
                 A["weights"][k - 1], A["weights"][k],
                 previous_close=data[s][k]["close"],
                 execution_price=open_of_candle(data[s][k + 1], data[s][k]["close"]),
                 closing_price=data[s][k + 1]["close"],
-                costs=COST_RATE if A["turnovers"][k] > 0 else 0.0,
+                costs=COST_RATE,
                 cash_rate_period=RF_DAILY,
                 cash_basis="previous",
             )

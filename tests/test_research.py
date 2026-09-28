@@ -21,6 +21,7 @@ from bot.research import (
     sequence_risk,
     spa_test,
 )
+from bot.stats_validation import stationary_bootstrap_indices
 
 
 def _seeded_iid(n=600, mu=0.0005, sd=0.02, seed=7):
@@ -117,6 +118,149 @@ class TestDrawdownCIs:
         assert 0.0 <= res["time_under_water_median"] <= 1.0
 
 
+class TestMcFuturePaths:
+    """The forward Monte Carlo must resample the ENTIRE history."""
+
+    def test_late_history_can_affect_generated_paths(self):
+        # 600 observations, 252-day horizon. Under the old (buggy) sampler only
+        # indices [0, 252) were reachable, so moving the SAME values into the
+        # second half of the series changed nothing. It must change now.
+        early_big = [0.01] * 300 + [-0.01] * 300
+        late_big = [-0.01] * 300 + [0.01] * 300
+        a = mc_future_paths(early_big, horizon_days=252, n_paths=300, block=5, seed=1)
+        b = mc_future_paths(late_big, horizon_days=252, n_paths=300, block=5, seed=1)
+        assert a["terminal_median"] != pytest.approx(b["terminal_median"], rel=1e-12)
+
+    def test_sampling_domain_covers_the_whole_sample(self):
+        # Direct check on the index sampler: with a domain far larger than the
+        # number of draws, indices must reach the tail of the sample.
+        rng = random.Random(4)
+        seen = set()
+        for _ in range(400):
+            seen.update(stationary_bootstrap_indices(30, 5, rng, domain=1500))
+        assert max(seen) > 251, "sampler never reached observations past index 251"
+        assert min(seen) < 251
+
+    def test_domain_defaults_to_length_for_backwards_compatibility(self):
+        rng = random.Random(4)
+        assert all(0 <= i < 50 for i in stationary_bootstrap_indices(50, 5, rng))
+
+    def test_reports_its_provenance(self):
+        r = mc_future_paths([0.01, -0.01] * 300, horizon_days=60, n_paths=100, block=4, seed=2)
+        assert r["n_source_observations"] == 600
+        assert r["n_paths"] == 100 and r["block"] == 4
+
+    def test_deterministic_under_a_fixed_seed(self):
+        rets = [(i % 7) / 100.0 for i in range(200)]
+        kw = dict(horizon_days=40, n_paths=80, block=6, seed=99)
+        assert mc_future_paths(rets, **kw) == mc_future_paths(rets, **kw)
+        assert mc_future_paths(rets, **kw) != mc_future_paths(rets, **{**kw, "seed": 100})
+
+    def test_horizon_longer_than_the_sample_is_allowed(self):
+        # Blocks wrap, which is what makes this a forecast, not an error.
+        r = mc_future_paths([0.01, -0.01, 0.02] * 10, horizon_days=200, n_paths=50, block=3, seed=5)
+        assert 0.0 <= r["p_loss"] <= 1.0
+        assert r["horizon_days"] == 200
+
+    def test_single_observation_sample_works(self):
+        assert mc_future_paths([0.01], horizon_days=10, n_paths=20, block=2, seed=1)["terminal_median"] > 0.0
+
+    def test_empty_returns_rejected(self):
+        with pytest.raises(ValueError, match="non-empty"):
+            mc_future_paths([], horizon_days=10, n_paths=10)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    def test_non_finite_returns_rejected(self, bad):
+        with pytest.raises(ValueError, match="finite"):
+            mc_future_paths([0.01, bad], horizon_days=10, n_paths=10)
+
+    @pytest.mark.parametrize("horizon", [0, -1, 2.5, True, None])
+    def test_invalid_horizon_rejected(self, horizon):
+        with pytest.raises(ValueError, match="horizon_days"):
+            mc_future_paths([0.01] * 50, horizon_days=horizon, n_paths=10)
+
+    @pytest.mark.parametrize("n_paths", [0, -5, 1.5, True])
+    def test_invalid_path_count_rejected(self, n_paths):
+        with pytest.raises(ValueError, match="n_paths"):
+            mc_future_paths([0.01] * 50, n_paths=n_paths)
+
+    @pytest.mark.parametrize("block", [0, -3, 2.5, True])
+    def test_invalid_block_rejected(self, block):
+        with pytest.raises(ValueError, match="block"):
+            mc_future_paths([0.01] * 50, n_paths=10, block=block)
+
+    def test_all_probabilities_are_in_range(self):
+        r = mc_future_paths([(i % 5 - 2) / 100.0 for i in range(300)],
+                            horizon_days=100, n_paths=200, block=5, seed=8)
+        assert 0.0 <= r["p_loss"] <= 1.0
+        assert r["terminal_p05"] <= r["terminal_median"] <= r["terminal_p95"]
+
+
+class TestAnalyticUnderperformanceTail:
+    """The Normal approximation must use the correct tail."""
+
+    def test_large_positive_gap_gives_low_probability(self):
+        bench = _seeded_iid()
+        res = probability_of_underperformance([b + 0.004 for b in bench], bench, n_boot=200)
+        assert res["observed_sharpe_gap"] > 0
+        assert res["analytic_p_underperform_sharpe"] < 0.05
+
+    def test_large_negative_gap_gives_high_probability(self):
+        bench = _seeded_iid()
+        res = probability_of_underperformance([b - 0.004 for b in bench], bench, n_boot=200)
+        assert res["observed_sharpe_gap"] < 0
+        assert res["analytic_p_underperform_sharpe"] > 0.95
+
+    def test_zero_gap_is_about_one_half(self):
+        bench = _seeded_iid()
+        res = probability_of_underperformance(list(bench), list(bench), n_boot=200)
+        assert res["analytic_p_underperform_sharpe"] == pytest.approx(0.5, abs=0.05)
+
+    def test_analytic_probability_is_monotone_in_the_gap(self):
+        bench = _seeded_iid()
+        # Deltas are listed from a big strategy edge DOWN to a big deficit, so
+        # the probability of underperformance must INCREASE along the list.
+        ps = [
+            probability_of_underperformance([b + d for b in bench], bench, n_boot=100)["analytic_p_underperform_sharpe"]
+            for d in (0.004, 0.002, 0.0, -0.002, -0.004)
+        ]
+        assert ps == sorted(ps)
+        assert all(0.0 <= p <= 1.0 for p in ps)
+
+    def test_the_three_quantities_are_distinct_and_labelled(self):
+        # Empirical probability, CI, and analytic approximation answer
+        # different questions and must not be conflated.
+        bench = _seeded_iid()
+        res = probability_of_underperformance([b + 0.001 for b in bench], bench, n_boot=200)
+        lo, hi = res["sharpe_gap_ci"]
+        assert lo <= hi                      # a CI is ordered, a probability is not
+        assert 0.0 <= res["analytic_p_underperform_sharpe"] <= 1.0
+        assert 0.0 <= res["p_underperform_sharpe"] <= 1.0
+        # the CI is a 90% interval, so it is wide; a probability is not
+        assert hi - lo > 0.0
+
+    def test_misaligned_series_rejected(self):
+        with pytest.raises(ValueError, match="aligned"):
+            probability_of_underperformance([0.01] * 50, [0.01] * 49)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    def test_non_finite_series_rejected(self, bad):
+        good = _seeded_iid(50)
+        with pytest.raises(ValueError, match="finite"):
+            probability_of_underperformance([bad] + good[1:], good, n_boot=20)
+
+    def test_invalid_bootstrap_counts_rejected(self):
+        bench = _seeded_iid(60)
+        with pytest.raises(ValueError, match="n_boot"):
+            probability_of_underperformance(list(bench), list(bench), n_boot=0)
+        with pytest.raises(ValueError, match="block"):
+            probability_of_underperformance(list(bench), list(bench), n_boot=20, block=0)
+
+    def test_short_series_rejected(self):
+        with pytest.raises(ValueError, match="30"):
+            probability_of_underperformance([0.01] * 10, [0.005] * 10)
+
+
 class TestProbabilityOfUnderperformance:
     def test_dominant_strategy_never_underperforms(self):
         bench = _seeded_iid()
@@ -182,7 +326,7 @@ class TestSequenceRisk:
             sequence_risk([0.01] * 10, horizon_days=100)
 
 
-class TestMcFuturePaths:
+class TestMcFuturePathDistributions:
     def test_percentiles_ordered_and_probabilities_sane(self):
         res = mc_future_paths(_seeded_iid(mu=0.0008), horizon_days=200, n_paths=800)
         assert 0.0 <= res["p_loss"] <= 1.0

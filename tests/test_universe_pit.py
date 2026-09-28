@@ -13,6 +13,8 @@ import pytest
 from bot.portfolio_rules import combine_portfolio_rule
 from bot.universe_pit import (
     DAY_MS,
+    assert_membership_consistent,
+    eligibility_from_snapshots,
     eligible_on,
     load_snapshots,
     mean_daily_quote_volume,
@@ -121,7 +123,113 @@ class TestCombinerDenominators:
         assert iv[-1] == pytest.approx(0.015)
 
 
-class TestSnapshots:
+class TestMembershipMaskIsReal:
+    """The PIT universe must CONTROL MEMBERSHIP, not merely rescale a denominator.
+
+    The old control passed only a COUNT per day. That scaled exposure but let
+    every asset with data keep contributing its return — an asset that was not
+    yet listed, not yet liquid, or already dead was still being paid for, just
+    more quietly. These tests pin the stronger property.
+    """
+
+    def _streams(self):
+        # A earns from day 0; LATE only has data from day 30 onward.
+        t0, t1 = DAY_MS * 0, DAY_MS * 30
+        return (
+            {"A": {t0: 0.01, t1: 0.01}, "LATE": {t1: 0.50}},
+            [t0, t1],
+        )
+
+    def test_ineligible_asset_contributes_nothing_when_masked(self):
+        streams, timeline = self._streams()
+        # Only A is eligible on both days; LATE is a late listing.
+        elig = {t: {"A"} for t in timeline}
+        out = combine_portfolio(streams, timeline, n_assets=2, eligible_by_day=elig)
+        # Day 0: A alone / denom 1  -> 0.01
+        # Day 1: A only (LATE masked out) / denom 1 -> 0.01, NOT (0.01+0.50)/1
+        assert out[0] == pytest.approx(0.01)
+        assert out[1] == pytest.approx(0.01)
+
+    def test_denominator_only_control_would_have_let_late_asset_pay(self):
+        # Demonstrates the gap the mask closes: a count-only denominator still
+        # credits the ineligible asset's return, merely diluted.
+        streams, timeline = self._streams()
+        counts = {t: 2 for t in timeline}
+        out = combine_portfolio(streams, timeline, n_assets=2, denominator_by_day=counts)
+        assert out[1] > 0.01, "count-only control still pays the late listing"
+        elig = {t: {"A"} for t in timeline}
+        masked = combine_portfolio(streams, timeline, n_assets=2, eligible_by_day=elig)
+        assert masked[1] == pytest.approx(0.01)
+
+    def test_mask_applies_to_inverse_vol_and_rule_combiners(self):
+        streams, timeline = self._streams()
+        elig = {t: {"A"} for t in timeline}
+        iv = combine_portfolio_invvol(streams, timeline, 2, eligible_by_day=elig)
+        rule = combine_portfolio_rule(streams, timeline, 2, use_tilt=False, use_crisis=False,
+                                      eligible_by_day=elig)
+        assert iv[1] == pytest.approx(0.01)
+        assert rule[1] == pytest.approx(0.01)
+
+    def test_unavailable_sleeve_capital_stays_in_cash(self):
+        # A dead asset's capital is not redistributed to the survivor: the
+        # denominator still counts the dead asset, so exposure falls.
+        streams = {"LIVE": {DAY_MS: 0.10}, "DEAD": {DAY_MS: 0.10}}
+        timeline = [DAY_MS]
+        elig = {DAY_MS: {"LIVE"}}  # DEAD is not holdable
+        out = combine_portfolio(streams, timeline, n_assets=2, eligible_by_day=elig)
+        assert out[0] == pytest.approx(0.10 / 1)
+
+    def test_contributors_are_always_a_subset_of_eligible(self):
+        streams, timeline = self._streams()
+        elig = {t: {"A"} for t in timeline}
+        # The invariant helper must reject a violation if one ever appears.
+        assert_membership_consistent({"A"}, elig[timeline[0]], timeline[0])
+        with pytest.raises(AssertionError, match="not eligible"):
+            assert_membership_consistent({"A", "LATE"}, elig[timeline[0]], timeline[0])
+
+    def test_missing_eligibility_day_fails_closed(self):
+        streams, timeline = self._streams()
+        with pytest.raises(ValueError, match="no point-in-time eligibility"):
+            combine_portfolio(streams, timeline, 2, eligible_by_day={timeline[0]: {"A"}})
+
+    def test_mask_and_denominator_agree_on_a_staggered_life_cycle(self):
+        hist = {"EARLY": _candles(0, 500), "LATE": _candles(300, 200), "DEAD": _candles(0, 120)}
+        timeline = [DAY_MS * d for d in (95, 150, 250, 395)]
+        elig = point_in_time_universe(hist, timeline)
+        streams = {s: {t: 0.01 for t in timeline} for s in hist}
+        out = combine_portfolio(streams, timeline, n_assets=3, eligible_by_day=elig)
+        # Each day: total return 0.01 summed over eligible sleeves / |eligible|
+        for r in out:
+            assert r == pytest.approx(0.01, abs=1e-15)
+
+
+class TestEligibilityFromSnapshots:
+    def test_snapshots_become_dated_membership(self, tmp_path):
+        from datetime import UTC, datetime
+
+        log = tmp_path / "u.jsonl"
+        record_snapshot([("BTC", 1e9), ("AAA", 1e8)], log_path=log,
+                        now=datetime(2026, 8, 23, tzinfo=UTC))
+        record_snapshot([("BTC", 1e9)], log_path=log,
+                        now=datetime(2026, 8, 24, tzinfo=UTC))
+        elig = eligibility_from_snapshots(log)
+        d23 = int(datetime(2026, 8, 23, tzinfo=UTC).timestamp() * 1000)
+        d24 = int(datetime(2026, 8, 24, tzinfo=UTC).timestamp() * 1000)
+        assert elig[d23] == {"BTC", "AAA"}
+        assert elig[d24] == {"BTC"}
+
+    def test_days_without_a_snapshot_are_omitted_not_invented(self, tmp_path):
+        from datetime import UTC, datetime
+
+        log = tmp_path / "u.jsonl"
+        record_snapshot([("BTC", 1e9)], log_path=log,
+                        now=datetime(2026, 8, 23, tzinfo=UTC))
+        elig = eligibility_from_snapshots(log)
+        d24 = int(datetime(2026, 8, 24, tzinfo=UTC).timestamp() * 1000)
+        assert d24 not in elig  # a gap day is missing, not fabricated
+
+
+class TestDenominatorValidation:
     def test_record_and_load_roundtrip(self, tmp_path):
         log = tmp_path / "universe_log.jsonl"
         r1 = record_snapshot([("BTC", 9e9), ("XYZ", 4e8)], log_path=log,

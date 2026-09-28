@@ -148,6 +148,13 @@ def expanded_bootstrap(
     artifact of one resampling assumption; wide disagreement flags strong
     serial dependence or short samples.
     """
+    if not returns:
+        raise ValueError("returns must be non-empty")
+    for i, r in enumerate(returns):
+        if isinstance(r, bool) or not isinstance(r, (int, float)) or not math.isfinite(float(r)):
+            raise ValueError(f"return {i} must be finite")
+    _positive_int(n_boot, "n_boot")
+    _positive_int(block, "block")
     n = len(returns)
     out = {}
     for name, sampler in _BOOTSTRAPS.items():
@@ -229,9 +236,35 @@ def probability_of_underperformance(
     strategy's diversification/correlation against the benchmark is kept.
     Reported for CAGR and excess Sharpe separately, plus the analytic
     normal-approximation probability for the Sharpe difference.
+
+    THE THREE REPORTED QUANTITIES ARE DIFFERENT THINGS — do not conflate them:
+      * `p_underperform_sharpe` / `p_underperform_cagr` are BOOTSTRAP EMPIRICAL
+        probabilities: the fraction of resampled paths on which the strategy
+        actually lost. They make no distributional assumption, and they are
+        bounded below by the finite-sample resolution 1/(n_boot+1).
+      * `sharpe_gap_ci` is a BOOTSTRAP CONFIDENCE INTERVAL for the Sharpe
+        difference — a 90% interval, not a probability.
+      * `analytic_p_underperform_sharpe` is a NORMAL APPROXIMATION of the
+        probability that the true Sharpe gap is negative. It assumes the
+        bootstrap distribution of the gap is symmetric Normal, which
+        block-bootstrap resampling does not strictly guarantee, so it should
+        only ever be quoted alongside — never instead of — the empirical
+        bootstrap probability.
+
+    Tail correctness: the strategy UNDERPERFORMS when the gap is negative, so
+    P(gap < 0) = Phi(-z) where z is the standardized observed gap. The
+    previous implementation reported Phi(+z), which made a large POSITIVE
+    strategy edge produce a probability approaching 1.0 — the exact inverse
+    of the intended reading, and enough to invert any conclusion drawn from it.
     """
     if len(strategy_returns) != len(benchmark_returns):
         raise ValueError("strategy and benchmark returns must be pre-aligned to the same days")
+    for label, series in (("strategy", strategy_returns), ("benchmark", benchmark_returns)):
+        for i, r in enumerate(series):
+            if isinstance(r, bool) or not isinstance(r, (int, float)) or not math.isfinite(float(r)):
+                raise ValueError(f"{label} return {i} must be finite")
+    _positive_int(n_boot, "n_boot")
+    _positive_int(block, "block")
     n = len(strategy_returns)
     if n < 30:
         raise ValueError("need at least 30 aligned days")
@@ -256,13 +289,23 @@ def probability_of_underperformance(
     diffs.sort()
     sd_diff = stdev(diffs) if len(diffs) > 1 else 0.0
     z = (obs_sh_s - obs_sh_b) / sd_diff if sd_diff > 0 else 0.0
+    # Analytic normal approximation. The strategy underperforms iff the true
+    # Sharpe gap is NEGATIVE, so we need the LEFT tail:
+    #
+    #     P(gap < 0) = Phi((0 - observed_gap) / sd_diff) = Phi(-z)
+    #
+    # Using Phi(+z) here reported that a decisively BEATING strategy had a
+    # ~100% chance of trailing — inverting the statistic's meaning.
+    analytic_p = _ND.cdf(-z)
+    if not 0.0 <= analytic_p <= 1.0:  # fail closed rather than publish a bad probability
+        raise ValueError("analytic underperformance probability fell outside [0, 1]")
     return {
         "p_underperform_cagr": worse_cagr / n_boot,
         "p_underperform_sharpe": worse_sharpe / n_boot,
         "observed_cagr_gap": obs_cagr_s - obs_cagr_b,
         "observed_sharpe_gap": obs_sh_s - obs_sh_b,
         "sharpe_gap_ci": (_quantile(diffs, 0.05), _quantile(diffs, 0.95)),
-        "analytic_p_underperform_sharpe": _ND.cdf(z),
+        "analytic_p_underperform_sharpe": analytic_p,
     }
 
 
@@ -371,6 +414,12 @@ def _window_return(chunk: list[float]) -> float | None:
     return eq - 1.0
 
 
+def _positive_int(value, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{label} must be a positive integer")
+    return value
+
+
 def mc_future_paths(
     returns: list[float],
     horizon_days: int = 252,
@@ -383,14 +432,38 @@ def mc_future_paths(
     Future paths are drawn as stationary-block resamples of history (not iid
     shuffles): volatility clustering and trend persistence survive, so
     drawdown-risk estimates stay honest for trend-following streams.
+
+    SAMPLING DOMAIN: block starting points are drawn from the ENTIRE observed
+    history, not from a horizon-sized prefix. With 1,500 historical returns
+    and a 252-day horizon, observations after index 251 are still legitimate
+    block starts — the old implementation passed `horizon_days` as the
+    sampler's population size, so it could only ever emit indices in
+    [0, 252) and silently discarded the most recent 83% of the evidence
+    (including the most recent, most relevant regimes). `stationary_bootstrap_
+    indices(horizon_days, block, rng, domain=len(returns))` separates "how
+    many draws" from "how much history they may come from".
+
+    A horizon LONGER than the sample is legitimate here — blocks simply wrap
+    around the end of history via the circular step, which is the standard
+    stationary-bootstrap construction and is what makes this a forecast
+    rather than an interpolation.
     """
+    if not returns:
+        raise ValueError("returns must be non-empty")
+    for i, r in enumerate(returns):
+        if isinstance(r, bool) or not isinstance(r, (int, float)) or not math.isfinite(float(r)):
+            raise ValueError(f"return {i} must be finite")
+    horizon_days = _positive_int(horizon_days, "horizon_days")
+    n_paths = _positive_int(n_paths, "n_paths")
+    block = _positive_int(block, "block")
     rng = random.Random(seed)
     n = len(returns)
     terminals = []
     worst_dds = []
     for _ in range(n_paths):
-        idx = stationary_bootstrap_indices(horizon_days, block, rng)
-        path = [returns[i % n] for i in idx]
+        # Emit `horizon_days` indices drawn from ALL n historical observations.
+        idx = stationary_bootstrap_indices(horizon_days, block, rng, domain=n)
+        path = [returns[i] for i in idx]
         eq = _equity_from(path)
         terminals.append(eq[-1])
         worst_dds.append(max_drawdown(eq))
@@ -405,4 +478,9 @@ def mc_future_paths(
         "path_mdd_median": _quantile(worst_dds, 0.5),
         "path_mdd_p95": _quantile(worst_dds, 0.05),
         "path_mdd_worst": worst_dds[0],
+        # Provenance: the sample the paths were actually drawn from, so a
+        # reader can see the evidence base rather than trusting the number.
+        "n_source_observations": n,
+        "block": block,
+        "n_paths": n_paths,
     }

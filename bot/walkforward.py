@@ -18,6 +18,7 @@ from .engine import DAY_MS, run_strategy
 from .metrics import cagr, max_drawdown, sharpe, volatility
 from .portfolio_rules import _capped_normalize
 from .strategy import build_candidates
+from .universe_pit import assert_membership_consistent
 
 
 def _validate_timeline(candles: list[dict]) -> list[int]:
@@ -301,31 +302,62 @@ def fixed_candidate_streams(candles: list[dict], abs_folds: list[tuple[int, int]
     return streams
 
 
-def combine_portfolio(asset_dailies: dict[str, dict[int, float]], timeline: list[int], n_assets: int, denominator_by_day: dict[int, int] | None = None) -> list[float]:
+def combine_portfolio(
+    asset_dailies: dict[str, dict[int, float]],
+    timeline: list[int],
+    n_assets: int,
+    denominator_by_day: dict[int, int] | None = None,
+    eligible_by_day: dict[int, set[str]] | None = None,
+) -> list[float]:
     """Equal-weight portfolio returns on the shared timeline.
 
-    The denominator is the *selected* asset count, not the count with data on
+    The denominator is the *eligible* asset count, not the count with data on
     a given day: an asset that is late-listed, stale, or delisted simply sits
     in cash for its missing days. This is a survivorship-bias control — a
     vanished asset can not silently hand its capital to the survivors.
 
-    `denominator_by_day` upgrades the control to point-in-time eligibility
-    ({day_ms: eligible count}, bot/universe_pit.py): exposure scales by
-    present/eligible(day), so late listings only join when they were actually
-    holdable. Default None = fixed historical denominator.
+    `eligible_by_day` is the POINT-IN-TIME MEMBERSHIP MASK
+    ({day_ms: set(symbols holdable that day)}, bot/universe_pit.py). Supplying
+    it makes the universe control real rather than cosmetic: an asset that is
+    NOT eligible on day t contributes NOTHING on day t — its return stream is
+    masked out entirely, not merely diluted by a denominator. It therefore
+    cannot earn portfolio return or allocation before it crossed the
+    eligibility rules (listing age, trailing liquidity, still trading).
+
+    `denominator_by_day` (counts only) remains supported for callers that
+    predate the mask, but it is strictly weaker: it rescales exposure without
+    preventing an ineligible asset from contributing. When `eligible_by_day`
+    is given it supersedes `denominator_by_day`, and the denominator is
+    |eligible(day)|.
     """
     if isinstance(n_assets, bool) or not isinstance(n_assets, int) or n_assets <= 0:
         raise ValueError("n_assets must be a positive integer")
-    dailies = list(asset_dailies.values())
     out = []
     for t in timeline:
-        denom = n_assets if denominator_by_day is None else denominator_by_day.get(t, n_assets)
+        if eligible_by_day is not None:
+            if t not in eligible_by_day:
+                raise ValueError(
+                    f"no point-in-time eligibility recorded for {t}; refusing to "
+                    f"invent membership for a day we never observed"
+                )
+            eligible = set(eligible_by_day[t])
+            # A day with an empty eligible set means nothing was holdable:
+            # the portfolio is all cash, and the denominator is 1 (itself).
+            denom = max(1, len(eligible))
+        else:
+            eligible = None
+            denom = n_assets if denominator_by_day is None else denominator_by_day.get(t, n_assets)
         if isinstance(denom, bool) or not isinstance(denom, int) or denom <= 0:
             raise ValueError(f"portfolio denominator must be a positive integer at {t}")
-        present_count = sum(1 for daily in dailies if t in daily)
-        if present_count > denom:
+        present = {s for s, daily in asset_dailies.items() if t in daily}
+        if eligible is not None:
+            # THE MASK: ineligible assets contribute nothing at all.
+            present &= eligible
+        if len(present) > denom:
             raise ValueError(f"present asset count exceeds denominator at {t}")
-        total = sum(daily.get(t, 0.0) for daily in dailies)
+        # contributors must be a subset of eligible — the mask cannot be violated
+        assert_membership_consistent(present, eligible, t)
+        total = sum(asset_dailies[s][t] for s in present)
         out.append(total / denom)
     return out
 
@@ -337,17 +369,20 @@ def combine_portfolio_invvol(
     window: int = 20,
     max_multiple_of_equal: float = 2.0,
     denominator_by_day: dict[int, int] | None = None,
+    eligible_by_day: dict[int, set[str]] | None = None,
 ) -> list[float]:
     """Inverse-volatility-weighted portfolio returns.
 
-    Same survivorship control as the equal-weight combiner: the day's total
-    exposure is (assets with data) / (selected assets) — a missing asset's
+    Same point-in-time control as the equal-weight combiner: the day's total
+    exposure is (assets with data) / (eligible assets) — a missing asset's
     sleeve sits in cash rather than being redistributed. Within the assets
     that do trade, weights are proportional to 1/trailing-vol (computed from
     strictly past returns), capped at `max_multiple_of_equal` x the equal
     weight so a single low-vol asset (e.g. a bond ETF) cannot dominate.
-    `denominator_by_day` enables point-in-time eligibility denominators
-    (see combine_portfolio).
+
+    `eligible_by_day` applies the PIT MEMBERSHIP MASK: an ineligible asset is
+    removed from the day's contributors entirely, so it can contribute neither
+    return nor weight. It supersedes `denominator_by_day` when supplied.
     """
     import math
 
@@ -362,12 +397,25 @@ def combine_portfolio_invvol(
     hist: dict[str, list[float]] = {s: [] for s in syms}
     out = []
     for t in timeline:
-        denom = n_assets if denominator_by_day is None else denominator_by_day.get(t, n_assets)
+        if eligible_by_day is not None:
+            if t not in eligible_by_day:
+                raise ValueError(
+                    f"no point-in-time eligibility recorded for {t}; refusing to "
+                    f"invent membership for a day we never observed"
+                )
+            eligible = set(eligible_by_day[t])
+            denom = max(1, len(eligible))
+        else:
+            eligible = None
+            denom = n_assets if denominator_by_day is None else denominator_by_day.get(t, n_assets)
         if isinstance(denom, bool) or not isinstance(denom, int) or denom <= 0:
             raise ValueError(f"portfolio denominator must be a positive integer at {t}")
-        present = [s for s in syms if t in asset_dailies[s]]
+        present = {s for s in syms if t in asset_dailies[s]}
+        if eligible is not None:
+            present &= eligible  # THE MASK: ineligible sleeves contribute nothing
         if len(present) > denom:
             raise ValueError(f"present asset count exceeds denominator at {t}")
+        assert_membership_consistent(present, eligible, t)
         if not present:
             out.append(0.0)
             continue

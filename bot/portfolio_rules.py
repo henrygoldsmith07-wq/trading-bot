@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import math
 
+from .universe_pit import assert_membership_consistent
+
 
 def _trailing_cum_ret(hist: list[float], lookback: int) -> float | None:
     if len(hist) < lookback:
@@ -226,16 +228,24 @@ def combine_portfolio_rule(
     dd_exit: float = -0.05,
     throttle: float = 0.5,
     denominator_by_day: dict[int, int] | None = None,
+    eligible_by_day: dict[int, set[str]] | None = None,
 ) -> list[float]:
     """Fixed composite rule: inverse-vol base + XS-momentum tilt + crisis
     de-risking + optional drawdown throttle.
 
-    `denominator_by_day` enables the point-in-time survivorship control:
-    {day_ms: number of assets ELIGIBLE on that day} (listed, aged, liquid —
-    bot/universe_pit.py). The day's exposure then scales by
-    present/eligible(day) instead of present/n_assets, so a portfolio can
-    only hold what a same-day investor could actually have held. Default
-    None keeps the historical fixed-denominator behavior.
+    `eligible_by_day` is the point-in-time MEMBERSHIP MASK
+    ({day_ms: set(symbols eligible that day)}, bot/universe_pit.py). With it
+    in force the day's chain is strictly
+
+        eligible assets -> allowed sleeves -> weights -> exposure -> return
+
+    and an asset that is not eligible on a date is removed before any
+    weighting happens, so it can contribute neither allocation nor return on
+    that date. Capital belonging to an unavailable sleeve is NOT
+    redistributed: it stays in cash, which is the convention that stops a
+    late listing or a dead asset from handing its weight to whatever happened
+    to survive. `denominator_by_day` (counts only) is the weaker legacy
+    control and is superseded when the mask is supplied.
     """
     syms = list(asset_dailies)
     hist: dict[str, list[float]] = {s: [] for s in syms}
@@ -244,8 +254,27 @@ def combine_portfolio_rule(
     peak = 1.0
     throttled = False
     for t in timeline:
-        present = [s for s in syms if t in asset_dailies[s]]
-        denom = n_assets if denominator_by_day is None else max(1, denominator_by_day.get(t, n_assets))
+        if eligible_by_day is not None:
+            if t not in eligible_by_day:
+                raise ValueError(
+                    f"no point-in-time eligibility recorded for {t}; refusing to "
+                    f"invent membership for a day we never observed"
+                )
+            eligible = set(eligible_by_day[t])
+            denom = max(1, len(eligible))
+        else:
+            eligible = None
+            denom = n_assets if denominator_by_day is None else denominator_by_day.get(t, n_assets)
+        if isinstance(denom, bool) or not isinstance(denom, int) or denom <= 0:
+            raise ValueError(f"portfolio denominator must be a positive integer at {t}")
+        contributors = {s for s in syms if t in asset_dailies[s]}
+        if eligible is not None:
+            contributors &= eligible  # THE MASK, applied before any weighting
+        if len(contributors) > denom:
+            raise ValueError(f"present asset count exceeds denominator at {t}")
+        assert_membership_consistent(contributors, eligible, t)
+        # Deterministic ordering so equal inputs give byte-identical output.
+        present = sorted(contributors)
         weights, exposure, throttled = day_allocation(
             hist,
             present,
