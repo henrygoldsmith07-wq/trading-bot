@@ -128,14 +128,23 @@ def compute_compare_results(args, fetch=None, log=print, save_run=True):
     oos_start_ms, oos_end_ms = folds_abs[0][0], folds_abs[-1][1]
 
     min_history = args.train_days + args.test_days + 180
+    # The CLI passes a comma-separated string; accept either form so the
+    # override is usable from argparse and from a direct call.
     override = getattr(args, "universe_symbols", None)
+    if isinstance(override, str):
+        override = [s.strip() for s in override.split(",") if s.strip()]
     universe = list(override) if override else ["BTCUSDT"] + [s for s in top_symbols(args.assets) if s != "BTCUSDT"]
     universe = universe[: len(override) if override else args.assets]
     specs: list[tuple[str, str, int]] = [(s, "crypto", 365) for s in universe] + [
         (e["symbol"], e["asset_class"], e["periods_per_year"]) for e in ETF_UNIVERSE
     ]
 
-    log(f"Universe: {args.assets} crypto pairs by quote volume + {len(ETF_UNIVERSE)} cross-class ETFs")
+    if override:
+        # Stated loudly: a pinned universe is what makes two runs comparable.
+        log(f"Universe: PINNED to {len(universe)} symbols (--universe-symbols), NOT the live volume ranking")
+    else:
+        log(f"Universe: {args.assets} crypto pairs by quote volume + {len(ETF_UNIVERSE)} cross-class ETFs")
+        log("  (live ranking — a re-run may select DIFFERENT symbols than the record it is compared to)")
     log("  (paper-only validation; no live orders are ever placed)")
     histories: dict[str, tuple[list[dict], int]] = {}
     skipped: list[tuple[str, str]] = []
@@ -1384,6 +1393,16 @@ def main():
     cmp.add_argument("--seed", type=int, default=42, help="recorded for reproducibility (pipeline is deterministic)")
     cmp.add_argument("--cache-only", action="store_true", help="never refresh datasets from the network")
     cmp.add_argument("--run-id", default=None, help='name the saved run record (e.g. "canonical-v1")')
+    # Pin the exact symbol set instead of re-ranking today's 24h volume. Two
+    # runs over the SAME symbols isolate a methodology change; two runs over
+    # whatever happens to be trending today conflate it with a universe change.
+    # Re-running a canonical record without this flag silently trades a
+    # different portfolio than the one it is meant to be compared against.
+    cmp.add_argument(
+        "--universe-symbols",
+        default=None,
+        help="comma-separated symbols to use verbatim, in place of the live top-N volume ranking",
+    )
 
     sen = sub.add_parser("sensitivity", help="Backtesting-quality sensitivity sweeps")
     sen.add_argument("--symbol", default="BTCUSDT")

@@ -1,65 +1,65 @@
 {
   "run_id": "canonical-v2",
-  "created_at": "2026-09-28T20:22:02.442626+00:00",
+  "created_at": "2026-09-29T06:57:46.466373+00:00",
   "results": {
     "exit_code": 0,
-    "verdict": "risk-managed portfolio OOS CAGR BEATS S&P 500 (29.2% vs 14.9%); Sharpe beats (1.19 vs 0.74); max drawdown better (-21.5% vs -25.4%)",
+    "verdict": "risk-managed portfolio OOS CAGR BEATS S&P 500 (25.4% vs 14.9%); Sharpe beats (1.05 vs 0.74); max drawdown better (-23.8% vs -25.4%)",
     "metrics": {
       "rules": [
         {
           "name": "inv-vol (selected underlying)",
-          "cagr": 0.17365720059834633,
-          "sharpe": 1.0600199083980075,
-          "max_drawdown": -0.11035091410106357,
-          "es95": -0.013432576206114911,
-          "calmar": 1.573681577656026,
-          "final": 2.613651057816568,
-          "psr": 1.0,
-          "dsr": 1.0
-        },
-        {
-          "name": "+ tilt + crisis de-risk",
-          "cagr": 0.17257314091502307,
-          "sharpe": 1.003241967637667,
-          "max_drawdown": -0.11521593033820088,
-          "es95": -0.014640960808133213,
-          "calmar": 1.4978236117909893,
-          "final": 2.599199721499708,
-          "psr": 1.0,
-          "dsr": 1.0
-        },
-        {
-          "name": "+ drawdown throttle",
-          "cagr": 0.13173209724359158,
-          "sharpe": 0.8158127146825078,
-          "max_drawdown": -0.11507222927862248,
-          "es95": -0.012352092446158406,
-          "calmar": 1.1447774851448376,
-          "final": 2.1011729393638428,
+          "cagr": 0.11896191257561184,
+          "sharpe": 0.7657800490151119,
+          "max_drawdown": -0.1244904457389906,
+          "es95": -0.012306976179668897,
+          "calmar": 0.9555907031213463,
+          "final": 1.962871300308834,
           "psr": 0.999,
           "dsr": 0.999
         },
         {
+          "name": "+ tilt + crisis de-risk",
+          "cagr": 0.11678341180535035,
+          "sharpe": 0.709911124626313,
+          "max_drawdown": -0.12017906312892457,
+          "es95": -0.013799604375879742,
+          "calmar": 0.9717450674421428,
+          "final": 1.9400535921960964,
+          "psr": 0.996,
+          "dsr": 0.996
+        },
+        {
+          "name": "+ drawdown throttle",
+          "cagr": 0.10370169240357807,
+          "sharpe": 0.6421907360160742,
+          "max_drawdown": -0.1166598855201103,
+          "es95": -0.012823999544719427,
+          "calmar": 0.8889233170531575,
+          "final": 1.8076329574827623,
+          "psr": 0.995,
+          "dsr": 0.995
+        },
+        {
           "name": "+ tilt + crisis, banded 5% rebalance",
-          "cagr": 0.1718569065584754,
-          "sharpe": 1.0507220691521284,
-          "max_drawdown": -0.10402051000572676,
-          "es95": -0.01290880074364508,
-          "calmar": 1.652144433333522,
-          "final": 2.589688354241808,
-          "psr": 1.0,
-          "dsr": 1.0
+          "cagr": 0.1169180458497272,
+          "sharpe": 0.7447526100691485,
+          "max_drawdown": -0.09790528036400548,
+          "es95": -0.012304396394341655,
+          "calmar": 1.1941955062590444,
+          "final": 1.941457316461894,
+          "psr": 0.999,
+          "dsr": 0.999
         },
         {
           "name": "fully-fixed: RiskEnsemble everywhere, banded, all overlays",
-          "cagr": 0.05539350576756519,
-          "sharpe": 0.38504158186604664,
-          "max_drawdown": -0.0985656240466658,
-          "es95": -0.008652666142489465,
-          "calmar": 0.5619961959692883,
-          "final": 1.381931463416581,
-          "psr": 0.975,
-          "dsr": 0.975
+          "cagr": 0.05239003224602401,
+          "sharpe": 0.3603666543222562,
+          "max_drawdown": -0.08121749814994805,
+          "es95": -0.008110984494374113,
+          "calmar": 0.6450584349360129,
+          "final": 1.358502230999319,
+          "psr": 0.976,
+          "dsr": 0.976
         }
       ],
       "window": {
@@ -67,81 +67,81 @@
         "end": "2026-08-14"
       },
       "equal_raw": {
-        "final": 8.100287867154512,
-        "cagr": 0.41715300551703627,
-        "vol": 0.24996021837857849,
-        "sharpe": 1.3994694405028154,
-        "sortino": 2.257001313408412,
-        "calmar": 1.8152105714793076,
-        "max_drawdown": -0.22980970476448748,
-        "var95": -0.017758821104166593,
-        "es95": -0.028007717419968586
+        "final": 5.500679355694989,
+        "cagr": 0.32862592264140345,
+        "vol": 0.24019513463459913,
+        "sharpe": 1.1781242184849212,
+        "sortino": 1.8119859200245365,
+        "calmar": 1.2417671112647433,
+        "max_drawdown": -0.26464376424553315,
+        "var95": -0.017965110573043834,
+        "es95": -0.028061135895780017
       },
       "inv_vol_rm": {
-        "final": 2.613651057816568,
-        "cagr": 0.17365720059834633,
-        "vol": 0.1305728118347495,
-        "sharpe": 1.0600199083980075,
-        "sortino": 2.0002312652886944,
-        "calmar": 1.573681577656026,
-        "max_drawdown": -0.11035091410106357,
-        "var95": -0.0069348242184697605,
-        "es95": -0.013432576206114911
+        "final": 1.962871300308834,
+        "cagr": 0.11896191257561184,
+        "vol": 0.11613736297277369,
+        "sharpe": 0.7657800490151119,
+        "sortino": 1.4042753662069642,
+        "calmar": 0.9555907031213463,
+        "max_drawdown": -0.1244904457389906,
+        "var95": -0.0069043530905251735,
+        "es95": -0.012306976179668897
       },
       "equal_rm": {
-        "final": 4.643420949577314,
-        "cagr": 0.2916346172359563,
-        "vol": 0.20882910816817143,
-        "sharpe": 1.186055888945386,
-        "sortino": 1.8586082270298925,
-        "calmar": 1.3547099143842054,
-        "max_drawdown": -0.2152745869351087,
-        "var95": -0.015623282187714955,
-        "es95": -0.02404328006146899
+        "final": 3.8839995939631833,
+        "cagr": 0.2537564953035971,
+        "vol": 0.20807363949812208,
+        "sharpe": 1.0467847004479938,
+        "sortino": 1.5815769883441952,
+        "calmar": 1.065406221622037,
+        "max_drawdown": -0.23817816167551875,
+        "var95": -0.016212947431350523,
+        "es95": -0.02457501323677728
       },
       "full_rm": {
-        "final": 2.599199721499708,
-        "cagr": 0.17257314091502307,
-        "vol": 0.13804197678095598,
-        "sharpe": 1.003241967637667,
-        "sortino": 1.8207917274387209,
-        "calmar": 1.4978236117909893,
-        "max_drawdown": -0.11521593033820088,
-        "var95": -0.007516309734410282,
-        "es95": -0.014640960808133213
+        "final": 1.9400535921960964,
+        "cagr": 0.11678341180535035,
+        "vol": 0.12384088260839686,
+        "sharpe": 0.709911124626313,
+        "sortino": 1.2337437751142177,
+        "calmar": 0.9717450674421428,
+        "max_drawdown": -0.12017906312892457,
+        "var95": -0.00753634050502311,
+        "es95": -0.013799604375879742
       },
       "throttle_rm": {
-        "final": 2.1011729393638428,
-        "cagr": 0.13173209724359158,
-        "vol": 0.12403439861273223,
-        "sharpe": 0.8158127146825078,
-        "sortino": 1.5609911474212288,
-        "calmar": 1.1447774851448376,
-        "max_drawdown": -0.11507222927862248,
-        "var95": -0.006228685233423485,
-        "es95": -0.012352092446158406
+        "final": 1.8076329574827623,
+        "cagr": 0.10370169240357807,
+        "vol": 0.11732670065565012,
+        "sharpe": 0.6421907360160742,
+        "sortino": 1.131567860023718,
+        "calmar": 0.8889233170531575,
+        "max_drawdown": -0.1166598855201103,
+        "var95": -0.0064680605500373285,
+        "es95": -0.012823999544719427
       },
       "banded_rm": {
-        "final": 2.589688354241808,
-        "cagr": 0.1718569065584754,
-        "vol": 0.1302108857821155,
-        "sharpe": 1.0507220691521284,
-        "sortino": 2.0267437322691517,
-        "calmar": 1.652144433333522,
-        "max_drawdown": -0.10402051000572676,
-        "var95": -0.0067388617732468655,
-        "es95": -0.01290880074364508
+        "final": 1.941457316461894,
+        "cagr": 0.1169180458497272,
+        "vol": 0.11708164876943673,
+        "sharpe": 0.7447526100691485,
+        "sortino": 1.3705721585112651,
+        "calmar": 1.1941955062590444,
+        "max_drawdown": -0.09790528036400548,
+        "var95": -0.006428091774186265,
+        "es95": -0.012304396394341655
       },
       "fixed_rm": {
-        "final": 1.381931463416581,
-        "cagr": 0.05539350576756519,
-        "vol": 0.06816173912129263,
-        "sharpe": 0.38504158186604664,
-        "sortino": 0.5430317258152157,
-        "calmar": 0.5619961959692883,
-        "max_drawdown": -0.0985656240466658,
-        "var95": -0.004368534653007703,
-        "es95": -0.008652666142489465
+        "final": 1.358502230999319,
+        "cagr": 0.05239003224602401,
+        "vol": 0.06418424934209767,
+        "sharpe": 0.3603666543222562,
+        "sortino": 0.5073323634210385,
+        "calmar": 0.6450584349360129,
+        "max_drawdown": -0.08121749814994805,
+        "var95": -0.0037300165921936444,
+        "es95": -0.008110984494374113
       },
       "spx": {
         "cagr": 0.14923792965925076,
@@ -224,12 +224,6 @@
         "max_drawdown": -0.2982753427690755
       },
       {
-        "symbol": "HBARUSDT",
-        "cagr": 0.4487206028891477,
-        "sharpe": 0.8324235670006231,
-        "max_drawdown": -0.5157841301778081
-      },
-      {
         "symbol": "ZECUSDT",
         "cagr": 0.2771826377581992,
         "sharpe": 0.7810078273300418,
@@ -242,16 +236,10 @@
         "max_drawdown": -0.4364217641758873
       },
       {
-        "symbol": "UNIUSDT",
-        "cagr": 0.3488558858947277,
-        "sharpe": 0.7185695461576019,
-        "max_drawdown": -0.4883117320253402
-      },
-      {
-        "symbol": "XLMUSDT",
-        "cagr": 0.37144853002726275,
-        "sharpe": 0.7101178467853045,
-        "max_drawdown": -0.6984716436403401
+        "symbol": "ADAUSDT",
+        "cagr": 0.26285211678816567,
+        "sharpe": 0.6478590254685656,
+        "max_drawdown": -0.48687068395978605
       },
       {
         "symbol": "SPY",
@@ -272,16 +260,16 @@
         "max_drawdown": -0.7352863916640009
       },
       {
-        "symbol": "QNTUSDT",
-        "cagr": -0.13789370609592566,
-        "sharpe": 0.07590240737415269,
-        "max_drawdown": -0.8875664725246897
-      },
-      {
         "symbol": "GLD",
         "cagr": 0.01921296664415384,
         "sharpe": -0.05928087928082758,
         "max_drawdown": -0.1630702630412303
+      },
+      {
+        "symbol": "AAVEUSDT",
+        "cagr": -0.40020825378939184,
+        "sharpe": -0.2558004321655623,
+        "max_drawdown": -0.9455541389894443
       },
       {
         "symbol": "TLT",
@@ -297,18 +285,17 @@
       "Ensemble(TrendVol(25,0.40),TrendVol(50,0.40),TrendVol(100,0.40))": 2,
       "TrendVol(75,0.20)": 1,
       "TrendVol(25,0.50)": 7,
-      "TrendVol(25,0.20)": 2,
-      "BuyHold": 8,
-      "TSMom(189,0.35)": 1,
-      "MacdTrend(12,26,9)": 9,
-      "SmaCross(10,50)": 22,
+      "TrendVol(25,0.20)": 1,
+      "SmaCross(10,50)": 18,
       "Ensemble(TrendVol(50,0.25),RsiDipBuy(3,60,150),MacdTrend(8,21,5))": 3,
       "TSMom(126,0.45)": 2,
-      "MacdTrend(16,32,9)": 12,
-      "TrendVol(50,0.40)": 2,
-      "TrendVol(50,0.50)": 2,
+      "MacdTrend(12,26,9)": 1,
+      "MacdTrend(16,32,9)": 15,
+      "BuyHold": 9,
       "TSMom(126,0.30)": 1,
       "TrendVol(25,0.40)": 3,
+      "TrendVol(50,0.40)": 2,
+      "RsiDipBuy(2,55,150)": 1,
       "SmaCross(50,150)": 6,
       "TrendVol(200,0.20)": 1
     },
@@ -327,25 +314,11 @@
         "start": 1502928000000,
         "end": 1790553600000
       },
-      "QNTUSDT": {
-        "sha256": "0cb9cf308e9ccfcbfed1dfd2d9191b69582ba7d82c173a9cfdd43c4e9d1c0387",
-        "provider": "binance",
-        "downloaded_at": 1790625033.196894,
-        "start": 1627516800000,
-        "end": 1790553600000
-      },
       "SOLUSDT": {
         "sha256": "ad206be766dc0b02297302efe986a4c1a9bf19b4f7c6900aeb9f72212facf34e",
         "provider": "binance",
         "downloaded_at": 1790625036.6373389,
         "start": 1597104000000,
-        "end": 1790553600000
-      },
-      "ZECUSDT": {
-        "sha256": "6bb6f278fcc608003fbabbf5cb3e81f734adcfa2e0b647d467d419ef6fa820b3",
-        "provider": "binance",
-        "downloaded_at": 1790625041.6337042,
-        "start": 1553126400000,
         "end": 1790553600000
       },
       "XRPUSDT": {
@@ -355,39 +328,11 @@
         "start": 1525392000000,
         "end": 1790553600000
       },
-      "NEARUSDT": {
-        "sha256": "5d19f0c64bcd3559bdedc2b9b60f6e807b471f3bc7765acb0a02c32c8e5cee51",
+      "ZECUSDT": {
+        "sha256": "6bb6f278fcc608003fbabbf5cb3e81f734adcfa2e0b647d467d419ef6fa820b3",
         "provider": "binance",
-        "downloaded_at": 1790625052.9966333,
-        "start": 1602633600000,
-        "end": 1790553600000
-      },
-      "HBARUSDT": {
-        "sha256": "d3184d714fd7b9d6a5bead66412173ca69774104eeb7cf164934226d1a528bab",
-        "provider": "binance",
-        "downloaded_at": 1790625060.810761,
-        "start": 1569715200000,
-        "end": 1790553600000
-      },
-      "LINKUSDT": {
-        "sha256": "018f08fe2623cbd09e8d104333b94a601339953b4f7f0937df85df78a16ddb38",
-        "provider": "binance",
-        "downloaded_at": 1790625070.5059752,
-        "start": 1547596800000,
-        "end": 1790553600000
-      },
-      "UNIUSDT": {
-        "sha256": "f47c1c5aabafd7167b4b466847a0e451aadbb89e9ee5bc5c1f714ca00345381d",
-        "provider": "binance",
-        "downloaded_at": 1790625065.7721124,
-        "start": 1600300800000,
-        "end": 1790553600000
-      },
-      "DOGEUSDT": {
-        "sha256": "20727f48a17f37c4118f977465a30d0d4eb1209ea08f07bf7c9f20f7910ad55c",
-        "provider": "binance",
-        "downloaded_at": 1790625075.7650468,
-        "start": 1562284800000,
+        "downloaded_at": 1790625041.6337042,
+        "start": 1553126400000,
         "end": 1790553600000
       },
       "BNBUSDT": {
@@ -397,12 +342,40 @@
         "start": 1509926400000,
         "end": 1790553600000
       },
-      "XLMUSDT": {
-        "sha256": "6ae3672ac286e66ffc4d229d670b6de8f0c5bc93ad6d43ac0b0413bd5f452a5a",
+      "DOGEUSDT": {
+        "sha256": "20727f48a17f37c4118f977465a30d0d4eb1209ea08f07bf7c9f20f7910ad55c",
         "provider": "binance",
-        "downloaded_at": 1790625097.0266364,
-        "start": 1527724800000,
+        "downloaded_at": 1790625075.7650468,
+        "start": 1562284800000,
         "end": 1790553600000
+      },
+      "NEARUSDT": {
+        "sha256": "5d19f0c64bcd3559bdedc2b9b60f6e807b471f3bc7765acb0a02c32c8e5cee51",
+        "provider": "binance",
+        "downloaded_at": 1790625052.9966333,
+        "start": 1602633600000,
+        "end": 1790553600000
+      },
+      "LINKUSDT": {
+        "sha256": "018f08fe2623cbd09e8d104333b94a601339953b4f7f0937df85df78a16ddb38",
+        "provider": "binance",
+        "downloaded_at": 1790625070.5059752,
+        "start": 1547596800000,
+        "end": 1790553600000
+      },
+      "AAVEUSDT": {
+        "sha256": "ce13cb826d215c42223395a3235fb9fd1585412bfb3209fb8d7d9678a7fdff22",
+        "provider": "binance",
+        "downloaded_at": 1790664212.3470569,
+        "start": 1602720000000,
+        "end": 1790640000000
+      },
+      "ADAUSDT": {
+        "sha256": "b909d0bcd3869f795591ecfaa7251960c023af54c550f3c5086b9b2344bb9fb4",
+        "provider": "binance",
+        "downloaded_at": 1790664220.4824193,
+        "start": 1523923200000,
+        "end": 1790640000000
       },
       "SPY": {
         "sha256": "59d51e775831fe67b631ffa0ed24cc80d926cb382415b2aa4160f05b91b55e8f",
@@ -438,40 +411,40 @@
       "end": "2026-08-14"
     },
     "n_folds": 6,
-    "n_assets_selected": 16,
+    "n_assets_selected": 14,
     "universe": [
       "BTCUSDT",
       "ETHUSDT",
-      "QNTUSDT",
       "SOLUSDT",
-      "ZECUSDT",
       "XRPUSDT",
-      "NEARUSDT",
-      "SUIUSDT",
-      "HBARUSDT",
-      "LINKUSDT",
-      "UNIUSDT",
-      "DOGEUSDT",
+      "ZECUSDT",
       "BNBUSDT",
-      "PUMPUSDT",
-      "ONDOUSDT",
-      "WLDUSDT",
-      "XAUTUSDT",
+      "DOGEUSDT",
+      "SUIUSDT",
+      "PEPEUSDT",
+      "TUTUSDT",
+      "REUSDT",
       "ENAUSDT",
-      "XLMUSDT",
-      "TAOUSDT"
+      "PUMPUSDT",
+      "TRUMPUSDT",
+      "NEARUSDT",
+      "RLUSDUSDT",
+      "LINKUSDT",
+      "SNDKBUSDT",
+      "AAVEUSDT",
+      "ADAUSDT"
     ],
     "pit_eligibility": {
       "min": 10,
-      "median": 15,
-      "max": 16
+      "median": 14,
+      "max": 14
     },
     "environment": {
       "python": "3.12.14",
-      "git_commit": "137d2f7c2636490947b2bac3dc04234d7f71cd3e",
+      "git_commit": "ab8aea1c95a3d4baaed7029925dbf88f62714cb0",
       "code_fingerprint": {
         "algo": "sha256-lf-v1",
-        "sha256": "cf23a086da11f7547bb1f7e06553e277c553f1305e69a519d088e523b490e5c8"
+        "sha256": "70cfa12e0a741dd52b413cd2230c97d34dd5bb85a41d9d45518911b567f61252"
       },
       "strategy_definitions_hash": {
         "files": {
@@ -511,17 +484,18 @@
       "portfolio_vol": 0.25,
       "seed": 42,
       "cache_only": false,
-      "run_id": "canonical-v2"
+      "run_id": "canonical-v2",
+      "universe_symbols": "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,ZECUSDT,BNBUSDT,DOGEUSDT,SUIUSDT,PEPEUSDT,TUTUSDT,REUSDT,ENAUSDT,PUMPUSDT,TRUMPUSDT,NEARUSDT,RLUSDUSDT,LINKUSDT,SNDKBUSDT,AAVEUSDT,ADAUSDT"
     },
     "timing_s": {
-      "fetch_cache": 3.692,
-      "walk_forward": 762.616,
-      "total": 859.997
+      "fetch_cache": 34.941,
+      "walk_forward": 753.956,
+      "total": 869.625
     }
   },
   "tolerance": {
     "rel": 1e-12,
     "abs": 1e-12
   },
-  "record_sha256": "b3904f1c110ec8119e111aa3ed9babfac9fad2e0eda136ae3b5f4c0b84266de9"
+  "record_sha256": "21a231eb771714e18a39b913b8bdc47f077a2691faf393a110935df9f6a51b00"
 }
