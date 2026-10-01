@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install tooling
-        run: pip install pytest ruff mypy pytest-cov
+        run: pip install pytest ruff mypy pytest-cov pyyaml
       - name: Lint (ruff)
         run: ruff check .
       - name: Type check (mypy)

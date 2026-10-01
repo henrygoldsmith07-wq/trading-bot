@@ -2,19 +2,39 @@ name: Scheduled paper run
 
 # Runs the prospective forward test daily ON THE FROZEN CODE.
 #
-# Threat model (why the dance below): freeze.json pins configuration AND a
-# code fingerprint, but a naive `actions/checkout` would execute whatever is
-# on main today — so editing strategy.py after freezing would silently change
-# the experiment while the manifest kept claiming otherwise. The workflow
-# therefore:
-#   1. reads the pointer fields from freeze.json on main,
-#   2. checks out git_commit_at_freeze (the frozen implementation),
-#   3. refuses to run unless the running source's sha256 matches the
-#      manifest's code_sha256 (`python -m bot verify-freeze`),
-#   4. trades one forward day from the frozen config only,
-#   5. appends the log entry to main — data flows back, code never.
+# Threat model: freeze.json pins configuration AND a code fingerprint, so a
+# naive checkout of main would execute whatever main contains today. Editing
+# strategy.py after freezing would silently change the experiment while the
+# manifest kept claiming otherwise.
 #
-# Paper only — no real orders exist anywhere in this repo.
+# Why this workflow uses a separate git worktree:
+# The runner previously executed the frozen commit in the SAME tree and then
+# returned with "git checkout -B main origin/main". By then the forward step
+# had rewritten forward_log.jsonl, freeze.json and universe_log.jsonl, so git
+# refused the checkout ("local changes would be overwritten by checkout") and
+# the run died AFTER computing a valid paper day. That day was lost. The
+# failure is reproduced as
+# tests/test_forward_evidence.py::test_legacy_checkout_B_fails_on_dirty_evidence_tree
+# so the root cause stays documented.
+#
+# Now the frozen commit gets its own worktree, so main is never dirtied by the
+# forward run and returning to main cannot fail. Evidence is copied out
+# explicitly to a staging directory and merged by bot/forward_evidence.py,
+# which is unit-tested, date-keyed, idempotent and fail-closed.
+#
+# Invariants this layout is built to keep:
+#   * frozen code executes in an isolated tree;
+#   * main owns the freeze pointer and the persistent evidence files;
+#   * evidence is transferred explicitly, never by dirtying main;
+#   * a concurrent commit on main cannot be overwritten. Each push attempt
+#     re-bases on the newest origin/main and re-merges, and existing rows are
+#     immutable, so a racing run can delay evidence but never lose or replace it;
+#   * the freeze identity is rechecked before anything is committed;
+#   * a duplicate date can never be appended;
+#   * a computed paper day is never silently discarded. It is staged before any
+#     git operation and uploaded as an artifact regardless of the outcome.
+#
+# Paper only. No real orders exist anywhere in this repo.
 
 on:
   schedule:
@@ -35,70 +55,64 @@ concurrency:
   group: paper-run
   cancel-in-progress: false
 
+env:
+  FROZEN_TREE: ${{ runner.temp }}/frozen
+  STAGING: ${{ runner.temp }}/staging
+
 jobs:
   forward-step:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      # ---- step 1: read the freeze pointer from main -----------------------
-      - name: Check out default branch (pointer only)
+      # ---- step 1: main, clean, full history (pointer and evidence owner) ---
+      - name: Check out main (pointer and evidence owner)
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
-          fetch-depth: 1
-
-      - name: Read freeze pointer
-        id: pointer
-        run: |
-          python scripts/freeze_pointer.py
-          # carry the manifest across the upcoming ref checkout: freeze.json
-          # lives on main, but the frozen commit predates it
-          cp freeze.json /tmp/freeze.json
-          # ...and carry the TAPE too. Step 4 runs inside the frozen commit's
-          # tree, whose forward_log.jsonl is a snapshot from freeze time and
-          # therefore STALE: entries main has deliberately quarantined (every
-          # day predating a re-freeze) are still sitting in it. Appending to
-          # that file and merging back resurrected two pre-freeze days, which
-          # then counted as forward evidence. The tape lives on main; the
-          # frozen commit contributes code, never data.
-          cp forward_log.jsonl /tmp/forward_log.jsonl 2>/dev/null || :
-
-      - name: Stop gracefully when no freeze exists yet
-        if: steps.pointer.outputs.commit == ''
-        run: echo "::notice::no freeze manifest — nothing to advance today"
-
-      # ---- step 2: become the frozen commit --------------------------------
-      - name: Check out the frozen commit
-        if: steps.pointer.outputs.commit != ''
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ steps.pointer.outputs.commit }}
           fetch-depth: 0
 
-      - name: Restore the manifest and the tape into the frozen tree
-        if: steps.pointer.outputs.commit != ''
-        run: |
-          cp /tmp/freeze.json freeze.json
-          # seed the tape from main so --step appends to the CURRENT record
-          # rather than to the stale snapshot baked into the frozen commit
-          cp /tmp/forward_log.jsonl forward_log.jsonl 2>/dev/null || :
-
       - uses: actions/setup-python@v7
-        if: steps.pointer.outputs.commit != ''
         with:
           python-version: "3.12"
 
+      - name: Read freeze pointer
+        id: pointer
+        run: python scripts/freeze_pointer.py
+
+      - name: Stop gracefully when no freeze exists yet
+        if: steps.pointer.outputs.commit == ''
+        run: echo "::notice::no freeze manifest - nothing to advance today"
+
+      # ---- step 2: build the ISOLATED frozen tree -------------------------
+      - name: Create isolated worktree at the frozen commit
+        if: steps.pointer.outputs.commit != ''
+        run: |
+          set -euo pipefail
+          rm -rf "$FROZEN_TREE" "$STAGING"
+          mkdir -p "$STAGING"
+          # --detach: we want the frozen CODE, not a branch we might ever push.
+          # This step removes the dirty-tree failure outright: the forward run
+          # happens in this directory, so main is never modified and can always
+          # be re-checked out.
+          git worktree add --detach "$FROZEN_TREE" "${{ steps.pointer.outputs.commit }}"
+          # The manifest and the tape live on main. The frozen commit predates
+          # the current manifest and carries a STALE snapshot of the tape, so
+          # seed both explicitly rather than trusting the frozen tree.
+          cp freeze.json "$FROZEN_TREE/freeze.json"
+          cp forward_log.jsonl "$FROZEN_TREE/forward_log.jsonl" 2>/dev/null || :
+
       - name: Cache market data
-        if: steps.pointer.outputs.code_sha256 != ''
+        if: steps.pointer.outputs.commit != ''
         uses: actions/cache@v6
         with:
-          path: .cache
+          path: ${{ env.FROZEN_TREE }}/.cache
           key: market-data-${{ github.run_id }}
           restore-keys: market-data-
 
       # ---- step 3: prove we are running the frozen implementation ----------
       - name: Verify running code matches the freeze
         if: steps.pointer.outputs.commit != ''
+        working-directory: ${{ env.FROZEN_TREE }}
         run: python -m bot verify-freeze --freeze-file freeze.json
 
       - name: Resolve the market session date
@@ -134,12 +148,14 @@ jobs:
             echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
           fi
 
-      # ---- step 4: one forward day on frozen code --------------------------
+      # ---- step 4: one forward day on frozen code, in isolation -----------
       - name: Advance the prospective paper portfolio one day
         if: steps.pointer.outputs.commit != '' && steps.session.outputs.trading == 'true'
+        working-directory: ${{ env.FROZEN_TREE }}
         env:
           LOG_FILE: forward_log.jsonl
         run: |
+          set -euo pipefail
           if [ '${{ steps.session.outputs.mode }}' = 'explicit' ]; then
             python -m bot forward --step --as-of-date '${{ steps.session.outputs.date }}' --freeze-file freeze.json --log-file "$LOG_FILE"
           else
@@ -148,112 +164,100 @@ jobs:
           python -m bot forward --report --freeze-file freeze.json --log-file "$LOG_FILE"
 
       # ---- step 4b: record today's universe (point-in-time dataset) -------
-      # Today's ranking recorded TODAY carries no survivorship bias; a year
-      # of these snapshots is the dataset future backtests deserve.
+      # Today's ranking recorded TODAY carries no survivorship bias. A year of
+      # these snapshots is the dataset future backtests deserve.
       #
-      # continue-on-error is load-bearing, not laziness. This step is a data
-      # collection nicety; without the flag, a snapshot failure skips step 5
-      # and the forward day step 4 already computed is silently discarded.
-      # That is exactly how five consecutive runs produced one recorded day.
-      # The forward log is the evidence — nothing auxiliary may hold it hostage.
+      # continue-on-error is load-bearing, not laziness: this step is a data
+      # collection nicety, and without the flag a snapshot failure would skip
+      # the staging step and discard the forward day step 4 already computed.
       - name: Snapshot today's universe
         if: steps.pointer.outputs.commit != '' && steps.session.outputs.trading == 'true'
         continue-on-error: true
+        working-directory: ${{ env.FROZEN_TREE }}
         run: python -m bot universe-snapshot --top 20 --log universe_log.jsonl
 
-      # ---- step 5: return to main; append ONLY the log (data, not code) ----
-      - name: Append forward log to main
+      # ---- step 5: STAGE the evidence before touching git ------------------
+      # Everything the run produced is copied out of the worktree and recorded
+      # with the freeze identity that produced it. From here the day is durable:
+      # any later failure is recoverable from $STAGING.
+      - name: Stage evidence for transfer to main
+        if: steps.pointer.outputs.commit != '' && steps.session.outputs.trading == 'true'
+        run: |
+          set -euo pipefail
+          for f in forward_log.jsonl universe_log.jsonl cost_observations.jsonl; do
+            if [ -f "$FROZEN_TREE/$f" ]; then cp "$FROZEN_TREE/$f" "$STAGING/$f"; fi
+          done
+          if [ ! -f "$STAGING/forward_log.jsonl" ]; then
+            echo "::error::the forward step produced no forward_log.jsonl; refusing to stage an empty transfer"
+            exit 1
+          fi
+          # Record which freeze produced this evidence. The merge refuses to
+          # attach it if main's active freeze is no longer this one.
+          python - "$STAGING/evidence_staging.json" <<'PY'
+          import json, pathlib, sys
+          manifest = json.loads(pathlib.Path("freeze.json").read_text(encoding="utf-8"))
+          identity = {
+              "git_commit_at_freeze": manifest.get("git_commit_at_freeze"),
+              "code_sha256": manifest.get("code_sha256"),
+              "config_sha256": manifest.get("config_sha256"),
+              "frozen_at_date": manifest.get("frozen_at_date"),
+          }
+          pathlib.Path(sys.argv[1]).write_text(
+              json.dumps({"produced_under_freeze": identity}, indent=2) + "\n", encoding="utf-8"
+          )
+          print("staged evidence for freeze", identity["git_commit_at_freeze"])
+          PY
+
+      # ---- step 6: merge into main and push, safely retrying --------------
+      # Main is clean here because the forward run never touched it, so
+      # re-checking out origin/main cannot fail. Each attempt re-bases on the
+      # newest main and re-merges the staged evidence, so a concurrent commit is
+      # never overwritten and never costs us the day. The merge is date-keyed
+      # and idempotent, so retrying converges instead of duplicating.
+      - name: Merge staged evidence into main and push
         if: steps.pointer.outputs.commit != '' && steps.session.outputs.trading == 'true'
         env:
           BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          [ -f forward_log.jsonl ] || { echo "no log produced this run"; exit 0; }
-          cp forward_log.jsonl /tmp/forward_log.jsonl
-          [ -f universe_log.jsonl ] && cp universe_log.jsonl /tmp/universe_log.jsonl
-          [ -f cost_observations.jsonl ] && cp cost_observations.jsonl /tmp/cost_observations.jsonl
+          set -euo pipefail
           git config user.name "paper-bot"
           git config user.email "actions@users.noreply.github.com"
-          # Main may have advanced while the frozen step was running. Refresh
-          # before merging data so the bot never tries to push from a stale
-          # branch snapshot.
-          git fetch origin "$BRANCH"
-          git checkout -B "$BRANCH" "origin/$BRANCH"
 
-          # A re-freeze during this workflow changes the experiment identity.
-          # Never attach evidence produced by the old frozen code to the new
-          # freeze merely because both runs happened on the same calendar day.
-          CURRENT_FREEZE=$(python -c "import json; print(json.load(open('freeze.json')).get('git_commit_at_freeze', ''))")
-          if [ "$CURRENT_FREEZE" != "${{ steps.pointer.outputs.commit }}" ]; then
-            echo "::notice::freeze changed while this run was executing; preserving artifacts but not mutating main"
-            exit 0
-          fi
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin "$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+            python -m bot forward-evidence merge --staging "$STAGING" --repo .
+            git add -- forward_log.jsonl universe_log.jsonl
+            if [ -f cost_observations.jsonl ]; then git add -- cost_observations.jsonl; fi
+            if git diff --cached --quiet; then
+              echo "no new evidence to commit (already present on $BRANCH)"
+              exit 0
+            fi
+            LAST=$(tail -n 1 forward_log.jsonl | python -c 'import json,sys;print(json.load(sys.stdin)["date"])' 2>/dev/null || echo unknown)
+            git commit -q -m "paper forward log: $LAST"
+            if git push -q origin "$BRANCH"; then
+              echo "pushed forward evidence for $LAST on attempt $attempt"
+              exit 0
+            fi
+            echo "::notice::push rejected on attempt $attempt (main moved); re-merging onto the new tip"
+          done
+          echo "::error::could not land forward evidence after 5 attempts; it is preserved in the artifact"
+          exit 1
 
-          python - <<'PY'
-          import json, pathlib
-          p = pathlib.Path('forward_log.jsonl')
-          new = [json.loads(l) for l in pathlib.Path('/tmp/forward_log.jsonl').read_text().splitlines() if l.strip()]
-          old = []
-          if p.exists():
-              old = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
-          seen = {e.get('date') for e in old}
-          merged = old + [e for e in new if e.get('date') not in seen]
-          # Nothing downstream filters the tape by freeze date, so a day that
-          # predates the current freeze would be read as forward evidence.
-          # That is the one mistake this log cannot survive: it would mean
-          # scoring the experiment on data from before the rule was sealed.
-          # Enforce the boundary here, on every run, not by hand once.
-          fpath = pathlib.Path('freeze.json')
-          if fpath.exists():
-              cutoff = json.loads(fpath.read_text()).get('frozen_at_date')
-              if cutoff:
-                  kept = [e for e in merged if (e.get('date') or '') > cutoff]
-                  dropped = len(merged) - len(kept)
-                  if dropped:
-                      print(f"dropped {dropped} entr{'y' if dropped == 1 else 'ies'} "
-                            f"dated on/before the freeze ({cutoff})")
-                  merged = kept
-          p.write_text(''.join(json.dumps(e) + '\n' for e in merged))
-          print(f"forward log entries after merge: {len(merged)}")
-          u = pathlib.Path('universe_log.jsonl')
-          if pathlib.Path('/tmp/universe_log.jsonl').exists():
-              uold = {}
-              if u.exists():
-                  for line in u.read_text().splitlines():
-                      if line.strip():
-                          e = json.loads(line); uold[e['date']] = line
-              for line in pathlib.Path('/tmp/universe_log.jsonl').read_text().splitlines():
-                  if line.strip():
-                      e = json.loads(line)
-                      if e['date'] not in uold:
-                          uold[e['date']] = line
-              u.write_text(''.join(uold[d] + '\n' for d in sorted(uold)))
-              print(f"universe snapshot days: {len(uold)}")
-          cpath = pathlib.Path('cost_observations.jsonl')
-          if pathlib.Path('/tmp/cost_observations.jsonl').exists():
-              existing = set()
-              if cpath.exists():
-                  existing = set(cpath.read_text().splitlines())
-              newlines = [line for line in pathlib.Path('/tmp/cost_observations.jsonl').read_text().splitlines()
-                          if line.strip() and line not in existing]
-              with cpath.open('a', encoding='utf-8') as f:
-                  f.writelines(line + '\n' for line in newlines)
-              print(f"cost observations appended: {len(newlines)}")
-          PY
-          git add forward_log.jsonl universe_log.jsonl cost_observations.jsonl
-          if git diff --cached --quiet; then
-            echo "no new entries"
-          else
-            LAST=$(tail -n 1 forward_log.jsonl | python -c "import json,sys;print(json.load(sys.stdin)['date'])")
-            git commit -m "paper forward log: $LAST"
-            git push origin "$BRANCH"
-          fi
+      - name: Remove the frozen worktree
+        if: always()
+        run: git worktree remove --force "$FROZEN_TREE" 2>/dev/null || rm -rf "$FROZEN_TREE"
 
-      - name: Upload artifacts
+      # ---- step 7: never lose a computed day ------------------------------
+      # if: always(), and the STAGING directory is what gets uploaded. Even if
+      # the merge, the push or the runner itself failed, the evidence that was
+      # computed is recoverable from here.
+      - name: Upload evidence artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: forward-state-${{ github.run_id }}
           path: |
-            forward_log.jsonl
+            ${{ env.STAGING }}/
             reports/
           if-no-files-found: ignore

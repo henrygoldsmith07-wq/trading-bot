@@ -1520,6 +1520,19 @@ def main():
         help="ISO session date to account (decouples the market day from delayed runner wall-clock time)",
     )
 
+    fve = sub.add_parser(
+        "forward-evidence",
+        help="Merge or verify forward evidence tapes (the scheduled paper run's evidence transfer)",
+    )
+    fve.add_argument("--staging", default=None, help="staged evidence directory produced by the frozen worktree")
+    fve.add_argument("--repo", default=".", help="repository root (default: cwd)")
+    fve.add_argument("--verify", action="store_true", help="validate the repository evidence tapes instead of merging")
+    fve.add_argument(
+        "--allow-freeze-change",
+        action="store_true",
+        help="merge even if the active freeze moved (quarantine a run; never for scoring)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "backtest":
@@ -1580,6 +1593,18 @@ def main():
         if not (args.step or args.report):
             print("use --step and/or --report")
         raise SystemExit(run_forward(args))
+    elif args.command == "forward-evidence":
+        from .forward_evidence import main as _fe_main
+
+        if args.verify:
+            raise SystemExit(_fe_main(["verify", "--repo", args.repo]))
+        if not args.staging:
+            print("::error::forward-evidence needs --staging (to merge) or --verify (to validate)")
+            raise SystemExit(2)
+        _argv = ["merge", "--staging", args.staging, "--repo", args.repo]
+        if args.allow_freeze_change:
+            _argv.append("--allow-freeze-change")
+        raise SystemExit(_fe_main(_argv))
 
 
 if __name__ == "__main__":
