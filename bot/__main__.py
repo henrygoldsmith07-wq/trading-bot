@@ -1352,6 +1352,7 @@ def run_forward(args) -> int:
     from .prospective import (
         alert_stats,
         checkpoints_due,
+        experiment_stamp,
         forward_performance,
         load_freeze,
         load_log,
@@ -1388,6 +1389,7 @@ def run_forward(args) -> int:
         entries,
         freeze_date=freeze_date,
         risk_free_annual=float(manifest["config"]["frictions"].get("risk_free_annual", 0.0)),
+        experiment=experiment_stamp(manifest),
     )
     total_return = perf["return"]
     as_of = _date.fromisoformat(entries[-1]["date"])

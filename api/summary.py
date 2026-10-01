@@ -325,13 +325,17 @@ def build_forward_summary(
             "reason": "no forward days recorded yet",
         }
 
-    from bot.prospective import forward_performance
+    from bot.prospective import experiment_stamp, forward_performance
 
     risk_free_annual = float(manifest.get("config", {}).get("frictions", {}).get("risk_free_annual", 0.0))
     perf = forward_performance(
         entries,
         freeze_date=frozen_date,
         risk_free_annual=risk_free_annual,
+        # Only rows this exact experiment produced may be graded as
+        # prospective evidence. Earlier experiments stay on the tape and are
+        # reported, never counted.
+        experiment=experiment_stamp(manifest),
     )
     # Cumulative performance compounds the append-only tape exactly as written.
     # Observation quality is reported separately; deleting a partial row would

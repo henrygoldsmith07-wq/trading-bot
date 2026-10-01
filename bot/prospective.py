@@ -450,11 +450,99 @@ def classify_forward_days(entries: list[dict]) -> dict[str, int]:
     return counts
 
 
+def experiment_stamp(manifest: dict) -> dict:
+    """The identity a forward row must carry to count as evidence.
+
+    Rows recorded before this existed carry no stamp and are therefore NOT
+    evidence for the current experiment: they were produced by earlier code,
+    under an earlier accounting model, against an earlier freeze.
+    """
+    from .experiments import infer_accounting_model
+
+    return {
+        "experiment_version": manifest.get("experiment_version") or "v1",
+        "accounting_model": manifest.get("accounting_model") or infer_accounting_model(manifest),
+        "git_commit": manifest.get("git_commit_at_freeze"),
+        "code_sha256": manifest.get("code_sha256"),
+        "config_sha256": manifest.get("config_sha256"),
+        "frozen_at_date": manifest.get("frozen_at_date"),
+    }
+
+
+def _row_stamp(entry: dict) -> dict | None:
+    stamp = entry.get("experiment")
+    return stamp if isinstance(stamp, dict) else None
+
+
+def select_prospective_rows(entries: list[dict], expected: dict | None) -> tuple[list[dict], dict]:
+    """Split the append-only tape into rows this experiment may grade on, and rows it may not.
+
+    `entries` is never mutated and never truncated: the tape is a record, not a
+    buffer. Excluded rows are counted and named so the report can say exactly
+    how much of the tape the current verdict is standing on.
+
+    A row counts only when all of the following hold:
+      * it was recorded strictly after the freeze date, so no pre-freeze day
+        can be re-read as prospective evidence;
+      * it carries an experiment stamp, so we can prove which implementation
+        produced it;
+      * every stamped field agrees with the freeze that is being graded.
+
+    Rows that fail are returned in the second element with per-reason counts.
+    `expected=None` disables scoping entirely and grades every row, which is
+    what a plain tape view without a manifest should do.
+    """
+    if expected is None:
+        return list(entries), {"total": len(entries), "kept": len(entries), "excluded": 0, "reasons": {}}
+
+    anchor_raw = expected.get("frozen_at_date")
+    anchor: date | None = None
+    if anchor_raw:
+        try:
+            anchor = date.fromisoformat(str(anchor_raw))
+        except ValueError:
+            anchor = None
+
+    comparable = ("experiment_version", "accounting_model", "git_commit", "code_sha256", "config_sha256")
+    kept: list[dict] = []
+    reasons: dict[str, int] = {}
+
+    def bump(reason: str) -> None:
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+    for entry in entries:
+        if anchor is not None:
+            try:
+                row_date = date.fromisoformat(str(entry.get("date", "")))
+            except ValueError:
+                bump("unparseable date")
+                continue
+            if row_date <= anchor:
+                bump("recorded on or before the freeze date")
+                continue
+        stamp = _row_stamp(entry)
+        if stamp is None:
+            bump("carries no experiment stamp (produced before stamping existed)")
+            continue
+        mismatch = next((k for k in comparable if stamp.get(k) != expected.get(k)), None)
+        if mismatch is not None:
+            bump(f"produced by a different experiment ({mismatch} differs)")
+            continue
+        kept.append(entry)
+
+    return kept, {
+        "total": len(entries),
+        "kept": len(kept),
+        "excluded": len(entries) - len(kept),
+        "reasons": reasons,
+    }
+
 def forward_performance(
     entries: list[dict],
     *,
     freeze_date: date | str | None = None,
     risk_free_annual: float = 0.0,
+    experiment: dict | None = None,
 ) -> dict:
     """Canonical performance view of the append-only forward tape.
 
@@ -462,9 +550,14 @@ def forward_performance(
     would remove a real mark-chained interval from the path.  Quality counts
     instead decide whether inferential statistics such as Sharpe are safe to
     publish.
+
+    `experiment` is the freeze identity being graded. When supplied, only rows
+    that this experiment produced are graded; the rest are reported, not
+    silently dropped, and never counted as prospective evidence.
     """
     from .metrics import max_drawdown, sharpe
 
+    entries, scope = select_prospective_rows(entries, experiment)
     quality = classify_forward_days(entries)
     if not entries:
         return {
@@ -476,6 +569,7 @@ def forward_performance(
             "periods_per_year": None,
             "quality": quality,
             "return_quality": "none",
+            "scope": scope,
         }
 
     if quality["dark"] == len(entries):
@@ -488,6 +582,7 @@ def forward_performance(
             "periods_per_year": None,
             "quality": quality,
             "return_quality": "unmeasured",
+            "scope": scope,
         }
 
     dates = [date.fromisoformat(entry["date"]) for entry in entries]
@@ -539,6 +634,7 @@ def forward_performance(
         "periods_per_year": periods_per_year,
         "quality": quality,
         "return_quality": "degraded" if degraded else "complete",
+        "scope": scope,
     }
 
 
@@ -1130,6 +1226,11 @@ def run_step(
         "outages": outages,
         "missed_fills": missed_fills,
     }
+    # Stamp the experiment this row was produced under. Without it a later
+    # freeze cannot tell which rows its own forward record may grade on, and
+    # rows from a superseded experiment would silently be counted as
+    # prospective evidence.
+    entry["experiment"] = experiment_stamp(manifest)
     if alerts:
         entry["alerts"] = alerts
     append_log(entry, log_path)
