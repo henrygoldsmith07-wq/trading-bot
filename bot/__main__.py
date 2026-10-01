@@ -82,13 +82,53 @@ def _d(ms):
     return datetime.fromtimestamp(ms / 1000, tz=UTC).date()
 
 
-def compute_compare_results(args, fetch=None, log=print, save_run=True):
+def _environment_block(args):
+    """Provenance for a canonical record, from one place.
+
+    Records HEAD, the source fingerprint, per-module hashes, and whether the
+    tree was clean. A canonical run refuses a dirty tree unless the caller
+    explicitly asks for a non-canonical run.
+    """
+    import pathlib as _pl
     import platform
 
+    from .canonical_identity import PRIMARY_RULE_ID
+    from .provenance import SEALED_MODULES, DirtyTreeError, git_state
+
+    # Only a CANONICAL run must be refused on a dirty tree. Exploratory and
+    # development runs are legitimate from a working tree; they are simply
+    # recorded as non-canonical, and the record says so.
+    run_id = str(getattr(args, "run_id", "") or "")
+    is_canonical = bool(getattr(args, "canonical", False)) or run_id.lower().startswith("canonical")
+    # the tree you ran in is the tree that produced the evidence
+    state = git_state(_pl.Path.cwd())
+    if is_canonical and state.dirty and not getattr(args, "allow_dirty_tree", False):
+        from .provenance import DIRTY_REFUSAL_HINT
+
+        raise DirtyTreeError(
+            f"refusing to create the canonical run {run_id!r} from a dirty working tree."
+            f"\n  {state.describe()}\n  {DIRTY_REFUSAL_HINT}"
+        )
+    from .identity import code_fingerprint, source_file_fingerprint
+
+    return {
+        "python": platform.python_version(),
+        "git_commit": state.head_commit,
+        "code_fingerprint": {"algo": CODE_FP_ALGO, "sha256": code_fingerprint()},
+        "module_hashes": source_file_fingerprint(list(SEALED_MODULES))["files"],
+        "source_clean": not state.dirty,
+        "dirty_paths": list(state.dirty_paths),
+        "is_canonical": is_canonical,
+        "primary_rule_id": PRIMARY_RULE_ID,
+        "strategy_definitions_hash": source_file_fingerprint(["bot/strategy.py"]),
+        "portfolio_rules_hash": source_file_fingerprint(["bot/portfolio_rules.py"]),
+        "universe_hash": source_file_fingerprint(["bot/universe.py", "bot/universe_pit.py"]),
+    }
+
+def compute_compare_results(args, fetch=None, log=print, save_run=True):
     from .benchmark import equity_metrics, fetch_sp500, slice_window
     from .cache import load_or_fetch_meta
     from .data import extend_returns_to_timeline, fetch_daily_history, fetch_yahoo_daily, is_stale
-    from .identity import code_fingerprint, source_file_fingerprint
     from .universe import ETF_UNIVERSE, top_symbols
     from .walkforward import absolute_folds, combine_portfolio, combine_portfolio_invvol, walk_forward_at
 
@@ -447,14 +487,7 @@ def compute_compare_results(args, fetch=None, log=print, save_run=True):
         "universe": universe,
         "pit_eligibility": {"min": min(elig_counts), "median": sorted(elig_counts)[len(elig_counts) // 2],
                             "max": max(elig_counts)} if elig_counts else None,
-        "environment": {
-            "python": platform.python_version(),
-            "git_commit": current_git_commit_safe(),
-            "code_fingerprint": {"algo": CODE_FP_ALGO, "sha256": code_fingerprint()},
-            "strategy_definitions_hash": source_file_fingerprint(["bot/strategy.py"]),
-            "portfolio_rules_hash": source_file_fingerprint(["bot/portfolio_rules.py"]),
-            "universe_hash": source_file_fingerprint(["bot/universe.py", "bot/universe_pit.py"]),
-        },
+        "environment": _environment_block(args),
         "seeds": {"seed": getattr(args, "seed", 42), "note": "compare pipeline is deterministic; seed reserved"},
         "parameters": params,
         "timing_s": {
@@ -957,10 +990,21 @@ def run_freeze(args) -> int:
                 "oos_sharpe_at_freeze": wf["sharpe"],
             }
         )
+    # A freeze pins a COMMIT. If the tree is dirty, the code that produced the
+    # manifest is not the code at that commit, so the manifest would name a
+    # source that never ran. Refuse rather than record an unreproducible seal.
+    from .canonical_identity import assert_primary_rule_is_frozen
+    from .provenance import require_clean_tree
+
     try:
-        commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip() or None
-    except Exception:
-        commit = None
+        _state = require_clean_tree(
+            allow_dirty=bool(getattr(args, "allow_dirty_tree", False)),
+            what="freeze",
+        )
+        commit = _state.head_commit
+    except Exception as exc:
+        print(f"::error::{exc}")
+        return 1
 
     # Immutable-artifact trail: tag the frozen commit (keeps it reachable and
     # human-auditable) and record a container digest when one was built.
@@ -995,6 +1039,14 @@ def run_freeze(args) -> int:
         overlay_enabled=not args.no_overlay,
         target_vol=args.portfolio_vol,
     )
+
+    # The headline grades ONE rule. A freeze of anything else would run a
+    # forward experiment whose results can never support the canonical claim.
+    try:
+        assert_primary_rule_is_frozen(algorithm)
+    except Exception as exc:
+        print(f"::error::{exc}")
+        return 1
 
     manifest = create_freeze(
         assets,
@@ -1084,6 +1136,23 @@ def run_reproduce(args) -> int:
         for r in runs:
             print(f"  {r['run_id']}  {r['created_at']}")
         return 0
+    # Provenance first. A record that claims a commit the current tree is not at
+    # cannot be reproduced by definition, and saying so up front beats a wall of
+    # confusing metric diffs later.
+    try:
+        from .provenance import ProvenanceMismatch, assert_record_matches_source
+        from .runs import load_run_record
+
+        _rec = load_run_record(args.run_id, runs_dir=args.runs_dir)
+        assert_record_matches_source(_rec)
+    except ProvenanceMismatch as e:
+        print(f"PROVENANCE FAILURE: {e}")
+        print("  remedy: check out the commit the record names, or regenerate the record")
+        print("          from the source you intend to certify.")
+        return 2
+    except Exception:
+        pass  # record unreadable; reproduce_run will report it properly
+
     try:
         res = reproduce_run(args.run_id, runs_dir=args.runs_dir)
     except (ReproduceRefused, FileNotFoundError, ValueError) as e:
@@ -1433,6 +1502,17 @@ def main():
     # Re-running a canonical record without this flag silently trades a
     # different portfolio than the one it is meant to be compared against.
     cmp.add_argument(
+        "--allow-dirty-tree",
+        action="store_true",
+        help="allow a canonical run from a dirty working tree; the record is then NOT canonical evidence",
+    )
+    cmp.add_argument(
+        "--canonical",
+        action="store_true",
+        help="mark this run canonical (implied by a --run-id starting with canonical-); requires a clean tree",
+    )
+
+    cmp.add_argument(
         "--universe-symbols",
         default=None,
         help="comma-separated symbols to use verbatim, in place of the live top-N volume ranking",
@@ -1489,6 +1569,11 @@ def main():
     frz.add_argument("--portfolio-vol", type=float, default=0.25)
     frz.add_argument("--embargo-days", type=int, default=30)
     frz.add_argument("--freeze-file", default="freeze.json")
+    frz.add_argument(
+        "--allow-dirty-tree",
+        action="store_true",
+        help="allow freezing from a dirty working tree; the manifest then cannot name its own source",
+    )
     frz.add_argument("--no-tag", action="store_true", help="skip creating the freeze/<date> git tag")
     frz.add_argument("--tag", default=None, help="override the tag name (default: freeze/<YYYYMMDD>)")
     frz.add_argument("--image-digest", default=None, help='record a container digest, e.g. "sha256:..."')
