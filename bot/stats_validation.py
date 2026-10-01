@@ -76,6 +76,123 @@ def dsr(returns: list[float], trial_sharpes_annual: list[float], n_trials: int, 
     return psr(returns, periods_per_year, sr_benchmark_annual=benchmark)
 
 
+def selection_adjusted_stats(
+    returns: list[float],
+    *,
+    periods_per_year: int = 365,
+    ledger_path: str | None = None,
+    pool_size: int | None = None,
+    prespecified: bool = False,
+) -> dict:
+    """PSR plus a DSR that reflects the search this rule actually came from.
+
+WHY THIS EXISTS
+    The canonical pipeline used to call dsr(returns, [sharpe], 1) for every
+    portfolio rule, which reports a near-1 DSR that is arithmetically true and
+    evidentially meaningless: a DSR at n_trials=1 applies NO multiple-testing
+    correction, yet every rule graded here rides on a per-asset strategy chosen
+    from a large candidate pool by walk-forward selection, inside a research
+    program recorded in research_ledger.jsonl. Publishing 0.999 from that is
+    the single most misleading number this repo can print.
+
+WHAT IT DOES INSTEAD
+    Builds the trial count from evidence: the number of search experiments in
+    the hash-chained research ledger, combined with the candidate pool size
+    searched during this very run. If that count cannot be established, or the
+    ledger does not record enough Sharpe-valued experiments to estimate the
+    cross-trial dispersion the deflation needs, the DSR is reported as
+    UNAVAILABLE with a reason. It is never silently replaced by a value that
+    looks like evidence but corrects for nothing.
+
+PRE-SPECIFIED ROWS
+    `prespecified=True` marks a rule fixed before any data was seen, where a
+    trial count of one is the honest answer. Selected rows must not claim it.
+    """
+    from .research_ledger import DEFAULT_LEDGER, load_entries, summarize, verify_chain
+
+    sources: list[str] = []
+    ledger_n = 0
+    trial_sharpes: list[float] = []
+    ledger_problem: str | None = None
+    try:
+        entries = load_entries(ledger_path or DEFAULT_LEDGER)
+        if entries:
+            verify_chain(entries)
+            summary = summarize(entries)
+            ledger_n = int(summary["recommended_trial_count"])
+            trial_sharpes = [float(x) for x in summary["trial_sharpes"]]
+            sources.append(f"research ledger ({ledger_n} search experiments)")
+        else:
+            ledger_problem = "the research ledger records no experiments"
+    except (OSError, ValueError) as exc:
+        ledger_problem = f"the research ledger is unusable: {exc}"
+
+    pool = int(pool_size) if pool_size else 0
+    if pool > 0:
+        sources.append(f"candidate pool ({pool} strategies searched in this run)")
+
+    # The honest count is the LARGEST search that actually happened, not the
+    # smallest one that is convenient.
+    n_trials = max(ledger_n, pool)
+
+    psr_value = psr(returns, periods_per_year)
+    result: dict = {
+        "psr": psr_value,
+        "dsr": None,
+        "dsr_available": False,
+        "dsr_unavailable_reason": None,
+        "n_trials": n_trials if n_trials > 0 else None,
+        "trial_count_sources": sources,
+        "prespecified": prespecified,
+        "benchmark_sharpe": None,
+    }
+
+    if prespecified:
+        # A genuinely pre-specified rule is not a search result, so the program
+        # trial count does not apply to it. Callers must set this truthfully: a
+        # rule riding on a walk-forward-selected underlying is NOT pre-specified
+        # no matter how fixed its overlays look.
+        result.update(
+            dsr=psr_value,
+            dsr_available=True,
+            n_trials=1,
+            trial_count_sources=["pre-specified before any data was seen"],
+            benchmark_sharpe=0.0,
+        )
+        return result
+
+    if n_trials <= 1:
+        result["dsr_unavailable_reason"] = ledger_problem or (
+            "no search history establishes a trial count, so no multiple-testing "
+            "correction can be computed; a trial-count-1 DSR would apply no correction "
+            "at all and would not be evidence"
+        )
+        return result
+
+    if len(trial_sharpes) < 2:
+        result["dsr_unavailable_reason"] = (
+            f"the ledger records {len(trial_sharpes)} Sharpe-valued experiments; deflating "
+            "needs at least two to estimate cross-trial dispersion. Without that the "
+            "benchmark collapses to zero and the DSR would equal the uncorrected PSR.",
+        )
+        return result
+
+    benchmark = expected_max_sharpe_annual(trial_sharpes, n_trials)
+    result.update(
+        dsr=dsr(returns, trial_sharpes, n_trials, periods_per_year),
+        dsr_available=True,
+        benchmark_sharpe=benchmark,
+    )
+    return result
+
+
+def format_dsr(stats: dict) -> str:
+    """Render a DSR for humans, or the reason it is unavailable. Never a bare 0.999."""
+    if not isinstance(stats, dict) or not stats.get("dsr_available"):
+        reason = (stats or {}).get("dsr_unavailable_reason") or "no selection history recorded"
+        return f"DSR n/a ({reason})"
+    return f"DSR {float(stats['dsr']):.3f} (N={stats['n_trials']})"
+
 def stationary_bootstrap_indices(n: int, block: int, rng: random.Random, domain: int | None = None) -> list[int]:
     """Politis-Romano stationary bootstrap: geometric block lengths with mean `block`.
 

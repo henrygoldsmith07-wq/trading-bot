@@ -294,19 +294,29 @@ def compute_compare_results(args, fetch=None, log=print, save_run=True):
     for name, m, _ in rules:
         log(f"  {name:58}{_fmt_pct(m['cagr']):>8}{m['sharpe']:>8.2f}{_fmt_pct(m['max_drawdown']):>8}{_fmt_pct(m['es95']):>7}{m['calmar']:>8.2f}")
 
-    from .metrics import sharpe as _sharpe_ann
-    from .stats_validation import dsr, psr
-    from .stats_validation import dsr as _dsr_pre
-    from .stats_validation import psr as _psr_pre
+    from .stats_validation import format_dsr, selection_adjusted_stats
 
+    # Every rule below rides on a per-asset strategy chosen by walk-forward
+    # selection, inside a research program recorded in research_ledger.jsonl.
+    # So none of them is a pre-specified single trial, and a trial-count-1 DSR
+    # would correct for nothing. The trial count comes from the ledger plus the
+    # pool this run actually searched, and is reported as unavailable when it
+    # cannot be established.
+    candidate_pool_size = len(picks_counter)
     rule_stats = []
     for name, m, r_ in rules:
-        _p1 = _psr_pre(r_)
-        _d1 = _dsr_pre(r_, [_sharpe_ann(r_, 365)], 1)
-        rule_stats.append({"name": name, "cagr": m["cagr"], "sharpe": m["sharpe"],
-                           "max_drawdown": m["max_drawdown"], "es95": m["es95"],
-                           "calmar": m["calmar"], "final": m["final"],
-                           "psr": round(_p1, 3), "dsr": round(_d1, 3)})
+        _adj = selection_adjusted_stats(r_, pool_size=candidate_pool_size, prespecified=False)
+        row = {"name": name, "cagr": m["cagr"], "sharpe": m["sharpe"],
+               "max_drawdown": m["max_drawdown"], "es95": m["es95"],
+               "calmar": m["calmar"], "final": m["final"],
+               "psr": round(_adj["psr"], 3),
+               "dsr": round(_adj["dsr"], 3) if _adj["dsr_available"] else None,
+               "dsr_available": _adj["dsr_available"],
+               "dsr_unavailable_reason": _adj["dsr_unavailable_reason"],
+               "dsr_n_trials": _adj["n_trials"],
+               "dsr_trial_count_sources": _adj["trial_count_sources"],
+               "prespecified": False}
+        rule_stats.append(row)
     # attached to metrics after its construction below
 
     # ---- baselines: cash / momentum / mean-reversion / buy&hold -----------
@@ -338,11 +348,16 @@ def compute_compare_results(args, fetch=None, log=print, save_run=True):
         log(f"  {bname:28} CAGR {_fmt_pct(mm['cagr']):>7}  Sharpe {mm['sharpe']:>5.2f}  "
             f"maxDD {_fmt_pct(mm['max_drawdown']):>7}")
 
-    log("\nStatistical standing (trial count 1 for the fixed rows; selected underlying carries the 85-trial caveat):")
-    for name, _, rets in rules:
-        p1 = psr(rets)
-        d1 = dsr(rets, [_sharpe_ann(rets, 365)], 1)
-        log(f"  {name:58} PSR {p1:.3f}  DSR {d1:.3f}")
+    log("\nStatistical standing (deflated against the recorded search, not a single trial):")
+    for row in rule_stats:
+        adj = {"dsr_available": row["dsr_available"],
+               "dsr": row["dsr"],
+               "n_trials": row["dsr_n_trials"],
+               "dsr_unavailable_reason": row["dsr_unavailable_reason"]}
+        log(f"  {row['name']:58} PSR {row['psr']:.3f}  {format_dsr(adj)}")
+    _unavail = [r_["name"] for r_ in rule_stats if not r_["dsr_available"]]
+    if _unavail:
+        log(f"  {len(_unavail)} rule(s) report DSR as unavailable rather than as an uncorrected number.")
     log(f"\nFrictions: execution={args.execution}, fee={args.fee:.2%}, spread={args.spread_bps:.0f}bp, "
           f"slippage={args.slippage_bps:.0f}bp, latency={args.latency_days}d, cash yield={args.risk_free:.0%}/yr")
     log("Benchmark consistency: same window/calendar-day CAGR; Sharpe in excess of the same risk-free rate; index is untradeable so carries no costs.")
@@ -356,15 +371,32 @@ def compute_compare_results(args, fetch=None, log=print, save_run=True):
     log(f"\nTiming: fetch/cache {t_fetch - t_start:.1f}s, walk-forward compute {t_compute - t_fetch:.1f}s, total {_time.perf_counter() - t_start:.1f}s")
     log("Survivorship control: per-day denominators come from POINT-IN-TIME eligibility (listing age + trailing dollar volume, bot/universe_pit.py), and daily snapshots accumulate in universe_log.jsonl. Residual: symbols purged from Binance before first fetch remain invisible.")
 
-    beats_cagr = port_rm["cagr"] > spx["cagr"]
-    beats_sharpe = port_rm["sharpe"] > spx["sharpe"]
-    beats_mdd = port_rm["max_drawdown"] > spx["max_drawdown"]
-    verdict_txt = (
-        f"risk-managed portfolio OOS CAGR {'BEATS' if beats_cagr else 'trails'} S&P 500 "
-        f"({_fmt_pct(port_rm['cagr'])} vs {_fmt_pct(spx['cagr'])}); "
-        f"Sharpe {'beats' if beats_sharpe else 'trails'} ({port_rm['sharpe']:.2f} vs {spx['sharpe']:.2f}); "
-        f"max drawdown {'better' if beats_mdd else 'worse'} ({_fmt_pct(port_rm['max_drawdown'])} vs {_fmt_pct(spx['max_drawdown'])})"
-    )
+    # THE CANONICAL VERDICT IS ABOUT THE PRIMARY RULE.
+    #
+    # This used to grade "port_rm", the risk-managed EQUAL-WEIGHT portfolio,
+    # which is a comparator and not the strategy the freeze actually trades.
+    # That made the headline report a benchmark win the frozen rule never
+    # earned. The primary rule identity lives in bot/canonical_identity.py and
+    # every other headline surface resolves the same constant.
+    from .canonical_identity import PRIMARY_RULE_DESCRIPTION, PRIMARY_RULE_ID, build_primary_verdict
+
+    # Bind the identity to the block actually computed in THIS run, and fail
+    # closed if the canonical rule was not produced at all. A headline must
+    # never fall back onto whichever portfolio happens to exist.
+    _blocks = {
+        "inv_vol_rm": iv_rm,
+        "full_rm": full_rm,
+        "throttle_rm": throttle_rm,
+        "banded_rm": banded_rm,
+        "fixed_rm": fixed_rm,
+        "equal_rm": port_rm,
+    }
+    if PRIMARY_RULE_ID not in _blocks:
+        raise RuntimeError(f"primary rule {PRIMARY_RULE_ID} was not computed by this run; refusing to headline another one")
+    primary = _blocks[PRIMARY_RULE_ID]
+    _verdict = build_primary_verdict(primary, spx)
+    verdict_txt = _verdict["verdict"]
+    log(f"\nPrimary rule under evaluation: {PRIMARY_RULE_ID} = {PRIMARY_RULE_DESCRIPTION}")
     log()
     log(f"VERDICT: {verdict_txt}")
 
@@ -401,8 +433,10 @@ def compute_compare_results(args, fetch=None, log=print, save_run=True):
         "spx": spx, "btc_bh": bh,
     }
     results = {
-        "exit_code": 0 if beats_cagr and beats_sharpe else 1,
+        "exit_code": _verdict["exit_code"],
         "verdict": verdict_txt,
+        "primary_rule_id": PRIMARY_RULE_ID,
+        "primary_rule_description": PRIMARY_RULE_DESCRIPTION,
         "metrics": metrics,
         "per_asset": sorted(per_asset, key=lambda x: -x["sharpe"]),
         "picks_counter": picks_counter,

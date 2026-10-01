@@ -14,6 +14,15 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# Allow importing bot/ from repo root regardless of how this script is invoked.
+sys.path.insert(0, str(ROOT))
+
+from bot.canonical_identity import (  # noqa: E402
+    PRIMARY_RULE_DESCRIPTION,
+    PRIMARY_RULE_ID,
+    resolve_primary_metrics,
+)
+
 RECORD = ROOT / "runs" / "canonical-v2" / "run.json"
 README = ROOT / "README.md"
 BEGIN = "<!-- CANONICAL:BEGIN — generated from runs/canonical-v2/run.json; do not edit by hand -->"
@@ -31,6 +40,7 @@ def _fmt_pct(x):
 def render(record: dict) -> str:
     r = record["results"]
     m = r["metrics"]
+    primary = resolve_primary_metrics(m)
     iv = m["inv_vol_rm"]
     eq_rm = m["equal_rm"]
     eq_raw = m["equal_raw"]
@@ -41,29 +51,40 @@ def render(record: dict) -> str:
     n_folds = r.get("n_folds")
 
     L = []
+    L.append(
+        f"**Canonical rule under evaluation: `{PRIMARY_RULE_ID}`** — {PRIMARY_RULE_DESCRIPTION}. "
+        f"This is the strategy the freeze executes and the forward log grades."
+    )
+    L.append("")
+    L.append(
+        f"| Metric | PRIMARY `{PRIMARY_RULE_ID}` | S&P 500 |",
+    )
+    L.append("|---|---|---|")
+    L.append(f"| OOS CAGR | {_pct(primary['cagr'])} | {_pct(spx['cagr'])} |")
+    L.append(f"| Sharpe | {primary['sharpe']:.2f} | {spx['sharpe']:.2f} |")
+    L.append(f"| Max drawdown | {_fmt_pct(primary['max_drawdown'])} | {_fmt_pct(spx['max_drawdown'])} |")
+    L.append("")
+    L.append(
+        "> Comparators below (equal-weight, raw equal-weight, inverse-vol) are context only. "
+        "They are not the frozen strategy and are never the claim."
+    )
+    L.append("")
     L.append(f"Out-of-sample window: {win['start']} → {win['end']} "
              f"({n_folds} yearly folds, {n_assets} assets, point-in-time denominators).")
     L.append("")
+    # THE PRIMARY RULE IS THE HEADLINE COLUMN.
+    # Everything to its right is a comparator: reported for context, never as
+    # the claim. Previously this table led with "Bot equal", a different
+    # portfolio from the frozen experiment.
     L.append("```")
-    header = f"{'':18}{'Bot inv-vol':>14}{'Bot equal':>13}{'Bot raw eq':>12}{'S&P 500':>12}{'BTC b&h':>11}"
+    header = (f"{'':18}{'PRIMARY':>14}{'cmp equal':>13}{'cmp raw eq':>12}"
+              f"{'cmp inv-vol':>12}{'S&P 500':>12}{'BTC b&h':>11}")
     L.append(header)
     L.append("-" * len(header))
-    for label, key in (("CAGR", "cagr"), ("Volatility", "vol"), ("Max drawdown", "max_drawdown"),
-                       ("Sortino", "sortino"), ("Calmar", "calmar"), ("ES 95% (1d)", "es95"),
-                       ("Growth of $1", "final")):
-        row = f"{label:18}"
-        for blk in (iv, eq_rm, eq_raw, spx, bh):
-            v = blk[key]
-            if key == "final":
-                row += f"{v:>14.2f}" if blk is iv else ""
-                # widths vary per column; build explicitly below instead
-        break
-    # explicit rows (column widths match the legacy table)
-    def cell(v, w, kind="f2"):
-        return f"{v:>{w}.2f}" if kind == "f2" else f"{_fmt_pct(v):>{w}}"
 
-    cols = [iv, eq_rm, eq_raw, spx, bh]
-    widths = [14, 13, 12, 12, 11]
+
+    cols = [primary, eq_rm, eq_raw, iv, spx, bh]
+    widths = [14, 13, 12, 12, 12, 11]
 
     def row(label, key, kind="pct"):
         cells = []
@@ -86,12 +107,24 @@ def render(record: dict) -> str:
     L.append("")
     L.append("**Fixed portfolio rules** (a-priori overlays; all risk-managed to 25% vol):")
     L.append("")
-    L.append("| Rule | CAGR | Sharpe | maxDD | ES95 | Calmar | PSR | DSR |")
-    L.append("|---|---|---|---|---|---|---|---|")
+    L.append("| Rule | CAGR | Sharpe | maxDD | ES95 | Calmar | PSR | DSR | Trials |")
+    L.append("|---|---|---|---|---|---|---|---|---|")
     for s in m["rules"]:
+        # A DSR is printed only when a real trial count backs it. Older records
+        # carry a trial-count-1 value, which is flagged rather than shown as if
+        # it were corrected evidence.
+        dsr_raw = s.get("dsr")
+        available = s.get("dsr_available", dsr_raw is not None)
+        n_trials = s.get("dsr_n_trials")
+        if dsr_raw is not None and available:
+            dsr_cell = f"{dsr_raw:.3f}"
+            trials_cell = str(n_trials) if n_trials else "1 (uncorrected)"
+        else:
+            dsr_cell = "n/a"
+            trials_cell = "—"
         L.append(
             f"| {s['name']} | {_pct(s['cagr'])} | {s['sharpe']:.2f} | {_fmt_pct(s['max_drawdown'])} "
-            f"| {_pct(s['es95'])} | {s['calmar']:.2f} | {s['psr']:.3f} | {s['dsr']:.3f} |"
+            f"| {_pct(s['es95'])} | {s['calmar']:.2f} | {s['psr']:.3f} | {dsr_cell} | {trials_cell} |"
         )
     L.append("")
     L.append(

@@ -36,6 +36,8 @@ oracular.
 """
 from __future__ import annotations
 
+from .canonical_identity import PRIMARY_RULE_STAT_NAME
+
 GRADES = ("Insufficient", "Weak", "Moderate", "Strong")
 
 
@@ -60,25 +62,43 @@ def grade_historical(rule_stats: list[dict], headline_rule_substring: str, selec
     headline = next((r for r in rule_stats if headline_rule_substring.lower() in r["name"].lower()), None)
     if headline is None:
         return {"grade": "Insufficient", "inputs": {}, "reason": "headline rule absent from canonical record"}
-    dsr, psr = float(headline["dsr"]), float(headline["psr"])
-    if dsr >= 0.95 and psr >= 0.99:
-        base = "Strong"
-    elif dsr >= 0.90 or psr >= 0.95:
-        base = "Moderate"
-    elif dsr >= 0.80:
-        base = "Weak"
+    psr = float(headline["psr"])
+    # A record may legitimately carry no DSR: when the search that produced the
+    # rule cannot be counted, the deflated statistic is unavailable rather than
+    # reported as a number that corrects for nothing.
+    raw_dsr = headline.get("dsr")
+    dsr: float | None = None if raw_dsr is None else float(raw_dsr)
+    if dsr is not None and not bool(headline.get("dsr_available", True)):
+        dsr = None  # the record marks it unavailable; do not surface the number
+    n_trials = headline.get("dsr_n_trials")
+
+    if dsr is None:
+        # Fail closed: PSR alone, uncorrected for a search we know happened,
+        # cannot support Strong evidence.
+        base = "Moderate" if psr >= 0.99 else ("Weak" if psr >= 0.95 else "Insufficient")
+        grade = base if base != "Moderate" else "Weak"
+        reason = (
+            f"PSR {psr:.3f}; DSR unavailable — "
+            f"{headline.get('dsr_unavailable_reason') or 'no selection history recorded'}"
+        )
     else:
-        base = "Insufficient"
-    # The cap: a trial-count-1 DSR inside a heavily-searched program is NOT
-    # strong evidence, however good the number looks.
-    grade = base
-    reason = f"PSR {psr:.3f} / DSR {dsr:.3f} (recorded at trial-count=1)"
-    if base == "Strong" and selection_risk_grade == "High":
-        grade = "Moderate"
-        reason += " — capped to Moderate because the search-program correction is unresolved"
+        if dsr >= 0.95 and psr >= 0.99:
+            base = "Strong"
+        elif dsr >= 0.90 or psr >= 0.95:
+            base = "Moderate"
+        elif dsr >= 0.80:
+            base = "Weak"
+        else:
+            base = "Insufficient"
+        grade = base
+        reason = f"PSR {psr:.3f} / DSR {dsr:.3f} (deflated against N={n_trials} recorded trials)"
+        if base == "Strong" and selection_risk_grade == "High":
+            grade = "Moderate"
+            reason += " — capped to Moderate because the search program is still wide"
     return {
         "grade": grade,
         "inputs": {"rule": headline["name"], "psr": psr, "dsr": dsr,
+                   "dsr_available": dsr is not None, "dsr_n_trials": n_trials,
                    "cagr": headline.get("cagr"), "max_drawdown": headline.get("max_drawdown")},
         "reason": reason,
     }
@@ -257,7 +277,7 @@ def build_verdict(
     ledger_search_n: int | None,
     cost_report: dict | None,
     forward: dict | None,
-    headline_rule_substring: str = "banded 5% rebalance",
+    headline_rule_substring: str = PRIMARY_RULE_STAT_NAME,
 ) -> dict:
     sel = grade_selection_bias(pool_size, ledger_search_n, ledger_informed_dsr=None)
     hist = grade_historical(canonical_rule_stats, headline_rule_substring, sel["grade"])
