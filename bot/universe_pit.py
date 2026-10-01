@@ -56,6 +56,10 @@ from pathlib import Path
 
 DAY_MS = 86_400_000
 
+
+class UniverseEvidenceError(RuntimeError):
+    """The observed-membership snapshot log is internally inconsistent."""
+
 # Append-only, dated snapshot of the tradeable universe. Forward runs append
 # to it daily; it is the only membership evidence that is genuinely
 # point-in-time rather than reconstructed from today's survivors.
@@ -284,7 +288,9 @@ def record_snapshot(
     point-in-time by construction). Same-date entries are idempotent."""
     now = now or datetime.now(UTC)
     today = now.date().isoformat()
-    prior = load_snapshots(log_path)
+    # strict=True: refuse to append onto a log that is already inconsistent,
+    # rather than adding a good row to a corrupt evidence chain.
+    prior = load_snapshots(log_path, strict=True)
     if today in prior:
         return {"status": "already_logged", "date": today, "symbols": prior[today]}
     entry = {
@@ -301,18 +307,83 @@ def record_snapshot(
     return {"status": "logged", "date": today, "n": len(ranked)}
 
 
-def load_snapshots(log_path: str | Path = UNIVERSE_LOG) -> dict[str, list[str]]:
+def load_snapshots(log_path: str | Path = UNIVERSE_LOG, *, strict: bool = False) -> dict[str, list[str]]:
+    """{date: [symbols]} from the append-only snapshot log.
+
+    Integrity rules, so the observed-membership evidence cannot be quietly
+    corrupted:
+
+    * a same-date line with a DIFFERENT universe is a conflict, not an update —
+      it raises `UniverseEvidenceError`. Last-write-wins would let a partial or
+      truncated re-append silently replace a day's real membership, which is
+      exactly the evidence this module exists to protect. An IDENTICAL duplicate
+      is idempotent and tolerated.
+    * a structurally broken line (unparseable JSON, missing date, missing
+      universe) is skipped in lenient mode (so a torn trailing line from an
+      interrupted run does not poison the whole log) and raises in strict mode.
+    * a duplicate symbol within one day's universe is collapsed.
+    """
     p = Path(log_path)
     if not p.exists():
         return {}
     out: dict[str, list[str]] = {}
-    for line in p.read_text(encoding="utf-8").splitlines():
+    for lineno, line in enumerate(p.read_text(encoding="utf-8").splitlines(), start=1):
         line = line.strip()
         if not line:
             continue
         try:
             e = json.loads(line)
-            out[e["date"]] = [u["symbol"] for u in e["universe"]]
-        except (json.JSONDecodeError, KeyError):
+            date = e["date"]
+            symbols = _ordered_unique(u["symbol"] for u in e["universe"])
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            if strict:
+                raise UniverseEvidenceError(f"{p}:{lineno} malformed snapshot line: {exc}") from exc
             continue
+        prior = out.get(date)
+        # membership is a SET: re-ranking the same symbols is not a conflict.
+        # Only a genuinely different membership is.
+        if prior is not None and set(prior) != set(symbols):
+            raise UniverseEvidenceError(
+                f"{p}:{lineno} conflicting snapshots for {date}: "
+
+                f"{symbols} != previously recorded {prior}. A day's observed "
+
+                "membership is immutable once written."
+            )
+        out[date] = symbols
     return out
+
+
+def _ordered_unique(items) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in items:
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+def coverage_report(snapshots: dict[str, list[str]], timeline: list[int]) -> dict:
+    """How much of `timeline` has OBSERVED membership, and which days are missing.
+
+    The honest denominator for a point-in-time claim: the fraction of days the
+    snapshot log actually covers. A claim of point-in-time membership is only as
+    good as this number, so it is reported rather than assumed.
+    """
+    have: set[str] = set()
+    for t in timeline:
+        try:
+            have.add(datetime.fromtimestamp(t / 1000, tz=UTC).date().isoformat())
+        except (ValueError, OSError, OverflowError):
+            continue
+    wanted = sorted(have)
+    covered = [d for d in wanted if d in snapshots]
+    missing = [d for d in wanted if d not in snapshots]
+    return {
+        "days_requested": len(wanted),
+        "days_covered": len(covered),
+        "days_missing": len(missing),
+        "fraction_covered": (len(covered) / len(wanted)) if wanted else 0.0,
+        "missing_dates": missing,
+    }
