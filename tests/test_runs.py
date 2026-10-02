@@ -132,7 +132,7 @@ class TestSaveAndLoad:
 
 class TestReproduceEndToEnd:
     def test_save_then_reproduce_passes(self, env, monkeypatch):
-        from bot.__main__ import compute_compare_results
+        from bot.canonical_compare import compute_compare_results
 
         args = _args(env, monkeypatch)
         res = compute_compare_results(args, fetch=_fetchers(), log=lambda *a, **k: None, save_run=True)
@@ -144,7 +144,7 @@ class TestReproduceEndToEnd:
         assert out["diffs"] == []
 
     def test_second_reproduce_still_passes_from_cache_only(self, env, monkeypatch):
-        from bot.__main__ import compute_compare_results
+        from bot.canonical_compare import compute_compare_results
         from bot.runs import reproduce_run
 
         args = _args(env, monkeypatch)
@@ -153,7 +153,7 @@ class TestReproduceEndToEnd:
         assert out["status"] == "PASS"
 
     def test_edited_stored_metric_fails_reproduction(self, env, monkeypatch):
-        from bot.__main__ import compute_compare_results
+        from bot.canonical_compare import compute_compare_results
 
         args = _args(env, monkeypatch)
         res = compute_compare_results(args, fetch=_fetchers(), log=lambda *a, **k: None)
@@ -169,14 +169,14 @@ class TestReproduceEndToEnd:
 
 class TestRefusals:
     def _saved(self, env, monkeypatch):
-        from bot.__main__ import compute_compare_results
+        from bot.canonical_compare import compute_compare_results
 
         args = _args(env, monkeypatch)
         res = compute_compare_results(args, fetch=_fetchers(), log=lambda *a, **k: None)
         return res["run_id"]
 
     def test_environment_mismatch_refuses(self, env, monkeypatch):
-        from bot.__main__ import compute_compare_results
+        from bot.canonical_compare import compute_compare_results
 
         args = _args(env, monkeypatch)
         res = compute_compare_results(args, fetch=_fetchers(), log=lambda *a, **k: None)
@@ -194,7 +194,7 @@ class TestRefusals:
             reproduce_run(rid, runs_dir=env / "runs")
 
     def test_dataset_change_refuses_before_compute(self, env, monkeypatch):
-        from bot.__main__ import compute_compare_results
+        from bot.canonical_compare import compute_compare_results
 
         args = _args(env, monkeypatch)
         res = compute_compare_results(args, fetch=_fetchers(), log=lambda *a, **k: None)
@@ -208,7 +208,7 @@ class TestRefusals:
             reproduce_run(rid, runs_dir=env / "runs")
 
     def test_missing_frozen_data_refuses(self, env, monkeypatch):
-        from bot.__main__ import compute_compare_results
+        from bot.canonical_compare import compute_compare_results
 
         args = _args(env, monkeypatch)
         res = compute_compare_results(args, fetch=_fetchers(), log=lambda *a, **k: None)

@@ -159,7 +159,7 @@ def test_record_with_no_environment_block_is_rejected() -> None:
 
 
 def test_canonical_run_id_is_refused_on_a_dirty_tree(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from bot.__main__ import _environment_block
+    from bot.canonical_compare import _environment_block
 
     (repo / "a.txt").write_text("dirty", encoding="utf-8")
     monkeypatch.chdir(repo)
@@ -168,7 +168,7 @@ def test_canonical_run_id_is_refused_on_a_dirty_tree(repo: Path, monkeypatch: py
 
 
 def test_explicit_canonical_flag_is_also_refused(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from bot.__main__ import _environment_block
+    from bot.canonical_compare import _environment_block
 
     (repo / "a.txt").write_text("dirty", encoding="utf-8")
     monkeypatch.chdir(repo)
@@ -177,7 +177,7 @@ def test_explicit_canonical_flag_is_also_refused(repo: Path, monkeypatch: pytest
 
 
 def test_non_canonical_run_is_allowed_and_says_it_was_dirty(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from bot.__main__ import _environment_block
+    from bot.canonical_compare import _environment_block
 
     (repo / "a.txt").write_text("dirty", encoding="utf-8")
     monkeypatch.chdir(repo)
@@ -190,7 +190,7 @@ def test_non_canonical_run_is_allowed_and_says_it_was_dirty(repo: Path, monkeypa
 
 def test_override_lets_a_canonical_run_proceed_but_marks_it_not_clean(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The escape hatch exists, and the record never pretends otherwise."""
-    from bot.__main__ import _environment_block
+    from bot.canonical_compare import _environment_block
 
     (repo / "a.txt").write_text("dirty", encoding="utf-8")
     monkeypatch.chdir(repo)

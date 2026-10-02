@@ -273,7 +273,7 @@ def test_engine_and_forward_are_the_same_bot(tmp_path, monkeypatch, sawtooth_reg
         dd_exit=algo["drawdown_throttle"]["dd_exit"],
         throttle=algo["drawdown_throttle"]["factor"],
     )
-    from bot.__main__ import _vol_overlay
+    from bot.compare_common import vol_overlay as _vol_overlay
 
     ref_final_rule = 1.0
     for r in ref_rule:

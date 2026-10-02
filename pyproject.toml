@@ -46,7 +46,7 @@ addopts = "-q"
 [tool.coverage.run]
 source = ["bot"]
 branch = true
-omit = ["bot/__main__.py"] # CLI entry points: thin wrappers over covered library code, hit live endpoints
+omit = ["bot/cli.py"] # argument wiring only: no decision logic, and it imports every command module at import time
 
 [tool.coverage.report]
 show_missing = true

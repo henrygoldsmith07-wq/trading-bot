@@ -130,7 +130,7 @@ class TestParity:
             dd_exit=algo["drawdown_throttle"]["dd_exit"], throttle=algo["drawdown_throttle"]["factor"],
         )
         if algo["overlay"]["enabled"]:
-            from bot.__main__ import _vol_overlay
+            from bot.compare_common import vol_overlay as _vol_overlay
 
             full_expected = _vol_overlay(ref_rule, target=algo["overlay"]["target_vol"],
                                          window=algo["overlay"]["window"], fee=algo["overlay"]["fee_on_turnover"])
@@ -235,7 +235,7 @@ class TestParity:
             use_crisis=algo["crisis_derisk"]["enabled"], corr_window=algo["crisis_derisk"]["corr_window"],
             corr_threshold=algo["crisis_derisk"]["corr_threshold"], derisk=algo["crisis_derisk"]["multiplier"],
         )
-        from bot.__main__ import _vol_overlay
+        from bot.compare_common import vol_overlay as _vol_overlay
 
         expected = _vol_overlay(ref_rule, target=algo["overlay"]["target_vol"])
 

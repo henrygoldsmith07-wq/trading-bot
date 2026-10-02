@@ -1,5 +1,5 @@
 
-from bot.__main__ import _vol_overlay
+from bot.compare_common import vol_overlay as _vol_overlay
 
 
 def test_calm_market_stays_fully_invested():

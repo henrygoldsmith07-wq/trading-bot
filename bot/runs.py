@@ -197,7 +197,7 @@ def reproduce_run(run_id: str, runs_dir: str | Path = RUNS_DIR) -> dict:
 
     import argparse
 
-    from .__main__ import compute_compare_results
+    from .canonical_compare import compute_compare_results
 
     args = argparse.Namespace(**params)
     fresh = compute_compare_results(args, log=lambda *a, **k: None, save_run=False)
