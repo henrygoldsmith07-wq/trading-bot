@@ -162,13 +162,31 @@ def test_verdict_module_grades_the_primary_rule_by_default() -> None:
     assert graded["rule"] == PRIMARY_RULE_STAT_NAME
 
 
+def _artifacts_from(record: dict) -> dict:
+    """Wrap a record as the evidence world the renderer consumes.
+
+    The renderer ignores its `record` argument and renders from the evidence
+    document, so a test that wants to control the input must inject ARTIFACTS.
+    """
+    return {
+        "root": ".",
+        "freeze": None,
+        "record": record,
+        "record_path": "runs/canonical-v2/run.json",
+        "forward_rows": [],
+        "ledger_entries": [],
+        "universe_rows": [],
+        "cost_rows": [],
+    }
+
+
 def test_readme_block_headlines_the_primary_rule_not_a_comparator(canonical_v2: dict) -> None:
     sys_path_backup = list(_sys.path)
     _sys.path.insert(0, str(ROOT / "scripts"))
     try:
         import derive_canonical_readme as dcr
 
-        rendered = dcr.render(canonical_v2)
+        rendered = dcr.render(artifacts=_artifacts_from(canonical_v2))
     finally:
         _sys.path[:] = sys_path_backup
 
@@ -184,6 +202,7 @@ def test_readme_block_headlines_the_primary_rule_not_a_comparator(canonical_v2: 
 
 
 def test_readme_renderer_tolerates_an_unavailable_dsr(canonical_v2: dict) -> None:
+    sys_path_backup = list(_sys.path)
     _sys.path.insert(0, str(ROOT / "scripts"))
     try:
         import derive_canonical_readme as dcr
@@ -193,7 +212,8 @@ def test_readme_renderer_tolerates_an_unavailable_dsr(canonical_v2: dict) -> Non
             row["dsr"] = None
             row["dsr_available"] = False
             row["dsr_unavailable_reason"] = "no search history recorded"
-        rendered = dcr.render(rec)
+        rendered = dcr.render(artifacts=_artifacts_from(rec))
     finally:
-        _sys.path.pop(0)
-    assert "n/a" in rendered
+        _sys.path[:] = sys_path_backup
+    assert "| n/a |" in rendered
+    assert "no search history recorded" in rendered

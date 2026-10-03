@@ -578,7 +578,7 @@ def _research_context() -> dict | None:
                 "recommended_trial_count": recommended_trial_count(),
             }
         )
-    canonical = _pl.Path(RUNS_DIR) / "canonical-v1" / "run.json"
+    canonical = _pl.Path(RUNS_DIR) / "canonical-v2" / "run.json"
     if canonical.exists():
         raw = canonical.read_bytes()
         try:
@@ -641,65 +641,42 @@ def run_reproduce(args) -> int:
 
 
 def run_verdict(args) -> int:
-    """The product: how much evidence actually supports the frozen system?"""
+    """The product: how much evidence actually supports the frozen system?
+
+    RENDERS FROM THE EVIDENCE DOCUMENT. This command used to rebuild the
+    verdict from canonical-v1's metrics while the README and API graded
+    canonical-v2 — three surfaces, three sources. Now there is one, and no
+    argument can retarget the claim at a different rule: the primary rule
+    identity is resolved inside the evidence layer.
+    """
     import json as _json
-    import pathlib as _pl
 
-    from .prospective import load_freeze
-    from .research_ledger import load_entries, recommended_trial_count
-    from .runs import RUNS_DIR, load_run_record
-    from .verdict import build_verdict, format_verdict
+    from .evidence_model import render_verdict_sentence
+    from .reporting import CANONICAL_RUN_ID, EvidenceError, build_evidence
 
-    canonical_path = _pl.Path(RUNS_DIR) / "canonical-v1" / "run.json"
-    if not canonical_path.exists():
-        print(f"REFUSED: no canonical record at {canonical_path} — generate it first "
-              "(python -m bot compare --assets 20 --run-id canonical-v1)")
+    try:
+        doc = build_evidence(args.root)
+    except EvidenceError as exc:
+        print(f"REFUSED: {exc}")
         return 2
-    record = load_run_record("canonical-v1", runs_dir=RUNS_DIR)
-    m = record["results"]["metrics"]
-    try:
-        from .strategy import build_candidates
-
-        pool = len(build_candidates())
-    except Exception:
-        pool = 85  # documented fallback: the canonical-era pool size
-
-    entries = load_entries("research_ledger.jsonl")
-    ledger_n = recommended_trial_count("research_ledger.jsonl") if entries else None
-
-    from .cost_calibration import calibrate, load_observations
-
-    obs = load_observations("cost_observations.jsonl")
-    v1_frictions = record["results"]["parameters"].get(
-        "frictions", {"fee": 0.001, "spread_bps": 5.0, "slippage_bps": 5.0}
-    )
-    freeze_manifest = None
-    try:
-        freeze_manifest = load_freeze("freeze.json", verify_code=False)
-    except (OSError, ValueError):
-        freeze_manifest = None
-    cost_report = calibrate(obs, v1_frictions=v1_frictions,
-                            freeze_manifest=freeze_manifest) if obs else None
-
-    from api.summary import build_forward_summary  # noqa: E402
-
-    forward = build_forward_summary()
-
-    v = build_verdict(
-        canonical_rule_stats=m.get("rules", []),
-        canonical_per_asset=record["results"].get("per_asset", []),
-        canonical_n_folds=record["results"].get("n_folds"),
-        pool_size=pool or 85,
-        ledger_search_n=ledger_n,
-        cost_report=cost_report,
-        forward=forward,
-        headline_rule_substring=args.headline_rule,
-    )
     if args.json:
-        print(_json.dumps(v, indent=2))
-    else:
-        print(format_verdict(v))
-    return 0
+        print(_json.dumps(doc, indent=2, sort_keys=True, allow_nan=False))
+        return int(doc["verdict"].get("exit_code", 2))
+
+    v = doc["verdict"]
+    d = v.get("grades") or {}
+    print("=" * 62)
+    print("STRATEGY VERDICT")
+    print("=" * 62)
+    for key in ("historical_evidence", "walk_forward_robustness", "selection_bias_risk",
+                "cost_robustness", "prospective_forward_evidence"):
+        print(f"{key:28}: {d.get(key)}")
+    print("-" * 62)
+    print(f"{'OVERALL':28}: {v.get('overall_grade')}")
+    print("-" * 62)
+    print(render_verdict_sentence(v))
+    print(f"(graded from {CANONICAL_RUN_ID}; run `python -m bot evidence` for the full record)")
+    return int(v.get("exit_code", 2))
 
 
 def run_quarantine_costs(args) -> int:
@@ -918,3 +895,264 @@ def _cum(rets):
     for r in rets:
         eq *= 1.0 + r
         yield eq
+
+
+# ---------------------------------------------------------------------------
+# evidence architecture commands — every surface renders from one document
+# ---------------------------------------------------------------------------
+
+def run_evidence(args) -> int:
+    """The single evidence report: what is tested, what proves it, how strong.
+
+    This is the product. Every question a reader could ask of the repository is
+    answered from ONE document (bot/reporting.build_evidence), so this output
+    cannot disagree with the README, the API or the dashboard.
+    """
+    import json as _json
+    import pathlib as _pl
+
+    from .reporting import build_evidence, render_evidence_report
+
+    doc = build_evidence(args.root)
+    if args.out:
+        from .reporting import evidence_bytes
+
+        out_path = _pl.Path(args.out)
+        out_path.write_bytes(evidence_bytes(doc))
+        print(f"evidence document written to {out_path}")
+        return 0
+    if args.json:
+        print(_json.dumps(doc, indent=2, sort_keys=True, allow_nan=False))
+    else:
+        print(render_evidence_report(doc))
+    return 0
+
+
+def run_experiment_status(args) -> int:
+    """Where the experiment is in its lifecycle, and why."""
+    from .evidence_model import headline_block
+    from .reporting import build_evidence
+
+    doc = build_evidence(args.root)
+    s = doc["status"]
+    h = headline_block(doc)
+    print(f"state          : {s['state']}")
+    print(f"  {s['state_explanation']}")
+    print(f"strategy       : {h['strategy']}")
+    print(f"valid freeze   : {s['has_valid_freeze']}")
+    if s.get("freeze_problem"):
+        print(f"  freeze issue : {s['freeze_problem']}")
+    if s.get("superseded_by"):
+        print(f"  superseded by: {s['superseded_by']}")
+    f = doc["forward"]
+    print(f"forward days   : {f['clean_forward_days']} clean "
+          f"(of {f['days_recorded']} recorded; {f['superseded_rows_not_counted']} row(s) belong to other experiments)")
+    nc = s.get("next_checkpoint")
+    if nc:
+        print(f"next checkpoint: {nc['label']} — {nc['clean_days_remaining']} clean day(s) away ({nc['meaning']})")
+    for cp in s.get("checkpoints", []):
+        mark = "x" if cp["reached"] else " "
+        print(f"  [{mark}] {cp['label']:28} {cp['meaning']}")
+    print(f"biggest caveat : {h['biggest_caveat']}")
+    return 0
+
+
+def run_verify_evidence(args) -> int:
+    """Pass/fail verification of the whole evidence chain, with exact reasons.
+
+    Checks, in order: git provenance, source fingerprint, canonical run hash,
+    freeze integrity, evidence-chain integrity (forward tape scoping),
+    universe-chain integrity, experiment IDs, methodological currency, and
+    README/evidence consistency. Fails closed: an unestablishable check is a
+    failure with the reason stated, never a pass.
+    """
+    from .reporting import CANONICAL_RUN_ID, build_evidence, load_artifacts
+
+    checks: list[tuple[str, bool, str]] = []
+
+    def record(name: str, ok: bool, detail: str) -> None:
+        checks.append((name, ok, detail))
+
+    artifacts = load_artifacts(args.root)
+    try:
+        doc = build_evidence(args.root, artifacts=artifacts)
+    except Exception as exc:
+        print(f"FAIL: evidence document cannot be built: {exc}")
+        return 1
+
+    prov = doc["provenance"]
+    git_now = prov.get("git_now")
+    record(
+        "git provenance",
+        bool(git_now and git_now.get("head_commit")),
+        (f"HEAD {git_now['head_commit'][:12]} clean={not git_now['dirty']}" if git_now else "git state unavailable"),
+    )
+
+    record(
+        "source fingerprint",
+        bool(prov.get("source_fingerprint") or prov.get("experiment_fingerprint")),
+        f"experiment fingerprint {str(prov.get('experiment_fingerprint'))[:16]}",
+    )
+
+    record(
+        "canonical run hash",
+        prov.get("canonical_record_intact") is True,
+        {
+            True: f"{CANONICAL_RUN_ID} record hash verified",
+            False: f"{CANONICAL_RUN_ID} record hash MISMATCH — the record was edited after being written",
+            None: f"no {CANONICAL_RUN_ID} record to verify",
+        }[prov.get("canonical_record_intact")],
+    )
+
+    status = doc["status"]
+    record(
+        "freeze integrity",
+        bool(status["has_valid_freeze"]),
+        "config and code seals verify" if status["has_valid_freeze"] else (status.get("freeze_problem") or "no freeze committed"),
+    )
+
+    scope = doc["forward"].get("excluded_rows") or {}
+    intact = not doc["forward"].get("integrity_error")
+    record(
+        "evidence chain integrity",
+        intact,
+        f"{scope.get('kept', 0)} of {scope.get('total', 0)} forward rows belong to this experiment; "
+        f"{scope.get('excluded', 0)} excluded with reasons recorded",
+    )
+
+    chain = prov.get("universe_chain") or {}
+    record(
+        "universe chain integrity",
+        bool(chain.get("snapshots")) and bool(chain.get("dates_monotone")),
+        chain.get("note", "no universe snapshot information"),
+    )
+
+    exp = doc["experiment"]
+    record(
+        "experiment IDs",
+        exp.get("primary_rule_id") == doc["verdict"]["primary_rule_id"],
+        f"experiment {exp.get('experiment_id')} grades {doc['verdict']['primary_rule_id']}",
+    )
+
+    record(
+        "methodological currency",
+        bool(status["methodologically_current"]),
+        "the frozen methodology is current" if status["methodologically_current"]
+        else f"SUPERSEDED by {status.get('superseded_by')}: {status.get('supersede_reason')}",
+    )
+
+    # README/evidence consistency: the canonical block must render exactly as
+    # the evidence document says. A stale README is a claim that no evidence
+    # supports, so it fails the gate.
+    readme_ok, readme_detail = _readme_consistency(args.root)
+    record("README/evidence consistency", readme_ok, readme_detail)
+
+    failures = [c for c in checks if not c[1]]
+    print(f"verify-evidence: {len(checks) - len(failures)}/{len(checks)} checks pass")
+    for name, ok, detail in checks:
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name:28} {detail}")
+    if failures:
+        print(f"\nFAIL: {len(failures)} check(s) failed — see reasons above")
+        return 1
+    print("\nPASS: every number in the evidence document is bound to its source")
+    return 0
+
+
+def _readme_consistency(root) -> tuple[bool, str]:
+    from pathlib import Path as _P
+
+    from .reporting import build_evidence as _be
+    from .reporting import render_readme_block
+
+    readme = _P(root) / "README.md"
+    if not readme.exists():
+        return False, "README.md not found"
+    try:
+        import scripts.derive_canonical_readme as dcr
+
+        md = readme.read_text(encoding="utf-8")
+        if dcr.BEGIN not in md or dcr.END not in md:
+            return False, "canonical markers missing from README.md"
+        rendered = render_readme_block(_be(root))
+        current = md.split(dcr.BEGIN, 1)[1].split(dcr.END, 1)[0].strip()
+        if current == rendered.strip():
+            return True, "README canonical block matches the evidence document"
+        return False, "README canonical block is out of sync — run `python scripts/derive_canonical_readme.py`"
+    except Exception as exc:
+        return False, f"README check error: {exc}"
+
+
+def run_compare_experiments(args) -> int:
+    """Compare two experiments, refusing to attribute a confounded delta.
+
+    Every dimension that could explain a performance difference is shown:
+    methodology, accounting model, universe, strategy, code and candidate pool.
+    When more than one important variable changed, the comparison is labelled
+    CONFUNDED and the metric difference is NOT presented as attributable to any
+    single change.
+    """
+    from .experiments import describe_freeze
+    from .reporting import load_artifacts
+
+    def experiment_facts(run_id: str) -> dict:
+        from pathlib import Path as _P
+
+        artifacts = load_artifacts(args.root)
+        record = None
+        path = _P(args.root) / "runs" / run_id / "run.json"
+        if path.exists():
+            import json as _json
+
+            record = _json.loads(path.read_text(encoding="utf-8"))
+        results = (record or {}).get("results") or {}
+        env = results.get("environment") or {}
+        metrics = results.get("metrics") or {}
+        freeze = artifacts["freeze"] if run_id == "current" else None
+        return {
+            "run_id": run_id,
+            "accounting_model": (describe_freeze(freeze) if freeze else {}).get("accounting_model"),
+            "methodology_version": env.get("code_fingerprint", {}).get("algo"),
+            "code_fingerprint": env.get("code_fingerprint", {}).get("sha256"),
+            "universe": results.get("universe"),
+            "parameters": results.get("parameters"),
+            "metrics": {k: metrics.get(k) for k in ("banded_rm", "spx")},
+            "n_folds": results.get("n_folds"),
+        }
+
+    left = experiment_facts(args.left)
+    right = experiment_facts(args.right)
+
+    diffs: list[tuple[str, bool]] = [
+        ("accounting_model", left.get("accounting_model") != right.get("accounting_model")),
+        ("methodology_version", left.get("methodology_version") != right.get("methodology_version")),
+        ("code_fingerprint", left.get("code_fingerprint") != right.get("code_fingerprint")),
+        ("universe", left.get("universe") != right.get("universe")),
+        ("parameters", left.get("parameters") != right.get("parameters")),
+        ("n_folds", left.get("n_folds") != right.get("n_folds")),
+    ]
+
+    important_changes = [
+        k for k, changed in diffs
+        if changed and k in ("accounting_model", "methodology_version", "code_fingerprint", "universe", "parameters")
+    ]
+    confounded = len(important_changes) > 1
+
+    print(f"compare {args.left} vs {args.right}")
+    for key, changed in diffs:
+        print(f"  {key:22} {'DIFFERS' if changed else 'identical'}")
+    lm = (left["metrics"] or {}).get("banded_rm") or {}
+    rm = (right["metrics"] or {}).get("banded_rm") or {}
+    if lm and rm:
+        print(f"\nperformance delta (primary rule): CAGR {lm['cagr'] - rm['cagr']:+.4f}, "
+              f"Sharpe {lm['sharpe'] - rm['sharpe']:+.3f}, maxDD {lm['max_drawdown'] - rm['max_drawdown']:+.4f}")
+    if confounded:
+        print("\nCONFUNDED COMPARISON")
+        print(f"  {len(important_changes)} important variables changed simultaneously: {', '.join(important_changes)}")
+        print("  the metric difference is NOT attributable to any single change")
+        return 2
+    if not any(changed for _, changed in diffs):
+        print("\ncontrolled comparison: no recorded inputs differ")
+    else:
+        single = important_changes[0] if important_changes else "metadata only"
+        print(f"\ncontrolled comparison: exactly one important variable differs ({single})")
+    return 0

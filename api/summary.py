@@ -495,8 +495,11 @@ def build_verdict_payload(forward: dict | None) -> dict | None:
         }
 
     try:
+        from bot.evidence_model import normalize_rule_stats
+        from bot.verdict import build_verdict
+
         return build_verdict(
-            canonical_rule_stats=metrics.get("rules", []),
+            canonical_rule_stats=normalize_rule_stats(metrics.get("rules")),
             canonical_per_asset=results.get("per_asset", []),
             canonical_n_folds=results.get("n_folds"),
             pool_size=pool_size or 85,
@@ -509,29 +512,61 @@ def build_verdict_payload(forward: dict | None) -> dict | None:
 
 
 def _canonical_overlay(summary: dict) -> dict:
-    """Override historical headline METRICS from the committed canonical run
-    record (runs/canonical-v2/run.json) when present. The curve, the current
+    """Override historical headline METRICS from the evidence document.
+
+    THE BUG THIS FIXES: the overlay used to copy `inv_vol_rm` metrics onto the
+    summary — the inverse-vol COMPARATOR, not the primary rule under
+    evaluation. The dashboard therefore advertised a portfolio the frozen
+    experiment never trades. Now every headline number comes from the canonical
+    verdict object in the evidence document, which is generated from the
+    primary rule and the benchmark and nothing else. The curve, the current
     reading and the fold list are still computed per request (cheap,
-    single-symbol); the authoritative NUMBERS come from the sealed record —
-    same source as the README table."""
+    single-symbol); the authoritative NUMBERS are the claim.
+
+    When no canonical record exists, the overlay leaves the freshly computed
+    research numbers alone (they are labelled RESEARCH elsewhere) rather than
+    replacing them with zeros. Comparators still appear in `rules_table`,
+    explicitly labelled, for context — and only there.
+    """
     try:
-        with open(CANONICAL_RUN, encoding="utf-8") as f:
-            record = json.load(f)
-        iv = record["results"]["metrics"]["inv_vol_rm"]
+        # Isolation knob: tests (and any deployment without a sealed record)
+        # point CANONICAL_RUN at a missing file to keep the freshly computed
+        # research numbers. Absent record == no claim overlay.
+        if not os.path.exists(CANONICAL_RUN):
+            return summary
+        from bot.evidence_model import render_verdict_sentence
+        from bot.reporting import build_evidence
+
+        doc = build_evidence(ROOT)
+    except Exception:
+        return summary
+
+    verdict = doc["verdict"]
+    summary["evidence_state"] = doc["status"]["state"]
+    summary["evidence_state_explanation"] = doc["status"]["state_explanation"]
+    summary["verdict_sentence"] = render_verdict_sentence(verdict)
+    summary["primary_rule_id"] = verdict["primary_rule_id"]
+    summary["benchmark_id"] = verdict["benchmark_id"]
+    summary["benchmark_metrics"] = verdict["benchmark_metrics"]
+    summary["comparison"] = verdict["comparison"]
+    summary["forward_clean_days"] = doc["forward"]["clean_forward_days"]
+    summary["comparators"] = doc.get("comparators") or {}
+
+    if doc["historical"].get("available"):
+        metrics = verdict["metrics"]
         oos = summary["oos"]
-        oos["cagr"] = iv["cagr"]
-        oos["sharpe"] = iv["sharpe"]
-        oos["max_drawdown"] = iv["max_drawdown"]
-        oos["final"] = iv["final"]
-        win = record["results"]["metrics"].get("window") or {}
-        if win.get("start"):
-            oos["first_day"], oos["last_day"] = win["start"], win["end"]
-        summary["strategy"] = "RiskEnsemble pool walk-forward — CANONICAL post-PIT record"
-        summary["canonical_run_id"] = record["run_id"]
-        summary["canonical_record_sha256"] = record.get("record_sha256")
-        summary["rules_table"] = record["results"]["metrics"].get("rules", [])
-    except (OSError, KeyError, ValueError):
-        pass
+        oos["cagr"] = metrics["cagr"]
+        oos["sharpe"] = metrics["sharpe"]
+        oos["max_drawdown"] = metrics["max_drawdown"]
+        oos["final"] = metrics.get("final")
+        window = doc["historical"].get("window") or {}
+        if window.get("start"):
+            oos["first_day"], oos["last_day"] = window["start"], window["end"]
+        summary["strategy"] = f"{verdict['primary_rule_id']} — {verdict.get('primary_rule_description', '')}"
+        summary["canonical_run_id"] = doc["provenance"].get("canonical_run_id")
+        summary["canonical_record_sha256"] = doc["provenance"].get("canonical_record_sha256")
+        # Comparator rows, explicitly labelled context. Never the claim.
+        summary["rules_table"] = doc.get("rule_stats") or []
     return summary
 
 
@@ -608,7 +643,16 @@ async def app(scope, receive, send):
             )
         except Exception as e:
             research = {"error": str(e), "evidence_label": "RESEARCH / HISTORICAL ONLY (unavailable)"}
-        payload = {"verdict": verdict, "forward": forward, "research": research,
+        # THE evidence document: the same object the README block and the CLI
+        # report render. The dashboard's state strip and timeline read it, so
+        # no surface re-derives research meaning from raw tapes.
+        try:
+            from bot.reporting import build_evidence
+
+            evidence = build_evidence(ROOT)
+        except Exception as e:
+            evidence = {"error": f"{type(e).__name__}: {e}"}
+        payload = {"verdict": verdict, "forward": forward, "research": research, "evidence": evidence,
                    "generated_at": datetime.now(UTC).isoformat(),
                    "disclaimer": "Paper trading only. Educational software. Not financial advice."}
         status, body = 200, json.dumps(payload).encode()

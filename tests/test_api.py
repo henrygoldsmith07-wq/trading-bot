@@ -57,8 +57,15 @@ def test_payload_never_uses_the_word_live(monkeypatch, api):
 
 def test_build_summary_prefers_canonical_record(monkeypatch, api):
     """When runs/canonical-v2 exists, headline NUMBERS come from the sealed
-    record — same source as the README table — while curve/current stay fresh."""
+    record — and they describe the PRIMARY rule, never a comparator.
+
+    This test used to assert the dashboard showed `inv_vol_rm` metrics — the
+    inverse-vol COMPARATOR — which is exactly the bug the evidence
+    architecture exists to eliminate. The claim is the primary rule's.
+    """
     import os
+
+    from bot.canonical_identity import PRIMARY_RULE_ID
 
     if not os.path.exists(api.CANONICAL_RUN):
         pytest.skip("canonical run not generated yet")
@@ -70,11 +77,17 @@ def test_build_summary_prefers_canonical_record(monkeypatch, api):
     monkeypatch.setattr(api, "fetch_daily_history", lambda symbol: _fake_candles())
     s = api.build_summary("BTCUSDT")
     record = json.loads(open(api.CANONICAL_RUN, encoding="utf-8").read())
-    iv = record["results"]["metrics"]["inv_vol_rm"]
-    assert s["oos"]["sharpe"] == pytest.approx(iv["sharpe"], abs=1e-6)
-    assert s["oos"]["cagr"] == pytest.approx(iv["cagr"], abs=1e-9)
+    primary = record["results"]["metrics"][PRIMARY_RULE_ID]
+    assert s["oos"]["sharpe"] == pytest.approx(primary["sharpe"], abs=1e-6)
+    assert s["oos"]["cagr"] == pytest.approx(primary["cagr"], abs=1e-9)
+    assert s["primary_rule_id"] == PRIMARY_RULE_ID
+    # A comparator's numbers must never be the headline.
+    comparator = record["results"]["metrics"]["inv_vol_rm"]
+    assert s["oos"]["cagr"] != pytest.approx(comparator["cagr"], abs=1e-9) or PRIMARY_RULE_ID == "inv_vol_rm"
     assert "canonical-v2" in s["canonical_run_id"]
     assert len(s.get("rules_table", [])) >= 1
+    # the comparators are present but explicitly labelled as context
+    assert s.get("comparators"), "comparator context must remain visible"
     # curve remains the live-computed research curve (may differ from record)
     assert len(s["curve"]) >= 2
 
@@ -135,34 +148,54 @@ def test_asgi_app_research_failure_degrades_not_500(monkeypatch, api):
 FREEZE_TS = "2026-08-23T09:00:00+00:00"
 
 
-def _write_freeze(path: Path, frozen_date="2026-08-23", commit="6d6606dabc"):
+def _freeze_manifest(frozen_date="2026-08-23", commit="6d6606dabc") -> dict:
+    """The fixture freeze, in one place, so the log rows can carry the SAME
+    experiment stamp the real runner writes.
 
+    Forward rows that carry no stamp are evidence of no experiment at all
+    (bot/prospective.select_prospective_rows excludes them), so a fixture that
+    omits the stamp would grade zero days regardless of how many rows it
+    wrote. The real runner stamps every row; the fixture mirrors it.
+    """
     from bot.identity import code_fingerprint
     from bot.prospective import _config_hash
 
     config = {"assets": [{"symbol": "BTCUSDT"}], "frictions": {"fee": 0.001}}
-    cfg_sha = _config_hash(config)
-    path.write_text(json.dumps({
+    return {
         "frozen_at": FREEZE_TS,
         "frozen_at_date": frozen_date,
         "git_commit_at_freeze": commit,
         "config": config,
-        "config_sha256": cfg_sha,
+        "config_sha256": _config_hash(config),
         "code_fingerprint_algo": "sha256-lf-v1",
         "code_sha256": code_fingerprint(),
-    }))
+    }
+
+
+def _write_freeze(path: Path, frozen_date="2026-08-23", commit="6d6606dabc"):
+    manifest = _freeze_manifest(frozen_date=frozen_date, commit=commit)
+    path.write_text(json.dumps(manifest))
+    return manifest
 
 
 def _write_log(path: Path, days=10, first="2026-08-24", ret=0.001,
-               n_assets=3, outage_day=3, pending_day=None, dark_day=None):
+               n_assets=3, outage_day=3, pending_day=None, dark_day=None,
+               manifest: dict | None = None):
     """Forward log with per-sleeve detail, so day classification is exercised.
 
     Every day carries `assets`; a `note` on a sleeve means that sleeve did not
     print (outage) or was held (session_pending). `dark_day` marks every sleeve
     as noted — the zero-information case.
+
+    Rows carry the experiment stamp of `manifest` (default: the fixture
+    freeze), because an unstamped row is evidence of NO experiment and would
+    be excluded from the graded count however many rows are written.
     """
     from datetime import timedelta
 
+    from bot.prospective import experiment_stamp
+
+    stamp = experiment_stamp(manifest if manifest is not None else _freeze_manifest())
     d0 = datetime.fromisoformat(first)
     with open(path, "w") as f:
         for i in range(days):
@@ -186,6 +219,7 @@ def _write_log(path: Path, days=10, first="2026-08-24", ret=0.001,
                 "assets": assets,
                 "outages": outages,
                 "missed_fills": [{"s": 1}] if i == 6 else [],
+                "experiment": stamp,
             }) + "\n")
 
 
@@ -310,6 +344,9 @@ class TestForwardSummary:
         # fetch failure — NOT 'session_pending', which would mean the session
         # simply never opened and would be classed as a closed market.
         d0 = datetime.fromisoformat("2026-08-24")
+        from bot.prospective import experiment_stamp
+
+        stamp = experiment_stamp(_freeze_manifest())
         rows = [
             {
                 "date": (d0 + timedelta(days=i)).date().isoformat(),
@@ -319,6 +356,7 @@ class TestForwardSummary:
                            "S2": {"sleeve_ret": 0.001}},
                 "outages": [{"symbol": "S0", "problem": "fetch failed: HTTP Error 451: "}],
                 "missed_fills": [],
+                "experiment": stamp,
             }
             for i in range(5)
         ]

@@ -145,10 +145,21 @@
       </div>
     </div>
     <div class="integrity" id="f-integrity">—</div>
+  <!-- ===== EXPERIMENT STATE + IDENTITY: from the evidence document ===== -->
+  <div class="integrity" id="f-state" style="margin-top:8px;">—</div>
   </div>
 
   <div class="quiet-note" id="quiet-note" hidden>
     <b>Why this page is showing so little.</b> <span id="quiet-note-text"></span>
+  </div>
+
+  <!-- ===== EVIDENCE TIMELINE: the full experiment lifecycle ===== -->
+  <div class="panel" id="timeline-panel" style="margin-top:14px;">
+    <h2>Evidence timeline — research → candidate search → walk-forward → canonical → freeze → forward → verdict</h2>
+    <p class="note" id="timeline-note">Loading from the evidence document…</p>
+    <table id="timeline-table">
+      <tr><th>Stage</th><th>Date</th><th>Status</th><th>Evidence</th><th>Methodology</th></tr>
+    </table>
   </div>
 
   <!-- Revealed only when forward evidence is thick enough to read. -->
@@ -329,6 +340,61 @@ function renderIntegrity(f) {
   el.innerHTML = parts.join(" \u00b7 ");
 }
 
+function renderExperimentState(ev) {
+  // Experiment state and identity, straight from the evidence document. One
+  // source: the same state machine the CLI and README report.
+  const el = $("f-state");
+  if (!ev || ev.error || !ev.status) {
+    el.textContent = "experiment state unavailable (" + ((ev && ev.error) || "no evidence document") + ")";
+    return;
+  }
+  const s = ev.status, exp = ev.experiment || {};
+  const bits = [
+    "<b>experiment state: " + s.state + "</b> — " + s.state_explanation,
+    "experiment " + (exp.experiment_id || "none") + " (manifest " + String(exp.fingerprint || "none").slice(0, 12) + ")",
+    "primary rule " + (ev.primary_strategy ? ev.primary_strategy.rule_id : "—") + " vs " + (ev.benchmark ? ev.benchmark.label : "—"),
+  ];
+  if (s.superseded_by) bits.push("superseded by " + s.superseded_by);
+  if (s.next_checkpoint) {
+    bits.push("next checkpoint: " + s.next_checkpoint.label + " (" + s.next_checkpoint.clean_days_remaining + " clean day(s) away)");
+  }
+  el.innerHTML = bits.join(" · ");
+}
+
+function renderTimeline(ev) {
+  const note = $("timeline-note");
+  const table = $("timeline-table");
+  if (!ev || ev.error || !ev.timeline) {
+    note.textContent = "evidence timeline unavailable (" + ((ev && ev.error) || "no evidence document") + ")";
+    return;
+  }
+  note.textContent = "Every stage of the experiment lifecycle, from the evidence document. " +
+    "A stage that never happened is listed as such rather than omitted.";
+  while (table.rows.length > 1) table.deleteRow(1);
+  for (const st of ev.timeline) {
+    const tr = document.createElement("tr");
+    const cells = [st.title, st.date || "—", st.status, String(st.evidence_count),
+                   st.methodology_version || "—"];
+    for (const c of cells) {
+      const td = document.createElement("td");
+      td.textContent = c;
+      tr.appendChild(td);
+    }
+    if (st.reason) {
+      const td = document.createElement("td");
+      td.colSpan = 5;
+      td.className = "note";
+      td.textContent = st.reason;
+      const tr2 = document.createElement("tr");
+      tr2.appendChild(td);
+      table.appendChild(tr);
+      table.appendChild(tr2);
+    } else {
+      table.appendChild(tr);
+    }
+  }
+}
+
 function renderForward(f, v) {
   // The hero counts days on which EVERY sleeve printed. A day with sleeves
   // dark is a scheduled day, not a portfolio trading day; showing it as one
@@ -438,6 +504,8 @@ async function load() {
     const f = s.forward, v = s.verdict;
     const a = assess(f, v);
     renderForward(f || {}, v);
+    renderExperimentState(s.evidence);
+    renderTimeline(s.evidence);
     try {
       renderResearch(s.research);
     } catch (re) {

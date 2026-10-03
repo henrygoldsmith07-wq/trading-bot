@@ -148,31 +148,29 @@ def _fmt_pct(x: float) -> str:
 def build_primary_verdict(primary: dict[str, Any], benchmark: dict[str, Any]) -> dict[str, Any]:
     """The canonical headline, built from the primary rule ONLY.
 
-    Kept here rather than inline in the CLI so the claim is testable without
-    running a full walk-forward, and so there is exactly one place that can
-    decide whether the canonical rule beat the benchmark.
+    Delegates to bot.evidence_model.build_canonical_verdict — THE single
+    canonical verdict object. The sentence, the headline numbers and the exit
+    code are produced there and nowhere else, so the README, CLI, API and
+    dashboard cannot drift apart. The legacy keys (`verdict`, `beats_*`,
+    `exit_code`) are preserved for existing callers and tests.
 
 The exit code follows the primary rule. A comparator that beats the index
 does not make the canonical claim true, and must never make the build pass.
     """
-    beats_cagr = float(primary["cagr"]) > float(benchmark["cagr"])
-    beats_sharpe = float(primary["sharpe"]) > float(benchmark["sharpe"])
-    beats_mdd = float(primary["max_drawdown"]) > float(benchmark["max_drawdown"])
-    text = (
-        f"primary rule [{PRIMARY_RULE_ID}] OOS CAGR {'BEATS' if beats_cagr else 'TRAILS'} S&P 500 "
-        f"({_fmt_pct(float(primary['cagr']))} vs {_fmt_pct(float(benchmark['cagr']))}); "
-        f"Sharpe {'beats' if beats_sharpe else 'trails'} "
-        f"({float(primary['sharpe']):.2f} vs {float(benchmark['sharpe']):.2f}); "
-        f"max drawdown {'better' if beats_mdd else 'worse'} "
-        f"({_fmt_pct(float(primary['max_drawdown']))} vs {_fmt_pct(float(benchmark['max_drawdown']))})"
+    from .evidence_model import build_canonical_verdict
+
+    obj = build_canonical_verdict(
+        primary_metrics=primary,
+        benchmark_metrics=benchmark,
+        generated_from_run="canonical",
     )
     return {
-        "verdict": text,
-        "beats_cagr": beats_cagr,
-        "beats_sharpe": beats_sharpe,
-        "beats_max_drawdown": beats_mdd,
-        "exit_code": 0 if (beats_cagr and beats_sharpe) else 1,
-        "primary_rule_id": PRIMARY_RULE_ID,
+        "verdict": obj["verdict"],
+        "beats_cagr": obj["comparison"]["beats_cagr"],
+        "beats_sharpe": obj["comparison"]["beats_sharpe"],
+        "beats_max_drawdown": obj["comparison"]["beats_max_drawdown"],
+        "exit_code": obj["exit_code"],
+        "primary_rule_id": obj["primary_rule_id"],
     }
 
 def comparator_rows(rule_stats: list[dict[str, Any]]) -> list[dict[str, Any]]:

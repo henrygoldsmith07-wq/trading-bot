@@ -13,6 +13,9 @@ from .commands import (
     run_ask,
     run_calibrate_costs,
     run_compare,
+    run_compare_experiments,
+    run_evidence,
+    run_experiment_status,
     run_forward,
     run_freeze,
     run_ledger,
@@ -23,6 +26,7 @@ from .commands import (
     run_universe_snapshot,
     run_validate,
     run_verdict,
+    run_verify_evidence,
     run_verify_freeze,
 )
 from .data import fetch_candles
@@ -185,7 +189,7 @@ def main():
 
     vd = sub.add_parser("verdict", help="How much evidence supports the frozen system? (the product)")
     vd.add_argument("--json", action="store_true")
-    vd.add_argument("--headline-rule", default="banded 5% rebalance")
+    vd.add_argument("--root", default=".", help="repository root (default: cwd)")
 
     uni = sub.add_parser("universe-snapshot", help="Record today's ranked universe (point-in-time dataset)")
     uni.add_argument("--top", type=int, default=20)
@@ -233,6 +237,23 @@ def main():
         action="store_true",
         help="merge even if the active freeze moved (quarantine a run; never for scoring)",
     )
+
+    # --- evidence architecture: one document, every surface ---------------
+    ev = sub.add_parser("evidence", help="The evidence document: what is tested, what proves it, how strong")
+    ev.add_argument("--json", action="store_true", help="print the full evidence document as JSON")
+    ev.add_argument("--out", default=None, help="write the canonical evidence.json to this path and exit")
+    ev.add_argument("--root", default=".", help="repository root (default: cwd)")
+
+    es = sub.add_parser("experiment-status", help="Experiment state machine status and forward checkpoints")
+    es.add_argument("--root", default=".", help="repository root (default: cwd)")
+
+    ve = sub.add_parser("verify-evidence", help="Pass/fail verification of the whole evidence chain")
+    ve.add_argument("--root", default=".", help="repository root (default: cwd)")
+
+    cex = sub.add_parser("compare-experiments", help="Compare two experiments; flag confounded deltas")
+    cex.add_argument("left", help="left run id (or 'current')")
+    cex.add_argument("right", help="right run id (or 'current')")
+    cex.add_argument("--root", default=".", help="repository root (default: cwd)")
 
     args = parser.parse_args()
 
@@ -306,6 +327,14 @@ def main():
         if args.allow_freeze_change:
             _argv.append("--allow-freeze-change")
         raise SystemExit(_fe_main(_argv))
+    elif args.command == "evidence":
+        raise SystemExit(run_evidence(args))
+    elif args.command == "experiment-status":
+        raise SystemExit(run_experiment_status(args))
+    elif args.command == "verify-evidence":
+        raise SystemExit(run_verify_evidence(args))
+    elif args.command == "compare-experiments":
+        raise SystemExit(run_compare_experiments(args))
 
 
 if __name__ == "__main__":
