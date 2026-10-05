@@ -17,7 +17,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # Full history: tests/test_provenance.py::test_committed_freeze_names_a_real_commit
+      # runs `git cat-file -e <frozen-commit>^{commit}` against the real freeze
+      # manifest. The default fetch-depth:1 is a shallow clone that only contains
+      # the tip, so that ancestor is genuinely absent and the test fails with
+      # "not a valid object name" even though the commit exists upstream.
+      # scheduled-paper.yml already uses fetch-depth:0 for the same reason.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
