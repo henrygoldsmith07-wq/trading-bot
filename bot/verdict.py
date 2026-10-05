@@ -337,13 +337,49 @@ def grade_registration(registration: dict | None) -> dict:
             ),
         }
 
+    # A read is not automatically good news. Pre-registration earns its keep
+    # when it REFUTES a claim that would otherwise have sailed through, so the
+    # outcome of the read is part of what this dimension grades:
+    #
+    #   CONFIRMED    -> the criterion was met in advance and survived contact.
+    #   NOT_CONFIRMED-> the plan did its job and the hypothesis failed. That is
+    #                  a valid, disciplined NEGATIVE result. It must not be
+    #                  reported as though the claim were supported, and it must
+    #                  not license "validated (provisional)" either.
+    #   INCONCLUSIVE -> not enough evidence at the time of reading; the same
+    #                  "not yet" state as never read.
+    #
+    # Reporting a refutation as Strong would invert the control: a system that
+    # pre-registers and then fails its own criterion would grade BETTER than
+    # one that never committed to anything.
+    read_state = plan.get("latest_read_state")
+    inputs["read_state"] = read_state
+    if read_state == "CONFIRMED":
+        return {
+            "grade": "Strong",
+            "inputs": inputs,
+            "reason": (
+                f"read against a sealed plan and the criterion held: {plan.get('criterion')} on >= "
+                f"{plan.get('min_evidence')} observation(s), {plan.get('n_arms')} declared arm(s) "
+                f"({'family-wise corrected' if int(plan.get('n_arms') or 0) > 1 else 'single arm'})"
+            ),
+        }
+    if read_state == "NOT_CONFIRMED":
+        return {
+            "grade": "Weak",
+            "inputs": inputs,
+            "reason": (
+                f"read against a sealed plan and the criterion FAILED: {plan.get('criterion')} on >= "
+                f"{plan.get('min_evidence')} observation(s). The pre-registration worked as designed "
+                "and refuted the claim; this is a disciplined negative result, not support"
+            ),
+        }
     return {
-        "grade": "Strong",
+        "grade": "Moderate",
         "inputs": inputs,
         "reason": (
-            f"read against a sealed plan: {plan.get('criterion')} on >= {plan.get('min_evidence')} "
-            f"observation(s), {plan.get('n_arms')} declared arm(s) "
-            f"({'family-wise corrected' if int(plan.get('n_arms') or 0) > 1 else 'single arm'})"
+            f"a valid pre-registration covers this claim ({plan.get('criterion')}); "
+            f"the read returned {read_state or 'no recorded outcome'}, which is not a confirmation"
         ),
     }
 
@@ -354,8 +390,17 @@ def combine(
     selection: str,
     costs: str,
     forward: str,
-    registration: str = "Moderate",
+    registration: str = "Weak",
 ) -> tuple[str, str]:
+    """Map the dimension grades onto one overall verdict.
+
+    `registration` defaults to "Weak", not "Moderate": a caller that forgets to
+    pass the sixth dimension must land on the CONSERVATIVE reading of the
+    evidence, not the permissive one. Defaulting to Moderate let any caller
+    that forgot the argument reach "validated (provisional)" with no plan in
+    existence — the control would have been opt-in, which is the opposite of
+    what pre-registration is for. Pass the real grade explicitly.
+    """
     if "COMPROMISED" in (hist, robust, selection, costs, forward):
         return "INVALIDATED", _OVERALL_MATRIX_NOTE
     core_ok = all(_at_least(g, "Moderate") for g in (hist, robust, costs))
