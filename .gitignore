@@ -20,3 +20,6 @@ cost_calibration.json
 
 # Registration event logs are LOCAL state (which plans have been read on this
 # checkout); the sealed plans themselves in registrations/ ARE committed.
+# The read ledger must stay untracked: it is per-checkout, and committing it
+# would make one machine's read history part of everyone's evidence identity.
+registration_events.jsonl

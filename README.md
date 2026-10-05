@@ -107,7 +107,7 @@ Statistical standing: PSR 0.999 — DSR n/a (effective trials 85 via max_of_reco
 | + tilt + crisis, banded 5% rebalance | 11.7% | 0.74 | -9.8% | -1.2% | 1.19 | 0.999 | n/a | — |
 | fully-fixed: RiskEnsemble everywhere, banded, all overlays | 5.2% | 0.36 | -8.1% | -0.8% | 0.65 | 0.976 | n/a | — |
 
-*Provenance: rendered from the `canonical-v2` evidence document (evidence fingerprint `704890af5b41`, experiment `d4338a04d323`, commit `ab8aea1c95a3d4baaed7029925dbf88f62714cb0`, code sha `70cfa12e0a74…`, strategy defs `4cfdf950c0c0…`, portfolio rules `3d1a4f560ade…`, universe `f550645ddd97…`). Reproduce with `python -m bot reproduce canonical-v2` and verify with `python -m bot verify-evidence`.*
+*Provenance: rendered from the `canonical-v2` evidence document (evidence fingerprint `765fd9d93e81`, experiment `d4338a04d323`, commit `ab8aea1c95a3d4baaed7029925dbf88f62714cb0`, code sha `70cfa12e0a74…`, strategy defs `4cfdf950c0c0…`, portfolio rules `3d1a4f560ade…`, universe `f550645ddd97…`). Reproduce with `python -m bot reproduce canonical-v2` and verify with `python -m bot verify-evidence`.*
 
 <!-- CANONICAL:END -->
 

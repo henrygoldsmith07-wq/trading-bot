@@ -517,6 +517,65 @@ class TestDeterminism:
         a["provenance"]["git_now"] = {"head_commit": "c" * 40, "dirty": False, "dirty_paths": []}
         assert a["provenance"]["git_now"]["head_commit"] == "c" * 40
 
+    def test_reading_a_plan_does_not_move_the_fingerprint(self):
+        """Regression: reading a plan is a PROCESS EVENT, not new evidence.
+
+        The read ledger is a gitignored per-checkout file. Folding `any_read`,
+        the per-plan read fields, and the read-driven `pre_registration` grade
+        into the fingerprint made the evidence identity a function of the
+        machine: CI (no ledger) and a developer who had read a plan disagreed,
+        and the committed README block could not match both. Same class as
+        git_now.
+        """
+        def doc(read: bool):
+            plan = {"criterion": "oos_sharpe gte 0.7", "seal": "abc",
+                    "read": read, "n_reads": int(read),
+                    "latest_read_state": "NOT_CONFIRMED" if read else None}
+            return _evidence_doc(
+                registration={"registered": True, "n_valid": 1, "n_drifted": 0,
+                              "any_read": read, "primary_plan": dict(plan), "plans": [dict(plan)]},
+            )
+
+        assert evidence_fingerprint(doc(False)) == evidence_fingerprint(doc(True))
+
+    def test_read_state_driving_the_pre_registration_grade_does_not_move_it(self):
+        """The verdict's pre_registration grade is downstream of read-state
+        (Moderate unread -> Weak refuted). It is live status, not evidence."""
+        def doc(grade: str):
+            return _evidence_doc(
+                verdict={"primary_rule_id": "banded_rm", "metrics": {}, "benchmark_metrics": {},
+                         "comparison": {}, "verdict": "", "exit_code": 1, "benchmark_id": "spx",
+                         "grades": {"pre_registration": grade, "overall": "not established"}},
+            )
+
+        assert evidence_fingerprint(doc("Moderate")) == evidence_fingerprint(doc("Weak"))
+
+    def test_a_changed_criterion_still_moves_the_fingerprint(self):
+        """The other side of the boundary: read-state is excluded, but a plan
+        whose criterion was loosened must still register as evidence drift."""
+        def doc(criterion: str):
+            return _evidence_doc(
+                registration={"registered": True, "n_valid": 1, "n_drifted": 0,
+                              "any_read": False,
+                              "primary_plan": {"criterion": criterion, "seal": "abc"},
+                              "plans": [{"criterion": criterion, "seal": "abc"}]},
+            )
+
+        assert evidence_fingerprint(doc("oos_sharpe gte 0.7")) != \
+            evidence_fingerprint(doc("oos_sharpe gte 0.2"))
+
+    def test_a_changed_seal_still_moves_the_fingerprint(self):
+        """Swapping which plan covers the claim is a change in the evidence."""
+        def doc(seal: str):
+            return _evidence_doc(
+                registration={"registered": True, "n_valid": 1, "n_drifted": 0,
+                              "any_read": False,
+                              "primary_plan": {"criterion": "c", "seal": seal},
+                              "plans": [{"criterion": "c", "seal": seal}]},
+            )
+
+        assert evidence_fingerprint(doc("abc")) != evidence_fingerprint(doc("TAMPERED"))
+
 
 # ---------------------------------------------------------------------------
 # 8. README formatting cannot change the evidence
