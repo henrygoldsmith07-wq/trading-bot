@@ -229,13 +229,23 @@ def recommended_trial_count(path: str | Path = DEFAULT_LEDGER) -> int | None:
 
 
 def ledger_fingerprint(path: str | Path = DEFAULT_LEDGER) -> tuple[int, str] | None:
-    """(entry_count, sha256 of file bytes) to pin inside a freeze manifest."""
+    """(entry_count, sha256 of the LF-normalised file) to pin inside a freeze manifest.
+
+    Line endings are normalised BEFORE hashing, exactly as `identity.code_fingerprint`
+    already does for source. Hashing raw bytes made this digest a function of the
+    checkout rather than of the ledger: `core.autocrlf=true` (the Windows default)
+    rewrites LF to CRLF on checkout, so the same committed ledger hashed differently
+    on a Windows worktree than on the Linux CI runner. That difference propagated
+    into `provenance.research_ledger`, moved the evidence fingerprint, and left the
+    README canonical block permanently out of sync on one platform. The ledger's
+    CONTENT is identical either way; only the platform's newline convention differed.
+    """
     p = Path(path)
     if not p.exists():
         return None
     entries = load_entries(p)
     verify_chain(entries)
-    raw = p.read_bytes()
+    raw = p.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
     return (len(entries), hashlib.sha256(raw).hexdigest())
 
 
