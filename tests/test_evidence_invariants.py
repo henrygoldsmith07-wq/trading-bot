@@ -482,6 +482,41 @@ class TestDeterminism:
         b = _evidence_doc(generated_at="2027-06-06T00:00:00+00:00")
         assert evidence_fingerprint(a) == evidence_fingerprint(b)
 
+    def test_git_now_alone_does_not_move_the_fingerprint(self):
+        """The live checkout is not evidence.
+
+        Regression: git_now (HEAD commit + dirty paths) used to be hashed, so
+        the README canonical block embedded a fingerprint of the working tree
+        it was rendered from. Committing the regenerated block then moved HEAD,
+        changed the fingerprint, and invalidated the very line recording it --
+        derive_canonical_readme.py --check could never pass on any commit.
+        """
+        a = _evidence_doc()
+        b = _evidence_doc()
+        b["provenance"]["git_now"] = {
+            "head_commit": "f" * 40,
+            "dirty": True,
+            "dirty_paths": ["README.md", "bot/strategy.py"],
+        }
+        assert evidence_fingerprint(a) == evidence_fingerprint(b)
+
+    def test_real_evidence_still_moves_the_fingerprint_when_git_differs(self):
+        """Excluding git_now must not blunt the fingerprint: a genuine evidence
+        change must still register while the checkout differs."""
+        a = _evidence_doc()
+        a["provenance"]["git_now"] = {"head_commit": "a" * 40, "dirty": False, "dirty_paths": []}
+        b = _evidence_doc()
+        b["provenance"]["git_now"] = {"head_commit": "b" * 40, "dirty": True, "dirty_paths": ["x"]}
+        b["historical"]["primary_stat"] = {"sharpe": 0.5}
+        assert evidence_fingerprint(a) != evidence_fingerprint(b)
+
+    def test_git_now_remains_available_for_the_provenance_gate(self):
+        """Excluded from the fingerprint, not from the document: verify-evidence
+        reads git_now to report HEAD and tree cleanliness."""
+        a = _evidence_doc()
+        a["provenance"]["git_now"] = {"head_commit": "c" * 40, "dirty": False, "dirty_paths": []}
+        assert a["provenance"]["git_now"]["head_commit"] == "c" * 40
+
 
 # ---------------------------------------------------------------------------
 # 8. README formatting cannot change the evidence

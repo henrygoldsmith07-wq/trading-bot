@@ -132,3 +132,25 @@ class TestDsrBridge:
         _add(ledger, n=3)
         n, sha = ledger_fingerprint(ledger)
         assert n == 3 and len(sha) == 64
+
+    def test_fingerprint_is_identical_for_crlf_and_lf_checkouts(self, ledger, tmp_path):
+        """The ledger digest must be a function of the ledger, not the platform.
+
+        Regression: raw bytes were hashed, and core.autocrlf=true (the Windows
+        default) rewrites LF to CRLF on checkout. The same committed ledger then
+        fingerprinted differently on a Windows worktree than on the Linux CI
+        runner, which moved the evidence fingerprint and left the README
+        canonical block permanently out of sync on one platform.
+        """
+        _add(ledger, n=3)
+        # Normalise FIRST: append_entry writes in text mode, so on Windows the
+        # fixture already carries CRLF and a naive replace would produce \r\r\n.
+        lf_bytes = ledger.read_bytes().replace(b"\r\n", b"\n")
+
+        lf = tmp_path / "lf.jsonl"
+        lf.write_bytes(lf_bytes)
+        crlf = tmp_path / "crlf.jsonl"
+        crlf.write_bytes(lf_bytes.replace(b"\n", b"\r\n"))
+
+        assert b"\r\n" in crlf.read_bytes()
+        assert ledger_fingerprint(crlf)[1] == ledger_fingerprint(lf)[1]
