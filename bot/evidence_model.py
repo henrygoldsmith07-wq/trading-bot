@@ -237,6 +237,7 @@ def build_evidence_document(
     comparators: dict[str, dict[str, Any]] | None = None,
     rule_stats: list[dict[str, Any]] | None = None,
     timeline: list[dict[str, Any]] | None = None,
+    registration: dict[str, Any] | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Assemble evidence.json — the central user-facing evidence object.
@@ -283,6 +284,11 @@ def build_evidence_document(
         doc["rule_stats"] = list(rule_stats)
     if timeline:
         doc["timeline"] = list(timeline)
+    # Always present, and always explicit about being absent. An omitted
+    # section would be indistinguishable from an older document, and "was this
+    # decision rule fixed in advance?" must have a visible answer on every
+    # surface rather than a missing key.
+    doc["registration"] = registration or {"registered": False, "n_plans": 0, "n_valid": 0, "n_drifted": 0, "any_read": False, "plans": []}
     doc["generated_at"] = generated_at or datetime.now(UTC).isoformat()
     doc["evidence_fingerprint"] = evidence_fingerprint(doc)
     return doc
@@ -308,6 +314,8 @@ def headline_block(evidence: dict[str, Any]) -> dict[str, Any]:
         caveats.append(f"only {clean_days} clean forward day(s) — historical evidence dominates and is subject to selection")
     if not evidence.get("selection_bias", {}).get("dsr_available", True):
         caveats.append("no selection-corrected statistic is available for the searched rule")
+    if not evidence.get("registration", {}).get("registered"):
+        caveats.append("no pre-registered plan fixes the success criterion in advance")
     caveat = caveats[0] if caveats else (
         "forward sample is still small; do not treat a short run as validation"
     )

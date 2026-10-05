@@ -311,6 +311,44 @@ class TestDsrCannotBeFabricated:
         assert acc.dsr_available is False
         assert acc.dsr_unavailable_reason
 
+    def test_breadth_disclosure_shows_compounding_dimensions(self):
+        """The pool and the fold-by-fold picks compound; max() alone hides that.
+
+        This is a disclosure, not a recomputation: it must not change the DSR
+        trial count, only make the un-compounded factors visible.
+        """
+        from bot.search_accounting import build_search_accounting
+
+        acc = build_search_accounting(
+            candidate_pool_version="v",
+            candidate_count_generated=85,
+            candidate_count_evaluated=85,
+            walk_forward_selections=78,
+            research_ledger_experiments=45,
+            overlay_selections=1,
+        )
+        breadth = acc.breadth_disclosure()
+        assert breadth["dimensions"]["candidate_pool"] == 85
+        assert breadth["dimensions"]["walk_forward_selections"] == 78
+        # 85 * 78 * 45 * 1 — the conservative reading the max() omits.
+        assert breadth["naive_compounded_trials"] == 85 * 78 * 45
+        # Crucially, the APPLIED count is unchanged: disclosure must not
+        # silently move a published number.
+        assert breadth["effective_trials_used"] == acc.effective_trials() == 85
+
+    def test_breadth_disclosure_is_stable_for_a_prespecified_rule(self):
+        from bot.search_accounting import build_search_accounting
+
+        acc = build_search_accounting(
+            candidate_pool_version="v",
+            candidate_count_generated=0,
+            candidate_count_evaluated=0,
+            prespecified=True,
+        )
+        breadth = acc.breadth_disclosure()
+        assert breadth["effective_trials_used"] == 1
+        assert breadth["naive_compounded_trials"] == 0
+
 
 # ---------------------------------------------------------------------------
 # 5. fail closed

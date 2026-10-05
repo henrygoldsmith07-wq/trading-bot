@@ -185,6 +185,8 @@ Runs the full inferential battery on the walk-forward record (`bot/stats_validat
 
 **Multiple-testing accounting is explicit.** `bot/search_accounting.py` is the single record of what was searched: candidate pool version, strategies generated/evaluated, walk-forward selections, research-ledger experiments, and the **effective trial count with its reasoning**. A rule produced by selection over a pool is never called `N=1` because the final rule happens to be fixed; when the trial count cannot be established, DSR is reported as **unavailable with a reason**, never as a number that corrects for nothing. The canonical record, the statistical pipeline and the evidence document all read this one structure.
 
+**How the search factors compound is disclosed, not hidden.** The applied trial count is the **max** of the recorded sources — the pool (85) currently dominates the fold-by-fold picks and the ledger. But those sources are not competing estimates of one number: a per-fold, per-asset walk-forward selection *re-runs* the pool on each of ~6 folds for each of ~13 sleeves, and a cross-sectional Sharpe chosen from 85 candidates and then re-chosen 78 times is a wider search than any one factor alone. `breadth_disclosure()` therefore publishes the dimensions and a **naive compounded** reading next to the applied `effective_trials_used`. It is a disclosure, not a recomputation — the exact effective count is a judgement about fold/family correlation that the repo's clustering-based effective-trial estimate addresses, and this deliberately moves no published DSR number.
+
 ### Robust selection (`bot/selection.py`) — and what it is actually worth
 
 The deflation finding above is really a finding about *how the winner is chosen*. `argmax` over in-sample Sharpe is the maximally overfit rule: it picks whichever candidate got lucky in the training window, and it spends the entire multiple-testing budget doing so. `bot/selection.py` implements three alternatives and measures them.
@@ -219,6 +221,68 @@ The default pool is deliberately left at 85 so `candidate_pool_version` and ever
 - **DSR barely moves for any of them** (0.202 → 0.193-0.200). This is expected and is stated in the module docstring: shrinkage reduces the *variance* of the pick, not the *trial count*, and DSR is a function of the trial count. Any claim that these rules fix the deflation problem would be false.
 
 The measurement is per-asset and unpaired. A portfolio-level comparison with bootstrap confidence intervals is the obvious next step and is not yet done, so none of the Sharpe differences above should be treated as statistically established.
+
+### Pre-analysis plans: deciding what counts BEFORE seeing the result (`bot/registration.py`)
+
+Every other control in this repository is retrospective. The research ledger records experiments after they ran; the freeze pins *identity*, not a *decision rule*; the deflated Sharpe corrects for the trial count once the winner is known. All three are real, and all three sit downstream of the same unprotected decision: **who decided, in advance, what would count as success, and which arm would be the claim?**
+
+That gap is the largest remaining source of false discovery here, because the freedoms it protects are exercised unconsciously:
+
+- **choosing the flattering metric** once several are available — Sharpe, CAGR, Calmar and ES rank the five portfolio rules differently;
+- **choosing the threshold** once the number is known ("30 clean days", and not 60, and not 12);
+- **choosing which arm is primary** after seeing which arm wins — this repo grades five portfolio rules and names one of them primary;
+- **reading a forward tape repeatedly** until one reading looks good, which is the multiple-comparisons problem applied to *time* rather than to arms;
+- **stopping a losing forward run** early and restarting, converting one falsifiable prediction into an unbounded sequence of them.
+
+The DSR cannot see any of this: these are not trials of a strategy, they are trials of the **decision procedure**, and they happen after the trial count has been fixed. `bot/registration.py` closes them by fixing the decision procedure first and refusing to grade against a plan that moved.
+
+A registration declares the hypothesis, **one** primary metric, the direction, the numeric threshold, the minimum evidence required before the plan may be read at all, every competing arm, the expected search breadth, and the stopping rule. It is content-addressed: editing any field changes the seal, and a result may only be graded against a seal that still matches.
+
+```bash
+python -m bot register \
+  --id banded-rm-validity \
+  --title "Does the frozen banded_rm rule clear its registered Sharpe floor?" \
+  --hypothesis "banded_rm earns an OOS Sharpe above 0.8 on the frozen universe" \
+  --metric oos_sharpe --direction gt --threshold 0.8 \
+  --min-evidence 30 --alpha 0.05 \
+  --arm "banded_rm:frozen primary rule:primary" \
+  --arm "inv_vol:comparator overlay rule" \
+  --arm "buy_hold:equal-weight over the same window" \
+  --stopping "read once at 30 clean forward days; do not re-read" \
+  --window "2026-09-06 -> +30d"
+
+python -m bot registration-status    # list sealed plans; whether each has been read
+```
+
+Reading fails closed, and the order of the checks is the argument:
+
+| State | Meaning |
+|---|---|
+| `UNREGISTERED` | No plan covers this result. Exploratory; never citable as confirmation. |
+| `DRIFTED` | The plan's seal no longer matches what the read was set up against. A **new study**, not a result. |
+| `ALREADY_READ` | The plan has already been read. A second read is a search over readings. |
+| `INCONCLUSIVE` | Fewer observations than the registered minimum. Honest — and **not** a pass. |
+| `CONFIRMED` | Cleared the registered criterion on sufficient evidence, surviving family-wise correction. |
+| `NOT_CONFIRMED` | Sufficient evidence, criterion not met. |
+
+Two design decisions carry most of the weight:
+
+1. **The minimum-evidence check runs *before* any statistical test.** A significant result computed on three observations is exactly the false discovery this repo exists not to publish, so "the test passed" must never be reachable ahead of "there was enough data to test".
+2. **With more than one declared arm, the read applies Holm–Bonferroni.** Declaring five arms and then reading the best-looking one is a search, and this makes the declared arm count actually cost something — a value that clears its threshold but fails correction is `NOT_CONFIRMED`.
+
+A registration cannot manufacture evidence: a well-formed plan read against a losing tape still returns `NOT_CONFIRMED`. Its entire value is making the reader's decision rule inspectable *in advance*, so that a later "well, we said we'd look at Sharpe" is visible drift rather than a quiet one.
+
+#### The registration is enforced, not merely available
+
+A module nothing reads is decoration, so the plan is wired into the same single evidence document every other surface renders from:
+
+- **Evidence document** — a `registration` section is *always* present, including when absent, so "no plan exists" is distinguishable from "this build predates the check". It is part of the `evidence_fingerprint`, so swapping the plan changes the fingerprint (the same isolation guarantee comparators get).
+- **A sixth verdict dimension** — `pre_registration` appears in `python -m bot verdict`. It grades Strong (plan read), Moderate (valid plan, not yet read), or Weak (absent, or drifted).
+- **The cap, not a refutation.** A claim with no valid plan cannot reach **"validated (provisional)"** — it is held at "promising, not validated", however strong the tape behind it is. Missing registration never produces `INVALIDATED`: a strategy with 200 clean forward days and no plan is still genuinely interesting, and saying otherwise would be its own dishonesty. The floor is `Moderate`, which is what makes the cap bite — `grade_registration` returns exactly `Weak` for an absent plan, so testing against `Weak` would have let the strongest verdict through precisely when there is no plan.
+- **`verify-evidence` gains a registration-integrity gate.** An *absent* plan is not a failure — nobody is obliged to have one — but a **drifted** plan (edited after sealing) fails the gate, exactly like an edited freeze or a broken ledger chain. A committed artefact that lies is a failure; a missing one is a state.
+- **Honest absence surfaces everywhere.** With no plan, `python -m bot evidence` prints `pre-registration: NONE`, and it becomes the headline caveat. The word is never softened into silence.
+
+**The current registered question.** `registrations/banded-rm-forward-validity-v2.json` fixes, in advance: that under the corrected `exact-wealth-v2` accounting, the frozen `banded_rm` rule earns an out-of-sample Sharpe **≥ 0.70** on **≥ 90 clean forward days**, against two declared comparators (`inv_vol`, `buy_hold_equalweight`), read **once**, with no re-freeze to reset the clock. Its threshold is deliberately set below the 0.74 the historical walk-forward already produced — a threshold set *at* the observed value would be guaranteed to fail on noise, which is the error pre-registration is meant to prevent. It is registered **not yet read**, so it contributes nothing to the current verdict yet.
 
 ### Research-methodology battery (`python -m bot research`)
 
@@ -451,6 +515,10 @@ bot/
                          # the performance sentence is rendered here and nowhere else
   search_accounting.py   # one record of what was searched + the n-trials reasoning
                          # a DSR correction may use
+  registration.py        # PRE-analysis plans: hypothesis, metric, threshold, arms
+                         # and stopping rule fixed before results exist; content-
+                         # addressed, fail-closed read-out, Holm-Bonferroni across
+                         # declared arms
   reporting.py           # evidence assembly + every report renderer (CLI, README,
                          # API consume the same document)
   walkforward_diagnostics.py # fold/asset consistency + contribution concentration

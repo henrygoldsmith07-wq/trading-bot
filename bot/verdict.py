@@ -2,7 +2,7 @@
 
 The product of this repo is not "a bot with a backtest" — it is an honest
 answer to "how much evidence supports this strategy?" This module grades
-five independent dimensions and combines them into one verdict:
+six independent dimensions and combines them into one verdict:
 
   1. HISTORICAL EVIDENCE      PSR/DSR of the headline configuration in the
                               canonical record — CAPPED by selection-bias
@@ -18,10 +18,21 @@ five independent dimensions and combines them into one verdict:
                               accumulated cost tape.
   5. PROSPECTIVE FORWARD      days of frozen forward evidence, gated by
                               code verification and seal integrity.
+   6. PRE-REGISTRATION        whether a sealed plan fixed the criterion
+                               (metric, direction, threshold, minimum
+                               evidence, arms, stopping rule) BEFORE the
+                               result was seen. This dimension is upstream of
+                               the rest: a rule whose success criterion was
+                               picked after the numbers are known is not a
+                               test, however strong the tape behind it is.
+                               Missing registration CAPS the overall verdict;
+                               it never cancels the evidence itself.
 
 Grades are ordered: Insufficient < Weak < Moderate < Strong.
 A sixth implicit state, COMPROMISED, overrides everything when the seal is
 broken or parameters changed after freezing.
+(A "sixth dimension" is pre-registration; the COMPROMISED state is orthogonal
+to all six.)
 
 OVERALL mapping (documented, deterministic):
   - any dimension COMPROMISED              -> "invalidated"
@@ -29,6 +40,7 @@ OVERALL mapping (documented, deterministic):
      (unless historical/robustness Weak    -> "not established")
   - all core dims >= Moderate and forward >= Meaningful
                                            -> "validated (provisional)"
+  - pre-registration below Weak            -> "promising, not validated"
   - otherwise                              -> "partially supported"
 
 Every grade ships with its numeric inputs so the verdict is auditable, not
@@ -250,11 +262,100 @@ _OVERALL_MATRIX_NOTE = (
     "overall: invalidated if compromised; 'promising, not validated' while "
     "forward evidence is below Preliminary; 'validated (provisional)' only when "
     "historical/robustness/costs are all >= Moderate AND forward >= Strong "
-    "(>=180 trading days); anything between is 'partially supported'"
+    "(>=180 trading days) AND a valid pre-registration covers the claim; "
+    "anything between is 'partially supported'"
 )
 
 
-def combine(hist: str, robust: str, selection: str, costs: str, forward: str) -> tuple[str, str]:
+def grade_registration(registration: dict | None) -> dict:
+    """Was the decision rule fixed BEFORE the result?
+
+    WHY THIS IS A DIMENSION AND NOT A FOOTNOTE
+        Every other dimension grades how strong the evidence is. This one
+        grades something upstream of the evidence: whether anyone committed,
+        in advance, to the criterion the evidence is now being measured
+        against. A rule chosen after the numbers are known — the flattering
+        metric, the arm that happened to win, the threshold that happens to be
+        cleared — produces evidence that every other dimension can rate Strong
+        and that still is not a test. The DSR cannot catch this, because these
+        are trials of the decision procedure, not trials of the strategy.
+
+    THE CAP, AND WHY IT IS ONLY A CAP
+        Missing registration never *cancels* evidence; it withholds the
+        strongest word. A strategy with 200 clean forward days and no plan is
+        still genuinely interesting, and saying "INVALIDATED" would be its own
+        kind of dishonesty. So an absent or unreadable plan caps the overall
+        verdict at 'promising, not validated' — the same ceiling a
+        below-Preliminary forward tape gets, for the same underlying reason:
+        the thing being measured has not yet been pinned down.
+
+    FAIL-CLOSED
+        No section, a drifted plan (edited after sealing), or a plan that was
+        only read AFTER the fact all read the same way: no valid plan covers
+        the claim.
+    """
+    if not isinstance(registration, dict) or not registration:
+        return {
+            "grade": "Weak",
+            "inputs": {"registered": False},
+            "reason": "no pre-registered plan covers this claim; the criterion was never fixed in advance",
+        }
+
+    n_valid = int(registration.get("n_valid", 0) or 0)
+    n_drifted = int(registration.get("n_drifted", 0) or 0)
+    if n_valid <= 0:
+        reason = (
+            f"no valid pre-registered plan covers this claim ({n_drifted} plan(s) failed integrity); "
+            "the criterion was never fixed in advance"
+        )
+        return {"grade": "Weak", "inputs": {"registered": False, "n_drifted": n_drifted}, "reason": reason}
+
+    plan = registration.get("primary_plan") or {}
+    inputs = {
+        "registered": True,
+        "registration_id": plan.get("registration_id"),
+        "seal": plan.get("seal"),
+        "criterion": plan.get("criterion"),
+        "min_evidence": plan.get("min_evidence"),
+        "n_arms": plan.get("n_arms"),
+        "declared_trials": plan.get("declared_trials"),
+        "read": bool(registration.get("any_read")),
+    }
+
+    if not registration.get("any_read"):
+        # The plan exists but nobody has graded a result against it yet. That
+        # is a legitimate state — a forward test accrues days before it is due
+        # to be read — and it must not be treated as a failure. It simply does
+        # not yet license the strongest verdict.
+        return {
+            "grade": "Moderate",
+            "inputs": inputs,
+            "reason": (
+                f"a valid pre-registration covers this claim ({plan.get('criterion')} on >= "
+                f"{plan.get('min_evidence')} observation(s), {plan.get('n_arms')} arm(s)); "
+                "it has not been read yet"
+            ),
+        }
+
+    return {
+        "grade": "Strong",
+        "inputs": inputs,
+        "reason": (
+            f"read against a sealed plan: {plan.get('criterion')} on >= {plan.get('min_evidence')} "
+            f"observation(s), {plan.get('n_arms')} declared arm(s) "
+            f"({'family-wise corrected' if int(plan.get('n_arms') or 0) > 1 else 'single arm'})"
+        ),
+    }
+
+
+def combine(
+    hist: str,
+    robust: str,
+    selection: str,
+    costs: str,
+    forward: str,
+    registration: str = "Moderate",
+) -> tuple[str, str]:
     if "COMPROMISED" in (hist, robust, selection, costs, forward):
         return "INVALIDATED", _OVERALL_MATRIX_NOTE
     core_ok = all(_at_least(g, "Moderate") for g in (hist, robust, costs))
@@ -263,6 +364,15 @@ def combine(hist: str, robust: str, selection: str, costs: str, forward: str) ->
         if _at_least(hist, "Moderate") and _at_least(robust, "Moderate"):
             return "promising, not validated", _OVERALL_MATRIX_NOTE
         return "not established", _OVERALL_MATRIX_NOTE
+    # A claim whose decision rule was never fixed in advance cannot reach the
+    # strongest word, however strong the tape behind it is. This is a ceiling,
+    # not a refutation.
+    #
+    # The floor is Moderate, not Weak: `grade_registration` returns exactly
+    # "Weak" for an absent, unreadable or drifted plan, so testing against Weak
+    # would let the strongest verdict through precisely when there is no plan.
+    if not _at_least(registration, "Moderate"):
+        return "promising, not validated", _OVERALL_MATRIX_NOTE
     if core_ok and _at_least(forward, "Strong") and selection != "High":
         return "validated (provisional)", _OVERALL_MATRIX_NOTE
     return "partially supported", _OVERALL_MATRIX_NOTE
@@ -277,11 +387,13 @@ def build_verdict(
     ledger_search_n: int | None,
     cost_report: dict | None,
     forward: dict | None,
+    registration: dict | None = None,
     headline_rule_substring: str = PRIMARY_RULE_STAT_NAME,
 ) -> dict:
     sel = grade_selection_bias(pool_size, ledger_search_n, ledger_informed_dsr=None)
     hist = grade_historical(canonical_rule_stats, headline_rule_substring, sel["grade"])
     robust = grade_robustness(canonical_per_asset, canonical_n_folds)
+    reg_grade = grade_registration(registration)
 
     if cost_report and cost_report.get("integrity_verified") is False:
         c = {
@@ -337,7 +449,9 @@ def build_verdict(
         f_out = {"grade": "Insufficient", "inputs": {}, "reason": reason,
                  "label": "Insufficient — 0 trading days"}
 
-    overall, note = combine(hist["grade"], robust["grade"], sel["grade"], str(c["grade"]), f_out["grade"])
+    overall, note = combine(
+        hist["grade"], robust["grade"], sel["grade"], str(c["grade"]), f_out["grade"], reg_grade["grade"]
+    )
 
     return {
         "verdict": {
@@ -346,10 +460,12 @@ def build_verdict(
             "selection_bias_risk": sel["grade"],
             "cost_robustness": c["grade"],
             "prospective_forward_evidence": f_out["label"],
+            "pre_registration": reg_grade["grade"],
             "overall": overall,
         },
         "details": {"historical": hist, "robustness": robust,
-                    "selection_bias": sel, "costs": c, "forward": f_out},
+                    "selection_bias": sel, "costs": c, "forward": f_out,
+                    "registration": reg_grade},
         "note": note,
     }
 
@@ -365,12 +481,13 @@ def format_verdict(v: dict) -> str:
         f"Selection-bias risk         : {vd['selection_bias_risk']}",
         f"Cost robustness             : {vd['cost_robustness']}",
         f"Prospective forward evidence: {vd['prospective_forward_evidence']}",
+        f"Pre-registration            : {vd.get('pre_registration', 'Weak')}",
         "-" * 62,
         f"OVERALL: {vd['overall']}",
         "-" * 62,
     ]
     d = v["details"]
-    for key in ("historical", "robustness", "selection_bias", "costs", "forward"):
+    for key in ("historical", "robustness", "selection_bias", "costs", "forward", "registration"):
         L.append(f"[{key}] {d[key]['reason']}")
         ins = d[key].get("inputs") or {}
         if ins:

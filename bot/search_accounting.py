@@ -132,6 +132,65 @@ class SearchAccounting:
             "walk_forward_selections": self.walk_forward_selections,
             "research_ledger_experiments": self.research_ledger_experiments,
             "overlay_selections": self.overlay_selections,
+        } | {"breadth": self.breadth_disclosure()}
+
+    def breadth_disclosure(self) -> dict[str, Any]:
+        """How the recorded sources COMPOUND, not just which one is largest.
+
+        WHY THIS EXISTS
+            `effective_trials()` takes the MAX of the recorded sources, on the
+            stated principle that the honest count is the largest search that
+            actually happened. That principle is right about which single
+            number to correct against, but it is silent about something a
+            reader of a DSR deserves to see: these sources are not competing
+            estimates of one quantity, they are *dimensions of the same search*.
+
+            A per-fold, per-asset walk-forward selection re-runs the candidate
+            pool on each of F folds for each of A assets. The pool (85) and the
+            number of picks (F*A) therefore do not compete — they multiply. A
+            cross-sectional Sharpe chosen from 85 candidates, then re-chosen
+            78 times across folds and sleeves, and then compared across several
+            overlay rules, is a far wider search than any one of those factors
+            alone, and the DSR benchmark scales with the width.
+
+        WHAT IT DOES AND DOES NOT DO
+            This is a disclosure, not a recomputation. It changes no DSR, moves
+            no threshold and alters no published number, because the exact
+            effective trial count is a judgement about correlation structure
+            (overlapping folds, near-duplicate families) that cannot be settled
+            by arithmetic — the repo already reports an `effective_trials`
+            estimate from clustering for exactly that reason. What it does is
+            stop the single `max` from looking like the whole search when a
+            reader can see the factors laid out.
+        """
+        pool = max(self.candidate_count_generated, self.candidate_count_evaluated)
+        dimensions = {
+            "candidate_pool": pool,
+            "walk_forward_selections": self.walk_forward_selections,
+            "research_ledger_experiments": self.research_ledger_experiments,
+            "overlay_selections": self.overlay_selections,
+        }
+        active = {k: v for k, v in dimensions.items() if v > 0}
+        # The naive product is the most conservative reading of "all of these
+        # compounded". It is deliberately NOT used as the DSR trial count; it
+        # is published so the reader sees how much of the search a single
+        # max-of-sources number is leaving implicit.
+        product = 1
+        for v in active.values():
+            product *= v
+        return {
+            "dimensions": dimensions,
+            "active_dimensions": sorted(active),
+            "naive_compounded_trials": product if active else 0,
+            "effective_trials_used": self.effective_trials(),
+            "note": (
+                "effective_trials_used is the max of these dimensions and is what a "
+                "deflation corrects against. The dimensions compound rather than "
+                "compete, so naive_compounded_trials is a disclosed upper reading, "
+                "not the applied correction — the applied count is a judgement about "
+                "correlation between folds and families, and the repo publishes its "
+                "clustering-based effective-trial estimate for that."
+            ),
         }
 
 
