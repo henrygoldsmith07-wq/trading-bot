@@ -20,6 +20,8 @@ from .commands import (
     run_freeze,
     run_ledger,
     run_quarantine_costs,
+    run_register,
+    run_registration_status,
     run_reproduce,
     run_research,
     run_sensitivity,
@@ -255,6 +257,38 @@ def main():
     cex.add_argument("right", help="right run id (or 'current')")
     cex.add_argument("--root", default=".", help="repository root (default: cwd)")
 
+    # --- pre-analysis plans: decide what counts BEFORE seeing it ----------
+    reg = sub.add_parser(
+        "register",
+        help="Seal a pre-analysis plan: hypothesis, primary metric, threshold, arms, stopping rule",
+    )
+    reg.add_argument("--id", required=True, help="registration id (the filename)")
+    reg.add_argument("--title", required=True)
+    reg.add_argument("--hypothesis", required=True, help="falsifiable statement, fixed before results")
+    reg.add_argument("--metric", required=True, help="ONE primary metric (e.g. oos_sharpe)")
+    reg.add_argument("--threshold", type=float, required=True)
+    reg.add_argument("--direction", choices=["gt", "gte", "lt", "lte"], default="gt")
+    reg.add_argument("--min-evidence", type=int, default=1, dest="min_evidence",
+                     help="minimum observations before the plan may be read at all")
+    reg.add_argument("--alpha", type=float, default=0.05, help="family-wise alpha across declared arms")
+    reg.add_argument(
+        "--arm",
+        action="append",
+        required=True,
+        metavar="ID:DESC[:primary]",
+        help="declare a competing arm; repeat per arm. Exactly one must be marked primary",
+    )
+    reg.add_argument("--stopping", required=True, help="when the result will be read, fixed in advance")
+    reg.add_argument("--declared-trials", type=int, default=1, dest="declared_trials",
+                     help="search breadth expected before the run (>= number of arms)")
+    reg.add_argument("--window", default="unspecified", help="data window the test may use")
+    reg.add_argument("--notes", default=None)
+    reg.add_argument("--dir", default="registrations")
+
+    rgs = sub.add_parser("registration-status", help="List sealed plans and whether each has been read")
+    rgs.add_argument("--dir", default="registrations")
+    rgs.add_argument("--log", default=None, help="registration event log (default registration_events.jsonl)")
+
     args = parser.parse_args()
 
     if args.command == "backtest":
@@ -335,6 +369,10 @@ def main():
         raise SystemExit(run_verify_evidence(args))
     elif args.command == "compare-experiments":
         raise SystemExit(run_compare_experiments(args))
+    elif args.command == "register":
+        raise SystemExit(run_register(args))
+    elif args.command == "registration-status":
+        raise SystemExit(run_registration_status(args))
 
 
 if __name__ == "__main__":

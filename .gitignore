@@ -11,5 +11,12 @@ paper_ledger.jsonl
 .env
 cost_calibration.json
 
+# local virtualenv / on-disk test tooling (not part of the project)
+.venv/
+.testtools/
+
 # NOTE: forward_log / universe_log / cost_observations are COMMITTED DATA TAPES
 # (CI appends daily). Do not ignore them.
+
+# Registration event logs are LOCAL state (which plans have been read on this
+# checkout); the sealed plans themselves in registrations/ ARE committed.

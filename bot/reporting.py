@@ -218,6 +218,92 @@ def build_search_accounting_from_artifacts(
     return accounting.to_dict()
 
 
+def build_registration_status(root: str | Path = DEFAULT_ROOT) -> dict[str, Any]:
+    """The pre-registration state of the current experiment.
+
+    WHY THIS IS IN THE EVIDENCE DOCUMENT
+        A sealed plan is only a control if every surface can see whether one
+        covers the claim. If registration lived only in a CLI command, an
+        unregistered result would look exactly like a registered one on the
+        README, the dashboard and the API — and the reader would have no way
+        to tell that nobody had committed to a criterion in advance.
+
+        So the question "was the decision rule fixed before the result?" joins
+        the evidence document alongside the verdict, the forward tape and the
+        search accounting. It is not a sixth grade on its own: it reports the
+        plan, its seal, and whether it has been read, and the VERDICT uses it
+        to cap the overall grade.
+
+    FAIL-CLOSED SHAPE
+        `registered` is false when no plan covers the current experiment, and a
+        plan whose seal no longer matches its content is reported as `drifted`
+        and treated as absent. Neither is ever softened.
+    """
+    base = Path(root)
+    reg_dir = base / "registrations"
+    event_log = base / "registration_events.jsonl"
+
+    plans: list[dict[str, Any]] = []
+    if reg_dir.exists():
+        for path in sorted(reg_dir.glob("*.json")):
+            entry: dict[str, Any] = {"file": path.name, "read": False}
+            try:
+                from .registration import RegistrationError, load_registration
+
+                reg = load_registration(path)
+                reads = _registration_reads(event_log, reg.registration_id)
+                entry.update(
+                    registration_id=reg.registration_id,
+                    seal=reg.seal(),
+                    hypothesis=reg.hypothesis,
+                    primary_metric=reg.primary_metric,
+                    criterion=f"{reg.primary_metric} {reg.direction} {reg.threshold}",
+                    direction=reg.direction,
+                    threshold=reg.threshold,
+                    min_evidence=reg.min_evidence,
+                    stopping_rule=reg.stopping_rule,
+                    declared_trials=reg.declared_trials,
+                    n_arms=len(reg.arms),
+                    primary_arm=reg.primary_arm.arm_id,
+                    data_window=reg.data_window,
+                    created_at=reg.created_at,
+                    drifted=False,
+                    read=bool(reads),
+                    n_reads=len(reads),
+                    latest_read_state=(reads[-1].get("payload") or {}).get("state") if reads else None,
+                )
+            except RegistrationError as exc:
+                # An unreadable plan is a FAILED integrity check, not a plan
+                # that happens to be empty. Surfaced as drifted so the caller
+                # treats it exactly like a missing registration.
+                entry.update(drifted=True, error=str(exc))
+            plans.append(entry)
+
+    active = [p for p in plans if not p.get("drifted") and not p.get("error")]
+    return {
+        "registered": bool(active),
+        "n_plans": len(plans),
+        "n_valid": len(active),
+        "n_drifted": sum(1 for p in plans if p.get("drifted") or p.get("error")),
+        "any_read": any(p.get("read") for p in active),
+        "primary_plan": active[0] if active else None,
+        "plans": plans,
+    }
+
+
+def _registration_reads(event_log: Path, registration_id: str) -> list[dict[str, Any]]:
+    """Read events for one registration, tolerating an absent log."""
+    try:
+        from .registration import load_events
+
+        return [
+            e for e in load_events(event_log, strict=False)
+            if e.get("event_type") == "read" and e.get("registration_id") == registration_id
+        ]
+    except Exception:
+        return []
+
+
 def build_evidence(
     root: str | Path = DEFAULT_ROOT,
     *,
@@ -346,6 +432,10 @@ def build_evidence(
         verdict["exit_code"] = 2
 
     # ---- graded dimensions (the evidence grade, not the performance claim) --
+    # Computed once and reused for BOTH the grade and the evidence section, so
+    # the verdict can never be computed against a different registration state
+    # than the one the document publishes.
+    registration_status = build_registration_status(root)
     grades = _grade_dimensions(
         record=record,
         search=search,
@@ -355,6 +445,7 @@ def build_evidence(
         state=state,
         artifacts=artifacts,
         freeze=freeze,
+        registration=registration_status,
     )
     verdict["grades"] = grades["dimensions"]
     verdict["overall_grade"] = grades["overall"]
@@ -486,6 +577,7 @@ def build_evidence(
         comparators=comparators,
         rule_stats=rules_norm,
         timeline=timeline,
+        registration=registration_status,
         generated_at=generated_at or _deterministic_timestamp(artifacts),
     )
     return doc
@@ -501,6 +593,7 @@ def _grade_dimensions(
     state: str,
     artifacts: dict[str, Any],
     freeze: dict[str, Any] | None,
+    registration: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The graded evidence dimensions, computed in one place.
 
@@ -560,6 +653,7 @@ def _grade_dimensions(
         ledger_search_n=int(search.get("research_ledger_experiments") or 0),
         cost_report=cost_report,
         forward=forward_view,
+        registration=registration,
         headline_rule_substring=PRIMARY_RULE_STAT_NAME,
     )
     overall, note = combine(
@@ -568,6 +662,7 @@ def _grade_dimensions(
         verdict["details"]["selection_bias"]["grade"],
         str(verdict["details"]["costs"]["grade"]),
         str(verdict["verdict"]["prospective_forward_evidence"]),
+        str(verdict["details"]["registration"]["grade"]),
     )
     return {"dimensions": verdict["verdict"], "details": verdict["details"], "overall": overall, "note": note}
 
@@ -876,6 +971,15 @@ def render_evidence_report(doc: dict[str, Any]) -> str:
     else:
         L.append(f"  PSR            : {hs.get('psr')}")
         L.append(f"  DSR            : n/a — {hs.get('dsr_unavailable_reason')}")
+    reg = doc.get("registration") or {}
+    if reg.get("registered"):
+        plan = reg.get("primary_plan") or {}
+        L.append(f"pre-registration: {plan.get('registration_id')} (seal {plan.get('seal')}) — "
+                 f"{plan.get('criterion')} on >= {plan.get('min_evidence')} obs, "
+                 f"{plan.get('n_arms')} arm(s){', read' if reg.get('any_read') else ', NOT yet read'}")
+    else:
+        L.append(f"pre-registration: NONE — {reg.get('n_drifted', 0)} drifted plan(s); "
+                 "the success criterion was not fixed in advance")
     L.append("-" * 62)
     L.append(f"data quality    : score {doc['data_quality']['score']:.0f}/100, "
              f"{doc['data_quality']['full_evidence_days']} full-evidence days, "
@@ -934,6 +1038,10 @@ def _biggest_caveat(doc: dict[str, Any]) -> str:
     if not sel.get("dsr_available", True):
         return ("no selection-corrected statistic is available for the searched rule, "
                 "so the historical figures cannot yet support an inference of edge.")
+    reg = doc.get("registration") or {}
+    if not reg.get("registered"):
+        return ("no pre-registered plan fixes the criterion in advance, so whatever this "
+                "system is graded against was chosen after the results were seen.")
     return ("the forward sample is still small; a short run measures one regime, "
             "not the strategy.")
 

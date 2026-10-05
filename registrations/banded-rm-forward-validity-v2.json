@@ -1,0 +1,35 @@
+{
+  "alpha": 0.05,
+  "arms": [
+    {
+      "arm_id": "banded_rm",
+      "description": "frozen primary rule (the claim)",
+      "primary": true
+    },
+    {
+      "arm_id": "inv_vol_selected_underlying",
+      "description": "comparator overlay without tilt/crisis/band",
+      "primary": false
+    },
+    {
+      "arm_id": "buy_hold_equalweight",
+      "description": "equal-weight buy-and-hold, same universe and window",
+      "primary": false
+    }
+  ],
+  "code_fingerprint": "c7231b2b91f6f3e11592db2f98bb6ec3b5c02c6fc70ff7895b72f73e56862b8c",
+  "created_at": "2026-10-04T20:54:47+00:00",
+  "data_window": "first 90 clean forward days under exact-wealth-v2",
+  "declared_trials": 3,
+  "direction": "gte",
+  "hypothesis": "Under the exact-wealth-v2 accounting model, the frozen banded_rm rule earns an out-of-sample Sharpe at or above 0.70 over the benchmark-matched window, net of modelled frictions, on at least 90 clean forward days.",
+  "min_evidence": 90,
+  "notes": "",
+  "primary_metric": "oos_sharpe",
+  "registration_id": "banded-rm-forward-validity-v2",
+  "seal": "d8dab01d14c14afa",
+  "stopping_rule": "Read once, when the exact-wealth-v2 freeze reaches 90 clean forward days. Do not read earlier; do not re-read; do not re-freeze to reset the clock.",
+  "threshold": 0.7,
+  "title": "Does the corrected banded_rm rule hold up under prospective paper trading?",
+  "version": 1
+}

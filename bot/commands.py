@@ -669,7 +669,7 @@ def run_verdict(args) -> int:
     print("STRATEGY VERDICT")
     print("=" * 62)
     for key in ("historical_evidence", "walk_forward_robustness", "selection_bias_risk",
-                "cost_robustness", "prospective_forward_evidence"):
+                "cost_robustness", "prospective_forward_evidence", "pre_registration"):
         print(f"{key:28}: {d.get(key)}")
     print("-" * 62)
     print(f"{'OVERALL':28}: {v.get('overall_grade')}")
@@ -1041,6 +1041,23 @@ def run_verify_evidence(args) -> int:
         else f"SUPERSEDED by {status.get('superseded_by')}: {status.get('supersede_reason')}",
     )
 
+    # Registration integrity: a sealed plan that no longer matches its own seal
+    # is an edited-after-sealing decision rule. That is the same class of
+    # failure as an edited freeze or a broken ledger chain, so it fails the
+    # gate. An ABSENT plan is not a failure — nobody is obliged to have one —
+    # but a CORRUPT one is, because it means a committed artefact lies.
+    reg = doc.get("registration") or {}
+    n_drifted = int(reg.get("n_drifted", 0) or 0)
+    drifted_detail = "; ".join(
+        f"{p.get('file')}: {p.get('error')}" for p in reg.get("plans", []) if p.get("drifted")
+    )
+    record(
+        "registration integrity",
+        n_drifted == 0,
+        (f"{reg.get('n_valid', 0)} valid pre-registration(s), all seals verify" if n_drifted == 0
+         else f"{n_drifted} pre-registration(s) edited after sealing: {drifted_detail}"),
+    )
+
     # README/evidence consistency: the canonical block must render exactly as
     # the evidence document says. A stale README is a claim that no evidence
     # supports, so it fails the gate.
@@ -1156,3 +1173,115 @@ def run_compare_experiments(args) -> int:
         single = important_changes[0] if important_changes else "metadata only"
         print(f"\ncontrolled comparison: exactly one important variable differs ({single})")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Pre-analysis plans: decide what counts BEFORE seeing the result
+# ---------------------------------------------------------------------------
+
+def run_register(args) -> int:
+    """Write a sealed pre-analysis plan, or report why it cannot be sealed.
+
+    Exit codes carry the same meaning as elsewhere in this CLI: 0 success,
+    1 an honest refusal (a malformed plan), 2 a usage error. A plan that
+    cannot be sealed is never written "mostly" — a registration whose fields
+    are inconsistent is not a weaker registration, it is a different and
+    unusable one.
+    """
+    from .identity import code_fingerprint
+    from .registration import Arm, RegistrationError, create_registration, write_registration
+
+    arms: list[Arm] = []
+    for spec in args.arm:
+        # "id:description[:primary]" — primary is marked here, in advance.
+        parts = spec.split(":", 2)
+        if len(parts) < 2:
+            print(f"FAIL: arm {spec!r} must be 'id:description[:primary]'")
+            return 2
+        arm_id, description = parts[0], parts[1]
+        primary = len(parts) > 2 and parts[2].strip().lower() in ("primary", "true", "yes", "1")
+        arms.append(Arm(arm_id, description, primary=primary))
+
+    try:
+        fingerprint = code_fingerprint()
+    except Exception:  # noqa: BLE001 - fingerprinting must never block a registration
+        fingerprint = None
+
+    try:
+        reg = create_registration(
+            registration_id=args.id,
+            title=args.title,
+            hypothesis=args.hypothesis,
+            primary_metric=args.metric,
+            threshold=args.threshold,
+            direction=args.direction,
+            min_evidence=args.min_evidence,
+            alpha=args.alpha,
+            arms=arms,
+            stopping_rule=args.stopping,
+            declared_trials=max(args.declared_trials, len(arms)),
+            data_window=args.window,
+            code_fingerprint=fingerprint,
+            notes=args.notes or "",
+        )
+        path = write_registration(reg, args.dir)
+    except RegistrationError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+
+    print(f"Registered pre-analysis plan -> {path}")
+    print(f"  seal        : {reg.seal()}  (content-addressed; editing any field breaks it)")
+    print(f"  primary arm : {reg.primary_arm.arm_id} — {reg.primary_arm.description}")
+    print(f"  criterion   : {reg.primary_metric} {reg.direction} {reg.threshold} on >= {reg.min_evidence} observation(s)")
+    print(f"  arms        : {len(reg.arms)} declared; a read across them is Holm-Bonferroni corrected")
+    print(f"  stopping    : {reg.stopping_rule}")
+    print("\nA result may only be graded against this plan. Anything graded without one is exploratory.")
+    return 0
+
+
+def run_registration_status(args) -> int:
+    """List registered plans and report whether each has been read.
+
+    The read log is the part that matters: it turns "we looked once, at the
+    time we said we would" into something a reader can check, and it makes a
+    second look at a losing tape visible.
+    """
+    from pathlib import Path
+
+    from .registration import DEFAULT_EVENT_LOG, RegistrationError, load_events, load_registration
+
+    directory = args.dir
+    plan_files = sorted(Path(directory).glob("*.json")) if Path(directory).exists() else []
+    log_path = args.log or DEFAULT_EVENT_LOG
+
+    try:
+        events = load_events(log_path, strict=False)
+    except RegistrationError as exc:
+        print(f"FAIL: registration event log is unusable: {exc}")
+        return 1
+
+    if not plan_files:
+        print(f"No registrations in {directory}/ — nothing has been pre-decided yet.")
+        print("Without a registration, every result in this repo is exploratory by definition.")
+        return 2
+
+    print(f"Pre-analysis plans in {directory}/  (event log: {log_path}, {len(events)} event(s))\n")
+    unreadable = 0
+    for path in plan_files:
+        try:
+            reg = load_registration(path)
+        except RegistrationError as exc:
+            unreadable += 1
+            print(f"  {path.name}: CORRUPT — {exc}")
+            continue
+        reads = [e for e in events if e.get("registration_id") == reg.registration_id
+                 and e.get("event_type") == "read"]
+        state = f"read {len(reads)}x" if reads else "NOT YET READ"
+        print(f"  {path.name}")
+        print(f"    seal     : {reg.seal()}")
+        print(f"    primary  : {reg.primary_arm.arm_id} — {reg.primary_metric} {reg.direction} {reg.threshold}")
+        print(f"    arms     : {len(reg.arms)}   minimum evidence: {reg.min_evidence}")
+        print(f"    status   : {state}")
+    if unreadable:
+        print(f"\n{unreadable} registration(s) failed integrity and are excluded from any claim.")
+    return 1 if unreadable else 0
