@@ -210,13 +210,33 @@ def normalize_rule_stats(rules: list[dict[str, Any]] | None) -> list[dict[str, A
 
 
 def evidence_fingerprint(doc: dict[str, Any]) -> str:
-    """sha256 over the evidence document minus its generation timestamp.
+    """sha256 over the evidence document minus its non-evidential fields.
 
     Two builds from identical evidence share this fingerprint; any drift in
     the evidence itself changes it. Reports render deterministically from a
     fixed document, so identical fingerprints imply byte-identical reports.
+
+    Two inputs are excluded because they describe the BUILD, not the evidence:
+
+    * `generated_at` — wall-clock time (already excluded);
+    * `provenance.git_now` — the live checkout's HEAD commit and dirty-path
+      list, which says where the build ran rather than what it found.
+
+    Including `git_now` made the fingerprint a function of the working tree:
+    checking the same canonical run out at a different commit, or with an
+    unrelated file open, produced a different "evidence" fingerprint. That
+    breaks the invariant this function exists to provide, and it made the
+    README canonical block unsatisfiable — the block embeds the fingerprint,
+    so committing the regenerated block moved HEAD, changed the fingerprint,
+    and invalidated the very line that recorded it. The gate could never pass.
+
+    `git_now` stays IN the document; `verify-evidence` still reports it. It is
+    simply not part of the evidence's identity.
     """
     stable = {k: v for k, v in doc.items() if k != "generated_at"}
+    provenance = stable.get("provenance")
+    if isinstance(provenance, dict):
+        stable["provenance"] = {k: v for k, v in provenance.items() if k != "git_now"}
     return hashlib.sha256(canonical_json(stable).encode("utf-8")).hexdigest()
 
 
