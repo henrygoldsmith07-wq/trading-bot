@@ -173,12 +173,59 @@ class TestRegistrationGradesAndCaps(unittest.TestCase):
         self.assertEqual(g["grade"], "Moderate")
         self.assertIn("not been read yet", g["reason"])
 
-    def test_read_plan_is_strong(self):
-        g = grade_registration({
+    @staticmethod
+    def _read_state_case(state):
+        """A plan that exists, has been read, and recorded `state`."""
+        return {
             "registered": True, "n_valid": 1, "any_read": True,
-            "primary_plan": {"criterion": "oos_sharpe gte 0.7", "min_evidence": 90, "n_arms": 2},
-        })
+            "primary_plan": {
+                "criterion": "oos_sharpe gte 0.7", "min_evidence": 90,
+                "n_arms": 2, "latest_read_state": state,
+            },
+        }
+
+    def test_confirmed_read_is_strong(self):
+        g = grade_registration(self._read_state_case("CONFIRMED"))
         self.assertEqual(g["grade"], "Strong")
+        self.assertIn("criterion held", g["reason"])
+
+    def test_refuted_read_is_weak_not_strong(self):
+        """Regression, and the sharpest edge in this module.
+
+        Pre-registration earns its keep when it REFUTES a claim that would
+        otherwise have sailed through. Grading a NOT_CONFIRMED read as Strong
+        inverted the control: a system that pre-registered and then failed its
+        own criterion would grade BETTER than one that never committed, and
+        could unlock "validated (provisional)".
+        """
+        g = grade_registration(self._read_state_case("NOT_CONFIRMED"))
+        self.assertEqual(g["grade"], "Weak")
+        self.assertIn("refuted", g["reason"])
+
+    def test_refuted_read_cannot_unlock_the_strongest_verdict(self):
+        args = ("Strong", "Strong", "Low", "Strong", "Strong")
+        g = grade_registration(self._read_state_case("NOT_CONFIRMED"))
+        overall, _ = combine(*args, g["grade"])
+        self.assertNotEqual(overall, "validated (provisional)")
+        self.assertNotEqual(overall, "INVALIDATED")  # a refutation is not a compromise
+
+    def test_inconclusive_read_stays_at_the_not_yet_grade(self):
+        g = grade_registration(self._read_state_case("INCONCLUSIVE"))
+        self.assertEqual(g["grade"], "Moderate")
+
+    def test_read_without_a_recorded_outcome_is_not_a_confirmation(self):
+        """any_read=True with no outcome means the read never produced a verdict;
+        it must not be treated as a surviving criterion."""
+        g = grade_registration(self._read_state_case(None))
+        self.assertEqual(g["grade"], "Moderate")
+
+    def test_cap_cannot_be_bypassed_by_omitting_the_argument(self):
+        """combine() defaults registration to Weak so a caller that forgets the
+        sixth dimension lands on the conservative reading. Defaulting to
+        Moderate made the control opt-in — any 5-argument caller reached
+        'validated (provisional)' with no plan in existence."""
+        self.assertEqual(combine("Strong", "Strong", "Low", "Strong", "Strong")[0],
+                         "promising, not validated")
 
     def test_absent_plan_caps_the_strongest_verdict(self):
         """The cap, stated as a test: everything else Strong, no plan,

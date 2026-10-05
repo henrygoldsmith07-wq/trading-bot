@@ -119,12 +119,21 @@ class TestCombine:
         assert overall == "not established"
 
     def test_full_validation_requires_all_moderate_plus_strong_forward(self):
-        overall, _ = combine("Strong", "Strong", "Moderate", "Moderate", "Strong")
+        # The sixth dimension (pre-registration) is passed explicitly: these
+        # tests pin the CORE matrix, and combine() defaults it to Weak so that
+        # a caller who forgets it lands on the conservative reading.
+        overall, _ = combine("Strong", "Strong", "Moderate", "Moderate", "Strong", "Strong")
         assert overall == "validated (provisional)"
 
     def test_partial_between_states(self):
-        overall, _ = combine("Strong", "Moderate", "Moderate", "Moderate", "Moderate")
+        overall, _ = combine("Strong", "Moderate", "Moderate", "Moderate", "Moderate", "Strong")
         assert overall == "partially supported"
+
+    def test_omitting_pre_registration_caps_the_verdict(self):
+        """No plan means the strongest word is unreachable, however strong the
+        rest of the tape. This is the default's whole purpose."""
+        overall, _ = combine("Strong", "Strong", "Moderate", "Moderate", "Strong")
+        assert overall == "promising, not validated"
 
 
 class TestBuildVerdict:
