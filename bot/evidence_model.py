@@ -209,6 +209,40 @@ def normalize_rule_stats(rules: list[dict[str, Any]] | None) -> list[dict[str, A
     return out
 
 
+def _portable_registration(registration: Any) -> Any:
+    """Strip local read-state from the registration section for fingerprinting.
+
+    A sealed plan is committed and portable; whether it has been READ on this
+    particular checkout is not. The read ledger lives in a gitignored
+    local file, so folding `any_read` / `n_reads` / `latest_read_state` into
+    the fingerprint made the fingerprint a function of the machine: CI (no
+    ledger) and a developer who has read a plan (ledger present) disagreed on
+    the evidence identity, and the committed README block could not match both.
+    Same class as `git_now` -- local state masquerading as evidence.
+
+    What survives is the committed, content-addressed part: which plans exist,
+    whether each still verifies against its own seal, and the criterion each
+    one fixes. Those genuinely are properties of the evidence.
+    """
+    if not isinstance(registration, dict):
+        return registration
+    local_keys = ("read", "n_reads", "latest_read_state")
+    out = {k: v for k, v in registration.items() if k not in ("any_read",)}
+    if "primary_plan" in out:
+        pp = out["primary_plan"]
+        if isinstance(pp, dict):
+            out["primary_plan"] = {k: v for k, v in pp.items() if k not in local_keys}
+    plans = []
+    for p in registration.get("plans") or []:
+        if not isinstance(p, dict):
+            plans.append(p)
+            continue
+        plans.append({k: v for k, v in p.items() if k not in local_keys})
+    if "plans" in out:
+        out["plans"] = plans
+    return out
+
+
 def evidence_fingerprint(doc: dict[str, Any]) -> str:
     """sha256 over the evidence document minus its non-evidential fields.
 
@@ -216,27 +250,43 @@ def evidence_fingerprint(doc: dict[str, Any]) -> str:
     the evidence itself changes it. Reports render deterministically from a
     fixed document, so identical fingerprints imply byte-identical reports.
 
-    Two inputs are excluded because they describe the BUILD, not the evidence:
+    Three inputs are excluded because they describe the BUILD, not the evidence:
 
-    * `generated_at` — wall-clock time (already excluded);
+    * `generated_at` — wall-clock time;
     * `provenance.git_now` — the live checkout's HEAD commit and dirty-path
-      list, which says where the build ran rather than what it found.
+      list, which says where the build ran rather than what it found;
+    * the registration section's LOCAL read-state (`any_read` and the
+      per-plan `read`/`n_reads`/`latest_read_state`), which lives in a
+      gitignored per-checkout ledger.
 
-    Including `git_now` made the fingerprint a function of the working tree:
-    checking the same canonical run out at a different commit, or with an
-    unrelated file open, produced a different "evidence" fingerprint. That
-    breaks the invariant this function exists to provide, and it made the
-    README canonical block unsatisfiable — the block embeds the fingerprint,
-    so committing the regenerated block moved HEAD, changed the fingerprint,
-    and invalidated the very line that recorded it. The gate could never pass.
+    Including any of these made the fingerprint a function of the machine:
+    checking out at a different commit, with an unrelated file open, or after
+    recording a plan read, produced a different "evidence" fingerprint. That
+    broke the invariant this function exists to provide AND made the README
+    canonical block unsatisfiable -- the block embeds the fingerprint, so
+    committing it, or reading a plan locally, moved a value the block itself
+    records.
 
-    `git_now` stays IN the document; `verify-evidence` still reports it. It is
-    simply not part of the evidence's identity.
+    These fields stay IN the document; `verify-evidence`, the verdict and the
+    verdict sentence all still read them. They are simply not part of the
+    evidence's identity.
     """
     stable = {k: v for k, v in doc.items() if k != "generated_at"}
     provenance = stable.get("provenance")
     if isinstance(provenance, dict):
         stable["provenance"] = {k: v for k, v in provenance.items() if k != "git_now"}
+    if "registration" in stable:
+        stable["registration"] = _portable_registration(stable["registration"])
+    # The verdict's pre_registration GRADE is a downstream consequence of
+    # read-state: reading a refuted plan moves it Moderate -> Weak. That grade
+    # is live process status, not evidence, so it is normalised out of the
+    # fingerprint along with the ledger fields it is derived from. The grade
+    # itself is untouched in the document; only the hashed copy drops it.
+    verdict = stable.get("verdict")
+    if isinstance(verdict, dict) and isinstance(verdict.get("grades"), dict):
+        stable["verdict"] = {**verdict,
+                             "grades": {k: v for k, v in verdict["grades"].items()
+                                        if k != "pre_registration"}}
     return hashlib.sha256(canonical_json(stable).encode("utf-8")).hexdigest()
 
 
