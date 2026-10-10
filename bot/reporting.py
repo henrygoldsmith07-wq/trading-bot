@@ -580,6 +580,10 @@ def build_evidence(
         registration=registration_status,
         generated_at=generated_at or _deterministic_timestamp(artifacts),
     )
+    # Derived last, from the finished document, so the caveat can never disagree
+    # with the sections it summarises. Rendered by every surface that must state
+    # it -- the dashboard's copy is no longer hand-maintained and cannot drift.
+    doc["statistical_caveat"] = render_statistical_caveat(doc)
     return doc
 
 
@@ -1012,6 +1016,62 @@ def render_evidence_report(doc: dict[str, Any]) -> str:
     L.append(f"  evidence fp    : {doc.get('evidence_fingerprint', '')[:16]}")
     L.append("=" * 62)
     return "\n".join(L)
+
+
+def render_statistical_caveat(doc: dict[str, Any]) -> dict[str, Any]:
+    """The deflation caveat, rendered from the evidence document.
+
+    Returns the SENTENCE and the numbers that compose it, so every surface that
+    must state this caveat states the same one. This exists because the caveat
+    was once hand-written into the dashboard and then outlived the numbers it
+    described: the page asserted a 25.7% CAGR and a DSR of 0.138 while the
+    canonical recomputation had already moved the CAGR to 11.7% and withheld
+    the DSR entirely. A test pinned those literals, so regeneration could never
+    correct them.
+
+    Honesty rule: a number is either present in the document and rendered, or
+    absent and reported as absent. It is never carried over from a previous
+    build. When DSR is unavailable the sentence says so and gives the recorded
+    reason, which is the repo's actual position -- not a number.
+    """
+    sel = doc.get("selection_bias") or {}
+    hist = doc.get("historical") or {}
+    stat = hist.get("primary_stat") or {}
+    breadth = sel.get("breadth") or {}
+
+    trials = sel.get("effective_trials") or breadth.get("effective_trials_used")
+    naive = breadth.get("naive_compounded_trials")
+    dsr = stat.get("dsr")
+    dsr_available = bool(stat.get("dsr_available", sel.get("dsr_available", False)))
+    reason = stat.get("dsr_unavailable_reason") or sel.get("dsr_unavailable_reason")
+    cagr = (hist.get("metrics") or {}).get("cagr")
+    psr = stat.get("psr")
+
+    if dsr_available and dsr is not None:
+        sentence = (
+            f"the research record was selected from {trials} candidate rule(s); corrected for that "
+            f"search the deflated Sharpe is {dsr:.3f}, which does not clear the conventional 0.95 bar."
+        )
+    else:
+        why = reason or "no selection-corrected statistic is available for this record"
+        sentence = (
+            f"the research record was selected from {trials} candidate rule(s) and NO selection-corrected "
+            f"statistic is available for it ({why}), so the historical figures cannot support an "
+            "inference of edge. A number carried over from an earlier run would be a number that "
+            "corrects for nothing."
+        )
+
+    return {
+        "sentence": sentence,
+        "dsr": dsr if dsr_available else None,
+        "dsr_available": dsr_available,
+        "dsr_unavailable_reason": reason,
+        "psr": psr,
+        "effective_trials": trials,
+        "naive_compounded_trials": naive,
+        "research_cagr": cagr,
+        "conventional_bar": 0.95,
+    }
 
 
 def _biggest_caveat(doc: dict[str, Any]) -> str:

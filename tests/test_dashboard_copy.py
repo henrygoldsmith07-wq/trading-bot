@@ -158,17 +158,83 @@ def test_exactly_one_recommended_reading(html):
 def test_recommended_reading_is_the_dsr_caveat(flat):
     link = re.search(r'href="(https?://[^"]+)"', flat).group(1)
     assert "statistical-validation" in link, "the recommended reading must be the DSR caveat"
-    # The flattering headline is the thing the recommendation exists to defuse,
-    # so the caveat has to name the numbers, not just gesture at them.
-    assert "0.138" in flat, "the selected stream's deflated Sharpe must be stated"
-    assert "0.961" in flat, "the un-searched rule's deflated Sharpe must be stated"
-    assert "does not clear the conventional 0.95 bar" in flat
-    assert "25.7" in flat, "the caveat must name the headline number it defuses"
+
+
+def test_the_caveat_judges_against_a_stated_bar(html):
+    """The deflated Sharpe is only meaningful against the conventional bar, so
+    the page must state it — from the document, not as a literal in the copy."""
+    assert "c.conventional_bar" in html, (
+        "the bar must come from the evidence document's conventional_bar field"
+    )
+
+
+def test_the_caveat_is_rendered_from_data_never_hand_written(html, flat):
+    """Regression: the banner once carried a 25.7% CAGR and DSRs of 0.138 /
+    0.961 from a build that predates the canonical recomputation — which moved
+    CAGR to 11.7% and WITHHELD the DSR. A test pinned those literals, so
+    regeneration could never correct them and the page confidently asserted
+    statistics the repo no longer claims.
+
+    Statistical figures must be rendered from the evidence document. Asserting
+    any literal here would re-create the exact trap.
+    """
+    # No hard-coded statistical figures may remain in the page source.
+    for literal in ("25.7", "0.138", "0.961"):
+        assert literal not in flat, (
+            f"{literal!r} is a hand-written statistic from a superseded build; "
+            "it must be rendered from the evidence document, never written here"
+        )
+    # It is rendered, from the one source, with a data-driven element.
+    assert 'id="dsr-body"' in html, "the caveat needs an element the renderer fills"
+    assert "function renderStatisticalCaveat(" in html
+    assert "ev.statistical_caveat" in html
+    assert "renderStatisticalCaveat(s.evidence)" in html
+
+
+def test_the_caveat_states_no_number_when_dsr_is_withheld(html):
+    """Withheld is the repo's actual position. The page must be able to say so
+    rather than repeating a number that corrects for nothing."""
+    assert "No selection-corrected statistic is available" in html
+    assert "corrects for nothing" in html
+
+
+def test_the_caveat_degrades_to_a_stated_absence_not_a_blank(html):
+    """The banner is unconditional: with no payload it must still say something
+    true, and never render an empty warning."""
+    assert "renderStatisticalCaveat(null)" in html
+    assert "could not be read" in html
 
 
 def test_the_flattering_cagr_is_labelled_as_research(flat):
     assert "CAGR (research)" in flat
     assert "was produced by a search over ~85 candidates" in flat
+
+
+# ---------------------------------------------------------------------------
+# 5b. tape liveness: a stopped tape must say so
+# ---------------------------------------------------------------------------
+
+def test_a_stalled_tape_is_stated_not_inferred(html):
+    """A day count that has quietly stopped moving is indistinguishable from a
+    young experiment unless the page says which it is. The repo lost two weeks
+    of prospective evidence to exactly that ambiguity."""
+    assert 'id="f-liveness"' in html
+    assert "function renderLiveness(" in html
+    assert "renderLiveness(f)" in html
+    assert "f.liveness" in html
+
+
+def test_liveness_is_a_diagnostic_not_a_market_event(html):
+    """It must be visible without out-shouting the day count it explains, so it
+    sits in the hero as a note and never in the hero number itself."""
+    assert 'class="integrity stall-note"' in html
+    # Hidden until the tape is actually stalled: a healthy tape says nothing.
+    assert "fresh.stalled" in html
+
+
+def test_liveness_says_the_count_is_not_still_growing(html):
+    """The whole point: a stale number must not read as a live one."""
+    assert "not a count that is still growing" in html
 
 
 # ---------------------------------------------------------------------------

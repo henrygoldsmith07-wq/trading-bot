@@ -415,6 +415,12 @@ def build_forward_summary(
         "benchmark_return": round(bench_return, 4) if bench_return is not None else None,
         "data_outages": outages,
         "missed_fills": missed_fills,
+        # Liveness: is the tape still advancing? "0 clean days" is ambiguous —
+        # the same value for a young experiment and for one whose scheduled run
+        # silently died. The repo lost two weeks of prospective evidence to that
+        # ambiguity while every run reported success, so the dashboard states it.
+        # Reuses the CLI gate's own function: one implementation, one wording.
+        "liveness": _forward_liveness(last_date, experiment),
         "order_lifecycle_anomalies": lifecycle["count"],
         "order_lifecycle_anomaly_reasons": lifecycle["reasons"],
         "evidence_warnings": (
@@ -424,6 +430,34 @@ def build_forward_summary(
         ),
         "curve": curve,
     }
+
+
+def _forward_liveness(last_date: str | None, experiment: dict | None = None) -> dict:
+    """Is the prospective tape still advancing?
+
+    Reuses `bot.commands._forward_tape_liveness` so the API and the
+    `verify-evidence` gate can never disagree about the same tape. The real
+    experiment block is passed through, so a superseded methodology is named
+    instead of rendering as "SUPERSEDED by None". Wall clock decides this and
+    only this: it is a reading taken now, not evidence.
+    """
+    exp = experiment or {}
+    try:
+        from bot.commands import _forward_tape_liveness
+
+        ok, detail = _forward_tape_liveness(
+            {
+                "status": {
+                    "has_valid_freeze": True,
+                    "methodologically_current": bool(exp.get("methodologically_current", False)),
+                    "superseded_by": exp.get("superseded_by"),
+                }
+            },
+            {"forward_rows": [{"date": last_date}] if last_date else []},
+        )
+    except Exception as exc:  # never let a diagnostic break the payload
+        return {"available": False, "stalled": None, "detail": f"liveness unavailable: {exc}"}
+    return {"available": True, "stalled": not ok, "detail": detail}
 
 
 def fetch_sp500_rows():

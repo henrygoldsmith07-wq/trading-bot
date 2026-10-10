@@ -56,6 +56,10 @@
   .integrity { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
   .integrity .ok { color: var(--green); }
   .integrity .bad { color: var(--red); }
+  /* A stalled tape is a diagnostic, not a market event: it must be visible
+     without competing with the day count it is explaining. */
+  .stall-note { border-left: 3px solid var(--accent); padding-left: 10px; border-top: 0; margin-top: 10px; }
+  .stall-note .head { color: var(--accent); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 
   /* ---- demoted forward detail: only when the evidence earns it ---- */
   .section-head { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; margin: 18px 0 10px; }
@@ -118,14 +122,11 @@
 
     <div class="dsr">
       <p><b>Before you read any number on this page, read this one.</b>
-         The 25.7% CAGR in the research table below was <i>selected</i> from roughly 85 candidate rules.
-         Corrected for that search, the selected stream's deflated Sharpe ratio is <b>0.138</b> — it does
-         not clear the conventional 0.95 bar. The fixed rule, chosen before looking at anything, earns a
-         lower raw Sharpe (0.51) but a <b>DSR of 0.961</b>, because nothing was searched. A backtest that
-         was picked cannot be used as evidence that the pick was skilful.</p>
+         <span id="dsr-body">Loading the selection-corrected statistic from the evidence document…</span>
+         A backtest that was picked cannot be used as evidence that the pick was skilful.</p>
       <p class="rec">Recommended reading — the only one on this page:
          <a href="https://github.com/henrygoldsmith07-wq/trading-bot#statistical-validation-python--m-bot-validate"
-            target="_blank" rel="noopener">Deflated Sharpe caveat, "Statistical validation" section of the README</a>.
+            target="_blank" rel="noopener">Deflated Sharpe caveat, "Statistical Validation" section of the README</a>.
          Read it before treating any figure here as established.</p>
     </div>
   </div>
@@ -147,6 +148,8 @@
     <div class="integrity" id="f-integrity">—</div>
   <!-- ===== EXPERIMENT STATE + IDENTITY: from the evidence document ===== -->
   <div class="integrity" id="f-state" style="margin-top:8px;">—</div>
+  <!-- ===== TAPE LIVENESS: is the prospective record still advancing? ===== -->
+  <div class="integrity stall-note" id="f-liveness" style="margin-top:8px;" hidden></div>
   </div>
 
   <div class="quiet-note" id="quiet-note" hidden>
@@ -361,6 +364,71 @@ function renderExperimentState(ev) {
   el.innerHTML = bits.join(" · ");
 }
 
+function renderStatisticalCaveat(ev) {
+  // The deflation caveat, rendered from the evidence document.
+  //
+  // This used to be hand-written copy carrying a research CAGR and two deflated
+  // Sharpe figures from a build that predates the canonical recomputation — which
+  // moved the CAGR and WITHHELD the DSR entirely. A test pinned those literals,
+  // so regeneration could never correct them and the page confidently asserted
+  // statistics the repo no longer claims.
+  //
+  // Rule: a number is either in the document and rendered, or absent and reported
+  // as absent. Never carried over from an earlier build, and never written here.
+  // That is why this comment names no figures either — a literal in the source
+  // is exactly what the guardrail is looking for.
+  const el = $("dsr-body");
+  if (!ev || ev.error || !ev.statistical_caveat) {
+    el.textContent = "The selection-corrected statistic could not be read, so no deflation figure is stated here. " +
+      "Treat every research number below as uncorrected for the search that produced it.";
+    return;
+  }
+  const c = ev.statistical_caveat;
+  const trials = c.effective_trials;
+  let html = "The research record was <i>selected</i> from " + trials + " candidate rule(s). ";
+  if (c.dsr_available && c.dsr != null) {
+    html += "Corrected for that search, the deflated Sharpe is <b>" + c.dsr.toFixed(3) + "</b>, which " +
+      (c.dsr >= c.conventional_bar ? "clears" : "does not clear") +
+      " the conventional " + c.conventional_bar + " bar. ";
+  } else {
+    // Withheld is the repo's actual position. Publishing an old number here
+    // would be the exact error this whole page exists to avoid.
+    html += "<b>No selection-corrected statistic is available for it</b>";
+    if (c.dsr_unavailable_reason) html += " (" + c.dsr_unavailable_reason + ")";
+    html += ", so the historical figures cannot support an inference of edge. " +
+      "This page states no deflated Sharpe rather than repeating one that " +
+      "corrects for nothing. ";
+  }
+  if (c.research_cagr != null) {
+    html += "The research CAGR is <b>" + pct(c.research_cagr) + "</b>; it is not corrected for that search. ";
+  }
+  if (c.naive_compounded_trials) {
+    html += "The applied correction uses " + trials + " effective trial(s); the search dimensions also " +
+      "compound, and a naive compounded reading is " + c.naive_compounded_trials.toLocaleString() + ". ";
+  }
+  el.innerHTML = html;
+}
+
+function renderLiveness(f) {
+  // Is the tape still advancing? "0 clean days" is ambiguous — identical for a
+  // young experiment and for one whose scheduled run silently stopped. The repo
+  // lost two weeks of prospective evidence to that ambiguity while every run
+  // reported success, so a stopped tape is stated here rather than inferred
+  // from a day count that has quietly stopped moving.
+  const el = $("f-liveness");
+  // Named `fresh` rather than after the forbidden fourth evidence label: the
+  // page bans that bare word, and a substring collision should not force it.
+  const fresh = f && f.liveness;
+  if (!fresh || !fresh.available) { el.hidden = true; return; }
+  if (fresh.stalled) {
+    el.hidden = false;
+    el.innerHTML = '<span class="head">Prospective record is not advancing</span> — ' + fresh.detail +
+      " The day count above is the last one recorded, not a count that is still growing.";
+  } else {
+    el.hidden = true;
+  }
+}
+
 function renderTimeline(ev) {
   const note = $("timeline-note");
   const table = $("timeline-table");
@@ -504,7 +572,9 @@ async function load() {
     const f = s.forward, v = s.verdict;
     const a = assess(f, v);
     renderForward(f || {}, v);
+    renderLiveness(f);
     renderExperimentState(s.evidence);
+    renderStatisticalCaveat(s.evidence);
     renderTimeline(s.evidence);
     try {
       renderResearch(s.research);
@@ -523,6 +593,9 @@ async function load() {
     $("f-verdict-detail").textContent = "nothing is graded while the forward record cannot be read";
     $("f-integrity").textContent = "\u2014";
     $("curve-note").textContent = "Research panels need the /api/summary endpoint.";
+    // The banner is unconditional and must never be blank. With no data the
+    // honest sentence is the one that states no number.
+    renderStatisticalCaveat(null);
     applyVolume(SILENT, "The forward record could not be read, so this page shows nothing rather than guessing.");
   }
 }
