@@ -52,6 +52,19 @@ ALL_STATES = (
 # checkpoint table both read it from here.
 MEANINGFUL_FORWARD_DAYS = 30
 
+# How long the prospective tape may go without a new day before the run that
+# is supposed to produce one is treated as broken rather than merely quiet.
+#
+# A frozen experiment accrues one day per calendar day, so a gap this large is
+# not a holiday: it means the scheduled run stopped advancing evidence. The
+# slack exists so weekends, exchange closures, feed outages and a backlogged
+# runner queue are never mistaken for a dead experiment.
+#
+# This bounds a real failure that went undetected here for two weeks: the tape
+# last advanced on 2026-09-22 while every scheduled run reported success, and
+# nothing in the evidence said the number had stopped moving.
+MAX_FORWARD_TAPE_GAP_DAYS = 7
+
 # Forward checkpoints (clean days) and what each one licenses.
 CHECKPOINTS = (
     (10, "sanity check only"),

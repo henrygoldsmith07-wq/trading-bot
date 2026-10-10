@@ -1058,6 +1058,18 @@ def run_verify_evidence(args) -> int:
          else f"{n_drifted} pre-registration(s) edited after sealing: {drifted_detail}"),
     )
 
+    # Forward-tape liveness. Days-recorded alone cannot distinguish "the
+    # experiment is young" from "the experiment quietly died": both report
+    # zero, or a number that simply stops growing. That ambiguity cost this
+    # repo its entire prospective record -- the tape last advanced on
+    # 2026-09-22, while every scheduled run since reported success.
+    #
+    # This is a check evaluated at a moment in time, like `git_now`. It is not
+    # evidence, it is not in the document, and it cannot move the fingerprint.
+    # A young tape is not a failure; a tape that has stopped advancing while
+    # the freeze is still current is, because no run is doing what it claims.
+    record("forward tape liveness", *_forward_tape_liveness(doc, artifacts))
+
     # README/evidence consistency: the canonical block must render exactly as
     # the evidence document says. A stale README is a claim that no evidence
     # supports, so it fails the gate.
@@ -1073,6 +1085,86 @@ def run_verify_evidence(args) -> int:
         return 1
     print("\nPASS: every number in the evidence document is bound to its source")
     return 0
+
+
+def _forward_tape_liveness(doc: dict, artifacts: dict | None = None) -> tuple[bool, str]:
+    """Is the prospective tape still advancing?
+
+    "0 clean forward days" is ambiguous, and the ambiguity is expensive: it is
+    the same output for a young experiment and for one whose scheduled run
+    silently stopped. This repo lost its entire prospective record to exactly
+    that ambiguity -- the tape last advanced on 2026-09-22 while every run
+    reported success, and nothing anywhere said the number had stopped moving.
+
+    Wall clock is used HERE and nowhere else. This is a check run at a moment
+    in time, like `git_now`; it is not evidence, it is not in the document, and
+    it cannot move the fingerprint. The comparison is against the newest day
+    the tape itself records, so a rebuild of unchanged artifacts still produces
+    identical evidence -- only the pass/fail verdict of this one check ages.
+
+    Reads the RAW tape, not the experiment-scoped rows. A row excluded because
+    it predates experiment stamping still proves a run once happened, and its
+    date still proves when the tape last moved. Using the scoped rows would
+    report "the tape has not started" for a tape that stopped weeks ago --
+    hiding precisely the failure this check exists to surface. The scoped count
+    is what the VERDICT grades; liveness is a property of the tape itself.
+
+    Deliberately NOT a failure when there is nothing to advance:
+      * no freeze  -> no experiment is supposed to be running;
+      * no tape    -> the experiment has not started.
+    A stale tape with a current freeze is different: the run is claiming to
+    produce evidence and is not.
+
+    A SUPERSEDED freeze is reported separately, because the two cases have
+    different causes and different fixes. A superseded methodology is *right*
+    to stop accruing: its tape is evidence of the implementation that produced
+    it, not of the code running now. Blaming "the scheduled run" for that would
+    point at the wrong thing -- what is missing is a freeze of the current
+    methodology. Both states still fail the gate, because either way the
+    prospective test is producing nothing, and silence about that is how this
+    repo lost two weeks of record.
+    """
+    from datetime import date as _date
+
+    from .experiment_state import MAX_FORWARD_TAPE_GAP_DAYS
+
+    status = doc.get("status") or {}
+
+    if not status.get("has_valid_freeze"):
+        return True, "no current freeze - no forward run is expected to advance"
+
+    rows = (artifacts or {}).get("forward_rows") or []
+    days = [r.get("date") for r in rows if isinstance(r.get("date"), str) and r.get("date")]
+    if not days:
+        return True, "no forward days recorded yet - the tape has not started"
+
+    last_day = max(days)
+    try:
+        last = _date.fromisoformat(last_day)
+    except ValueError:
+        return False, f"forward tape's last day {last_day!r} is not a valid date"
+
+    # A frozen experiment is expected to produce one day per calendar day. Allow
+    # a week of slack for weekends, exchange holidays, outages and runner
+    # backlog, so ordinary gaps are not reported as a dead experiment.
+    age_days = (_date.today() - last).days
+    if age_days <= MAX_FORWARD_TAPE_GAP_DAYS:
+        return True, f"last forward day {last} ({age_days}d ago) is current"
+
+    if not status.get("methodologically_current"):
+        return False, (
+            f"no prospective evidence is accruing: the frozen methodology is "
+            f"SUPERSEDED by {status.get('superseded_by')} and its tape stopped at {last} "
+            f"({age_days}d ago), while no freeze of the current methodology exists. "
+            "The run is not at fault -- what is missing is a freeze of the current code"
+        )
+
+    return False, (
+        f"forward tape stopped advancing: last day {last} is {age_days}d old "
+        f"(limit {MAX_FORWARD_TAPE_GAP_DAYS}d) while the freeze is still current — "
+        "the scheduled run is not producing evidence, and a green run that "
+        "advances nothing is not progress"
+    )
 
 
 def _readme_consistency(root) -> tuple[bool, str]:

@@ -355,12 +355,27 @@ def _step(workflow: dict, name: str) -> dict:
     raise AssertionError(f"workflow has no step named {name!r}")
 
 
+def _frozen_tree(workflow: dict) -> str:
+    """Where the isolated frozen tree lives, read from the step that creates it.
+
+    Read from the workflow rather than hard-coded: if the directory is renamed,
+    these guards must follow it instead of silently passing against a path that
+    nothing uses any more.
+    """
+    return _step(workflow, "Create isolated worktree at the frozen commit")["env"]["FROZEN_TREE"]
+
+
+def _staging(workflow: dict) -> str:
+    """Where staged evidence lands, read from the step that writes it."""
+    return _step(workflow, "Stage evidence for transfer to main")["env"]["STAGING"]
+
+
 def test_frozen_code_runs_in_an_isolated_worktree(workflow: dict) -> None:
     worktree = _step(workflow, "Create isolated worktree at the frozen commit")
     assert "git worktree add" in worktree["run"]
     forward = _step(workflow, "Advance the prospective paper portfolio one day")
     # the forward day must run in the worktree, never in the main checkout
-    assert "FROZEN_TREE" in str(forward.get("working-directory", ""))
+    assert forward.get("working-directory") == _frozen_tree(workflow)
 
 
 def test_anything_writing_the_evidence_tapes_runs_in_the_worktree(workflow: dict) -> None:
@@ -377,7 +392,7 @@ def test_anything_writing_the_evidence_tapes_runs_in_the_worktree(workflow: dict
         if not any(w in run for w in writers):
             continue
         seen += 1
-        assert "FROZEN_TREE" in str(s.get("working-directory", "")), (
+        assert s.get("working-directory") == _frozen_tree(workflow), (
             f"{s.get('name')} writes evidence outside the isolated worktree"
         )
     assert seen >= 2, "expected both the forward step and the universe snapshot to be guarded"
@@ -412,7 +427,9 @@ def test_merge_retries_onto_a_moving_main(workflow: dict) -> None:
 def test_staged_evidence_is_uploaded_even_when_later_steps_fail(workflow: dict) -> None:
     upload = _step(workflow, "Upload evidence artifacts")
     assert upload.get("if") == "always()"
-    assert "STAGING" in str(upload["with"]["path"])
+    # must upload the SAME directory the staging step writes to, not merely a
+    # path that happens to contain the substring "STAGING"
+    assert _staging(workflow) in str(upload["with"]["path"])
 
 
 def test_freeze_is_verified_before_any_forward_day_is_traded(workflow: dict) -> None:
@@ -420,4 +437,46 @@ def test_freeze_is_verified_before_any_forward_day_is_traded(workflow: dict) -> 
     assert names.index("Verify running code matches the freeze") < names.index(
         "Advance the prospective paper portfolio one day"
     )
+
+
+def test_a_run_that_does_not_trade_never_claims_success_silently(workflow: dict) -> None:
+    """`trading=false` must be a visible, non-green outcome.
+
+    The tape stopped advancing while runs kept returning success: the resolver
+    fell through to the legacy branch (the frozen code predates `--as-of-date`),
+    emitted `trading=false`, skipped every evidence step, and exited 0. A green
+    run that produces no evidence is worse than a red one, because nothing
+    prompts anyone to look.
+    """
+    resolve = _step(workflow, "Resolve the market session date")
+    run = resolve["run"]
+
+    # The decision must be surfaced, not swallowed.
+    assert "::notice::" in run, "skipping a day must emit a visible notice"
+
+    # And the forward step must be gated on it, so a non-trading run cannot
+    # silently fall through into the evidence-producing steps.
+    forward = _step(workflow, "Advance the prospective paper portfolio one day")
+    assert "steps.session.outputs.trading == 'true'" in str(forward.get("if"))
+
+
+def test_the_two_schedules_cannot_both_be_no_ops(workflow: dict) -> None:
+    """At least one cadence must actually trade.
+
+    The dual-schedule resolver exists so legacy and new frozen code each get a
+    working cadence. If neither branch can reach `trading=true` for the
+    schedules this workflow declares, the experiment can never advance -- which
+    is the state the repo sat in while reporting success.
+    """
+    resolve = _step(workflow, "Resolve the market session date")
+    run = resolve["run"]
+
+    # The schedules the resolver branches on must match the declared crons.
+    declared = {c["cron"] for c in workflow[True]["schedule"]}
+    for cron in ("30 0 * * *", "45 21 * * 1-5"):
+        assert cron in declared, f"resolver branches on {cron}, which is not scheduled"
+        assert cron in run, f"scheduled cron {cron} is not handled by the resolver"
+
+    # Each branch must be able to set trading=true.
+    assert run.count("trading=true") >= 2, "both cadences must be able to trade"
 
