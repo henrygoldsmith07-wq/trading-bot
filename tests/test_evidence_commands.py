@@ -91,6 +91,135 @@ class TestVerifyEvidence:
             assert name in out
 
 
+class TestForwardTapeLiveness:
+    """A tape that stopped advancing must be distinguishable from a young one.
+
+    The repo lost two weeks of prospective record because both reported the
+    same thing: "0 clean forward days". Every scheduled run returned success
+    while producing no evidence, and nothing said the number had stopped
+    moving.
+    """
+
+    @staticmethod
+    def _doc(has_freeze=True, current=True, superseded_by="exact-wealth-v2"):
+        return {
+            "status": {
+                "has_valid_freeze": has_freeze,
+                "methodologically_current": current,
+                "superseded_by": superseded_by,
+            }
+        }
+
+    @staticmethod
+    def _arts(days):
+        return {"forward_rows": [{"date": d} for d in days]}
+
+    def _run(self, days, has_freeze=True, current=True):
+        from bot.commands import _forward_tape_liveness
+
+        return _forward_tape_liveness(self._doc(has_freeze, current), self._arts(days))
+
+    def test_a_stalled_tape_fails(self):
+        from datetime import date, timedelta
+
+        old = (date.today() - timedelta(days=17)).isoformat()
+        ok, detail = self._run([old])
+        assert ok is False
+        assert "stopped advancing" in detail
+        assert old in detail
+
+    def test_a_current_tape_passes(self):
+        from datetime import date, timedelta
+
+        recent = (date.today() - timedelta(days=1)).isoformat()
+        ok, detail = self._run([recent])
+        assert ok is True
+        assert "is current" in detail
+
+    def test_the_slack_window_tolerates_weekends_and_holidays(self):
+        """A normal long weekend must never read as a dead experiment."""
+        from datetime import date, timedelta
+
+        from bot.experiment_state import MAX_FORWARD_TAPE_GAP_DAYS
+
+        at_limit = (date.today() - timedelta(days=MAX_FORWARD_TAPE_GAP_DAYS)).isoformat()
+        assert self._run([at_limit])[0] is True
+
+        past_limit = (date.today() - timedelta(days=MAX_FORWARD_TAPE_GAP_DAYS + 1)).isoformat()
+        assert self._run([past_limit])[0] is False
+
+    def test_no_freeze_is_not_a_failure(self):
+        """Nothing is supposed to be advancing, so nothing is broken."""
+        ok, detail = self._run([], has_freeze=False)
+        assert ok is True
+        assert "no current freeze" in detail
+
+    def test_an_unstarted_tape_is_not_a_failure(self):
+        """A brand-new experiment is not a stalled one."""
+        ok, detail = self._run([])
+        assert ok is True
+        assert "has not started" in detail
+
+    def test_reads_the_raw_tape_not_the_scoped_rows(self):
+        """Rows excluded from grading still prove when the tape last moved.
+
+        The committed tape's 11 rows are all excluded (they predate experiment
+        stamping), so `forward.last_day` is None. Liveness must not therefore
+        conclude the tape never started -- it must read the rows themselves.
+        """
+        from datetime import date, timedelta
+
+        old = (date.today() - timedelta(days=40)).isoformat()
+        ok, detail = self._run([old])
+        assert ok is False, "excluded rows must still count as tape activity"
+
+    def test_a_malformed_last_day_fails_closed(self):
+        ok, detail = self._run(["not-a-date"])
+        assert ok is False
+        assert "not a valid date" in detail
+
+    def test_a_superseded_freeze_blames_the_missing_refreeze_not_the_runner(self):
+        """Two different causes, two different fixes.
+
+        A superseded methodology is *right* to stop accruing days. Reporting
+        "the scheduled run is broken" would send someone to debug a workflow
+        that is working correctly, when the real gap is that nobody has frozen
+        the current methodology.
+        """
+        from datetime import date, timedelta
+
+        old = (date.today() - timedelta(days=40)).isoformat()
+        ok, detail = self._run([old], current=False)
+        assert ok is False, "a superseded freeze still produces no prospective evidence"
+        assert "SUPERSEDED" in detail
+        assert "exact-wealth-v2" in detail
+        assert "missing is a freeze" in detail
+        assert "scheduled run is not producing evidence" not in detail
+
+    def test_a_stale_tape_on_current_code_blames_the_runner(self):
+        """The complementary case: current methodology, dead tape."""
+        from datetime import date, timedelta
+
+        old = (date.today() - timedelta(days=40)).isoformat()
+        ok, detail = self._run([old], current=True)
+        assert ok is False
+        assert "scheduled run is not producing evidence" in detail
+        assert "SUPERSEDED" not in detail
+
+    def test_liveness_is_not_part_of_the_evidence_document(self):
+        """Wall clock may decide this check; it may not enter the evidence.
+
+        If it did, the fingerprint would change every midnight and the README
+        gate would be unsatisfiable -- the same defect class as git_now.
+        """
+        from bot.reporting import build_evidence
+
+        doc = build_evidence(".")
+        assert "liveness" not in json.dumps(doc).lower(), (
+            "liveness must be a verification-time check, not evidence"
+        )
+
+
 class TestVerdictCommand:
     def test_exit_code_follows_the_primary_rule(self, capsys):
         code = run_verdict(_args())

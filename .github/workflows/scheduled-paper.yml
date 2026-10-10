@@ -55,9 +55,25 @@ concurrency:
   group: paper-run
   cancel-in-progress: false
 
-env:
-  FROZEN_TREE: ${{ runner.temp }}/frozen
-  STAGING: ${{ runner.temp }}/staging
+# FROZEN_TREE / STAGING are deliberately NOT declared at this level.
+#
+# The `runner` context is unavailable in the workflow-level `env:` key: GitHub's
+# context-availability table permits only `github`, `secrets`, `inputs` and
+# `vars` there. Writing `${{ runner.temp }}` at this level makes the entire
+# workflow file invalid, which GitHub reports as a zero-job "workflow file
+# issue" failure rather than a normal job failure.
+#
+# The symptom is silent for a schedule-only workflow like this one: every push
+# spawns a 0s failed run, and no scheduled run ever produces a forward day
+# again. That is exactly what happened here -- the tape stopped advancing.
+#
+# They are declared per-step instead, where `runner` IS permitted:
+#   jobs.<job_id>.steps.env               -> runner allowed
+#   jobs.<job_id>.steps.working-directory -> runner allowed
+#   jobs.<job_id>.steps.with              -> runner allowed
+#
+# Do not hoist these back up to this level; tests/test_workflow_hygiene.py
+# fails if anyone does.
 
 jobs:
   forward-step:
@@ -86,6 +102,9 @@ jobs:
       # ---- step 2: build the ISOLATED frozen tree -------------------------
       - name: Create isolated worktree at the frozen commit
         if: steps.pointer.outputs.commit != ''
+        env:
+          FROZEN_TREE: ${{ runner.temp }}/frozen
+          STAGING: ${{ runner.temp }}/staging
         run: |
           set -euo pipefail
           rm -rf "$FROZEN_TREE" "$STAGING"
@@ -105,14 +124,14 @@ jobs:
         if: steps.pointer.outputs.commit != ''
         uses: actions/cache@v6
         with:
-          path: ${{ env.FROZEN_TREE }}/.cache
+          path: ${{ runner.temp }}/frozen/.cache
           key: market-data-${{ github.run_id }}
           restore-keys: market-data-
 
       # ---- step 3: prove we are running the frozen implementation ----------
       - name: Verify running code matches the freeze
         if: steps.pointer.outputs.commit != ''
-        working-directory: ${{ env.FROZEN_TREE }}
+        working-directory: ${{ runner.temp }}/frozen
         run: python -m bot verify-freeze --freeze-file freeze.json
 
       - name: Resolve the market session date
@@ -151,7 +170,7 @@ jobs:
       # ---- step 4: one forward day on frozen code, in isolation -----------
       - name: Advance the prospective paper portfolio one day
         if: steps.pointer.outputs.commit != '' && steps.session.outputs.trading == 'true'
-        working-directory: ${{ env.FROZEN_TREE }}
+        working-directory: ${{ runner.temp }}/frozen
         env:
           LOG_FILE: forward_log.jsonl
         run: |
@@ -173,7 +192,7 @@ jobs:
       - name: Snapshot today's universe
         if: steps.pointer.outputs.commit != '' && steps.session.outputs.trading == 'true'
         continue-on-error: true
-        working-directory: ${{ env.FROZEN_TREE }}
+        working-directory: ${{ runner.temp }}/frozen
         run: python -m bot universe-snapshot --top 20 --log universe_log.jsonl
 
       # ---- step 5: STAGE the evidence before touching git ------------------
@@ -182,6 +201,9 @@ jobs:
       # any later failure is recoverable from $STAGING.
       - name: Stage evidence for transfer to main
         if: steps.pointer.outputs.commit != '' && steps.session.outputs.trading == 'true'
+        env:
+          FROZEN_TREE: ${{ runner.temp }}/frozen
+          STAGING: ${{ runner.temp }}/staging
         run: |
           set -euo pipefail
           for f in forward_log.jsonl universe_log.jsonl cost_observations.jsonl; do
@@ -218,6 +240,10 @@ jobs:
         if: steps.pointer.outputs.commit != '' && steps.session.outputs.trading == 'true'
         env:
           BRANCH: ${{ github.event.repository.default_branch }}
+          # Required here: the run script reads $STAGING under `set -u`, so an
+          # undeclared value aborts the merge with "unbound variable" rather
+          # than silently merging from an empty path.
+          STAGING: ${{ runner.temp }}/staging
         run: |
           set -euo pipefail
           git config user.name "paper-bot"
@@ -246,6 +272,8 @@ jobs:
 
       - name: Remove the frozen worktree
         if: always()
+        env:
+          FROZEN_TREE: ${{ runner.temp }}/frozen
         run: git worktree remove --force "$FROZEN_TREE" 2>/dev/null || rm -rf "$FROZEN_TREE"
 
       # ---- step 7: never lose a computed day ------------------------------
@@ -258,6 +286,6 @@ jobs:
         with:
           name: forward-state-${{ github.run_id }}
           path: |
-            ${{ env.STAGING }}/
+            ${{ runner.temp }}/staging/
             reports/
           if-no-files-found: ignore
