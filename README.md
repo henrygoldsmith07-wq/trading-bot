@@ -58,14 +58,14 @@ Everything below this line is rendered from the evidence document (`python -m bo
 ### At a glance (rendered from the evidence document)
 
 - **What is being tested?** `banded_rm` — inverse-vol weighting + cross-sectional momentum tilt + crisis de-risk + 5% rebalance band + volatility overlay.
-- **Current valid freeze?** yes; the frozen methodology is SUPERSEDED by exact-wealth-v2, so its tape is not prospective evidence of the current code
+- **Current valid freeze?** yes
 - **Current forward days?** 0 clean day(s) (recorded 0, excluded 11 from other experiments).
 - **Beats the benchmark?** no — primary rule [banded_rm] OOS CAGR TRAILS S&P 500 (11.7% vs 14.9%); Sharpe beats (0.74 vs 0.74); max drawdown better (-9.8% vs -25.4%).
-- **Biggest caveat?** the frozen experiment is SUPERSEDED by exact-wealth-v2: its tape is evidence of the implementation that produced it, not of the code now running.
+- **Biggest caveat?** only 0 clean forward day(s) — everything above is historical research produced under selection, and selection flatters.
 
 **Canonical rule under evaluation: `banded_rm`** — inverse-vol weighting + cross-sectional momentum tilt + crisis de-risk + 5% rebalance band + volatility overlay. This is the strategy the freeze executes and the forward log grades.
 
-**Experiment state: `SUPERSEDED`** — The frozen experiment is intact but its methodology is no longer current; its tape is evidence of the implementation that produced it, not of the code now running.
+**Experiment state: `FORWARD_PRELIMINARY`** — 0 clean forward day(s) from the current experiment; below the 30-day threshold, this is a sanity check, not validation.
 
 | Metric | PRIMARY `banded_rm` | S&P 500 |
 |---|---|---|
@@ -107,7 +107,7 @@ Statistical standing: PSR 0.999 — DSR n/a (effective trials 85 via max_of_reco
 | + tilt + crisis, banded 5% rebalance | 11.7% | 0.74 | -9.8% | -1.2% | 1.19 | 0.999 | n/a | — |
 | fully-fixed: RiskEnsemble everywhere, banded, all overlays | 5.2% | 0.36 | -8.1% | -0.8% | 0.65 | 0.976 | n/a | — |
 
-*Provenance: rendered from the `canonical-v2` evidence document (evidence fingerprint `765fd9d93e81`, experiment `d4338a04d323`, commit `ab8aea1c95a3d4baaed7029925dbf88f62714cb0`, code sha `70cfa12e0a74…`, strategy defs `4cfdf950c0c0…`, portfolio rules `3d1a4f560ade…`, universe `f550645ddd97…`). Reproduce with `python -m bot reproduce canonical-v2` and verify with `python -m bot verify-evidence`.*
+*Provenance: rendered from the `canonical-v2` evidence document (evidence fingerprint `b54ae18d31db`, experiment `9266604eaa36`, commit `ab8aea1c95a3d4baaed7029925dbf88f62714cb0`, code sha `70cfa12e0a74…`, strategy defs `4cfdf950c0c0…`, portfolio rules `3d1a4f560ade…`, universe `f550645ddd97…`). Reproduce with `python -m bot reproduce canonical-v2` and verify with `python -m bot verify-evidence`.*
 
 <!-- CANONICAL:END -->
 
