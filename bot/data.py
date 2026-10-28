@@ -246,13 +246,28 @@ def fetch_yahoo_daily(symbol: str, range_: str = "10y") -> list[dict]:
     volumes = quote.get("volume", []) or []
     candles = []
     for k, (t, o, c) in enumerate(zip(ts, quote.get("open", []), quote.get("close", []), strict=False)):
-        if c is None or not math.isfinite(c) or c <= 0:
+        try:
+            timestamp = int(float(t))
+            close = float(c)
+        except (TypeError, ValueError, OverflowError):
             continue
-        candle = {"open_time": int(t) * 1000, "close": float(c)}
-        if o is not None and math.isfinite(o) and o > 0:
-            candle["open"] = float(o)
-        if k < len(volumes) and volumes[k] is not None and math.isfinite(volumes[k]) and volumes[k] > 0:
-            candle["volume"] = float(volumes[k])
+        if timestamp < 0 or not math.isfinite(close) or close <= 0:
+            continue
+        candle = {"open_time": timestamp * 1000, "close": close}
+        if o is not None:
+            try:
+                opening = float(o)
+            except (TypeError, ValueError, OverflowError):
+                opening = None
+            if opening is not None and math.isfinite(opening) and opening > 0:
+                candle["open"] = opening
+        if k < len(volumes) and volumes[k] is not None:
+            try:
+                volume = float(volumes[k])
+            except (TypeError, ValueError, OverflowError):
+                volume = None
+            if volume is not None and math.isfinite(volume) and volume >= 0:
+                candle["volume"] = volume
         candles.append(candle)
     return clean_candles(candles)
 

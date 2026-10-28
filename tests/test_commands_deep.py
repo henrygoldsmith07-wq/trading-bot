@@ -161,6 +161,31 @@ class TestDataHelpers:
         assert out[1]["open"] == 103.0
         assert "volume" not in out[1]
 
+    def test_yahoo_fetch_skips_malformed_numeric_fields(self, monkeypatch):
+        import bot.data as data
+
+        payload = json.dumps({"chart": {"result": [{
+            "timestamp": ["bad", "1700000000", "1700000001"],
+            "indicators": {"quote": [{
+                "open": [100.0, "bad", "101.0"],
+                "close": ["bad", "102.0", "103.0"],
+                "volume": [{}, "nan", "12"],
+            }]},
+        }]}})
+        monkeypatch.setattr(data, "_get", lambda url: payload)
+
+        out = data.fetch_yahoo_daily("SPY")
+
+        assert out == [
+            {"open_time": 1_700_000_000_000, "close": 102.0},
+            {
+                "open_time": 1_700_000_001_000,
+                "close": 103.0,
+                "open": 101.0,
+                "volume": 12.0,
+            },
+        ]
+
 
 # ---------------------------------------------------------------------------
 # the heavy report commands, on synthetic fixtures
