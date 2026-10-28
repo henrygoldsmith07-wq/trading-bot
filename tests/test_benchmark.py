@@ -1,3 +1,5 @@
+import json
+
 from bot.benchmark import equity_metrics, parse_fred_csv, parse_yahoo_json, slice_window
 
 FRED_SAMPLE = """observation_date,SP500
