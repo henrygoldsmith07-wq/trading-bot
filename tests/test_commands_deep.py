@@ -131,6 +131,15 @@ class TestDataHelpers:
         assert recent_window(c, 3) == c[-3:]
         assert recent_window(c, 50) == c
 
+    def test_recent_window_zero_or_negative_is_empty_not_everything(self):
+        """`candles[-0:]` is the WHOLE list, not an empty one: a zero-window
+        request must not silently hand back full history."""
+        from bot.data import recent_window
+
+        c = _candles(10)
+        assert recent_window(c, 0) == []
+        assert recent_window(c, -1) == []
+
     def test_yahoo_fetch_parses_and_cleans(self, monkeypatch):
         import bot.data as data
 

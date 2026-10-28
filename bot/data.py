@@ -137,7 +137,13 @@ def fetch_daily_history(symbol: str = "BTCUSDT", since_ms: int | None = None, ma
 
 
 def recent_window(candles: list[dict], n: int) -> list[dict]:
-    """The most recent `n` bars from an ascending history."""
+    """The most recent `n` bars from an ascending history.
+
+    `n <= 0` returns [] — notably NOT the full history, which the bare
+    `candles[-0:]` slice would silently produce for n == 0.
+    """
+    if n <= 0:
+        return []
     return candles[-n:] if len(candles) > n else candles
 
 
