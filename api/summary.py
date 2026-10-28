@@ -43,6 +43,15 @@ class ForwardLogIntegrityError(ValueError):
     """Raised when the committed prospective evidence tape is not trustworthy."""
 
 
+class ResearchDataUnavailable(ValueError):
+    """Raised when research cannot produce a meaningful summary."""
+
+    def __init__(self, reason: str, *, minimum_candles: int | None = None):
+        super().__init__(reason)
+        self.reason = reason
+        self.minimum_candles = minimum_candles
+
+
 def _load_forward_entries(log_path: str, frozen_date: str | None) -> list[dict]:
     """Load the forward tape without silently discarding damaged evidence."""
     if not os.path.exists(log_path):
@@ -606,7 +615,20 @@ def _canonical_overlay(summary: dict) -> dict:
 
 def build_summary(symbol: str = "BTCUSDT") -> dict:
     candles = fetch_daily_history(symbol)
-    folds = absolute_folds(candles, train_days=1095, test_days=365)
+    train_days, test_days = 1095, 365
+    minimum_candles = train_days + test_days
+    if not candles:
+        raise ResearchDataUnavailable(
+            f"no market data was returned for {symbol}",
+            minimum_candles=minimum_candles,
+        )
+    if len(candles) < minimum_candles:
+        raise ResearchDataUnavailable(
+            f"only {len(candles)} market candles are available for {symbol}; "
+            f"at least {minimum_candles} are required",
+            minimum_candles=minimum_candles,
+        )
+    folds = absolute_folds(candles, train_days=train_days, test_days=test_days)
     wf = walk_forward_at(candles, folds, candidates=[risk_ensemble()], **ENGINE_KWARGS)
 
     days = sorted(wf["daily"])
@@ -675,8 +697,21 @@ async def app(scope, receive, send):
                 "RESEARCH / HISTORICAL ONLY — computed by the pre-freeze research "
                 "pipeline; carries no weight in the verdict above"
             )
+        except ResearchDataUnavailable as e:
+            research = {
+                "error": e.reason,
+                "kind": "insufficient_market_data",
+                "minimum_candles": e.minimum_candles,
+                "retryable": True,
+                "evidence_label": "RESEARCH / HISTORICAL ONLY (unavailable)",
+            }
         except Exception as e:
-            research = {"error": str(e), "evidence_label": "RESEARCH / HISTORICAL ONLY (unavailable)"}
+            research = {
+                "error": str(e),
+                "kind": "research_unavailable",
+                "retryable": True,
+                "evidence_label": "RESEARCH / HISTORICAL ONLY (unavailable)",
+            }
         # THE evidence document: the same object the README block and the CLI
         # report render. The dashboard's state strip and timeline read it, so
         # no surface re-derives research meaning from raw tapes.
