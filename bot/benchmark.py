@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 import time
 import urllib.request
 from datetime import UTC, datetime
@@ -31,16 +32,30 @@ def _get(url: str, attempts: int = 3) -> str:
 
 
 def parse_fred_csv(text: str) -> list[dict]:
+    """Parse FRED's SP500 CSV, skipping rows that cannot be used.
+
+    The live feed legitimately contains blanks ('.') for missing days; a
+    malformed value or date, or a non-finite/non-positive close, skips that
+    one row instead of aborting the whole benchmark comparison.
+    """
     rows = []
     for rec in csv.DictReader(io.StringIO(text)):
         value = rec.get("SP500", ".")
         if value in (".", "", None):
             continue
-        rows.append({"date": datetime.strptime(rec["observation_date"], "%Y-%m-%d").date(), "close": float(value)})
+        try:
+            close = float(value)
+            date = datetime.strptime(rec["observation_date"], "%Y-%m-%d").date()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not math.isfinite(close) or close <= 0.0:
+            continue
+        rows.append({"date": date, "close": close})
     return rows
 
 
 def parse_yahoo_json(text: str) -> list[dict]:
+    """Parse Yahoo's chart payload, skipping candles that cannot be used."""
     payload = json.loads(text)
     result = payload["chart"]["result"][0]
     timestamps = result.get("timestamp", [])
@@ -49,7 +64,14 @@ def parse_yahoo_json(text: str) -> list[dict]:
     for ts, close in zip(timestamps, closes, strict=False):
         if close is None:
             continue
-        rows.append({"date": datetime.fromtimestamp(ts, tz=UTC).date(), "close": float(close)})
+        try:
+            close = float(close)
+            date = datetime.fromtimestamp(ts, tz=UTC).date()
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(close) or close <= 0.0:
+            continue
+        rows.append({"date": date, "close": close})
     return rows
 
 
