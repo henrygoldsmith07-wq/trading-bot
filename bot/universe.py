@@ -10,6 +10,7 @@ controls we apply. Treat absolute numbers as slightly optimistic.
 from __future__ import annotations
 
 import json
+import math
 from typing import TypedDict
 
 from .data import _get
@@ -65,15 +66,22 @@ def parse_symbols(ticker_json: str, quote: str = "USDT", n: int = 10) -> list[st
     rows = json.loads(ticker_json)
     out = []
     for t in rows:
+        if not isinstance(t, dict):
+            continue
         symbol = t.get("symbol", "")
-        if not symbol.endswith(quote):
+        if not isinstance(symbol, str) or not symbol.endswith(quote):
             continue
         base = symbol[: -len(quote)]
         if base in STABLE_OR_NONVANILLA or base.endswith(LEVERAGED_SUFFIXES):
             continue
+        raw_volume = t.get("quoteVolume", 0)
+        if raw_volume is None:
+            raw_volume = 0
         try:
-            vol = float(t.get("quoteVolume", 0) or 0)
-        except ValueError:
+            vol = float(raw_volume)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(vol) or vol < 0:
             continue
         out.append((vol, symbol))
     out.sort(reverse=True)
