@@ -131,6 +131,15 @@ class TestDataHelpers:
         assert recent_window(c, 3) == c[-3:]
         assert recent_window(c, 50) == c
 
+    def test_recent_window_zero_or_negative_is_empty_not_everything(self):
+        """`candles[-0:]` is the WHOLE list, not an empty one: a zero-window
+        request must not silently hand back full history."""
+        from bot.data import recent_window
+
+        c = _candles(10)
+        assert recent_window(c, 0) == []
+        assert recent_window(c, -1) == []
+
     def test_yahoo_fetch_parses_and_cleans(self, monkeypatch):
         import bot.data as data
 
@@ -151,6 +160,31 @@ class TestDataHelpers:
         assert [c["open_time"] for c in out] == [t0, t0 + 2 * DAY]
         assert out[1]["open"] == 103.0
         assert "volume" not in out[1]
+
+    def test_yahoo_fetch_skips_malformed_numeric_fields(self, monkeypatch):
+        import bot.data as data
+
+        payload = json.dumps({"chart": {"result": [{
+            "timestamp": ["bad", "1700000000", "1700000001"],
+            "indicators": {"quote": [{
+                "open": [100.0, "bad", "101.0"],
+                "close": ["bad", "102.0", "103.0"],
+                "volume": [{}, "nan", "12"],
+            }]},
+        }]}})
+        monkeypatch.setattr(data, "_get", lambda url: payload)
+
+        out = data.fetch_yahoo_daily("SPY")
+
+        assert out == [
+            {"open_time": 1_700_000_000_000, "close": 102.0},
+            {
+                "open_time": 1_700_000_001_000,
+                "close": 103.0,
+                "open": 101.0,
+                "volume": 12.0,
+            },
+        ]
 
 
 # ---------------------------------------------------------------------------

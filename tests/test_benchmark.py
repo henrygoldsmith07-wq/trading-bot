@@ -1,3 +1,5 @@
+import json
+
 from bot.benchmark import equity_metrics, parse_fred_csv, parse_yahoo_json, slice_window
 
 FRED_SAMPLE = """observation_date,SP500
@@ -41,6 +43,45 @@ def test_slice_window_filters_by_date():
     rows = parse_fred_csv(FRED_SAMPLE)
     window = slice_window(rows, dt.date(2024, 1, 3), dt.date(2024, 1, 8))
     assert [str(r["date"]) for r in window] == ["2024-01-03", "2024-01-04", "2024-01-08"]
+
+
+def test_parse_fred_skips_malformed_rows_not_just_blanks():
+    """A malformed value or date must skip one row, not abort the comparison.
+
+    FRED feeds '.' for missing days; anything else unparseable is data noise
+    and must degrade the same way — the benchmark comparison is reporting, so
+    a single bad row should never turn into a hard failure.
+    """
+    csv_text = (
+        "observation_date,SP500\n"
+        "2024-01-02,4709.50\n"
+        "2024-01-03,not-a-number\n"
+        "bad-date,4688.61\n"
+        "2024-01-04,nan\n"
+        "2024-01-05,0\n"
+        "2024-01-08,4763.54\n"
+    )
+    rows = parse_fred_csv(csv_text)
+    assert [(str(r["date"]), r["close"]) for r in rows] == [
+        ("2024-01-02", 4709.5),
+        ("2024-01-08", 4763.54),
+    ]
+
+
+def test_parse_yahoo_skips_malformed_closes_not_just_nones():
+    """Non-numeric, NaN and non-positive closes are skipped, not raised."""
+    payload = {
+        "chart": {
+            "result": [
+                {
+                    "timestamp": [1704171600, 1704258000, 1704344400, 1704430800],
+                    "indicators": {"quote": [{"close": ["oops", 4709.5, 0, 4704.8]}]},
+                }
+            ]
+        }
+    }
+    rows = parse_yahoo_json(json.dumps(payload))
+    assert [r["close"] for r in rows] == [4709.5, 4704.8]
 
 
 def test_equity_metrics_growth():

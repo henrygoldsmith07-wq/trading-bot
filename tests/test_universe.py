@@ -35,6 +35,12 @@ def test_limits_to_n():
     assert len(parse_symbols(raw, n=3)) == 3
 
 
+def test_non_positive_limit_returns_no_symbols():
+    raw = _ticker([("BTCUSDT", "10"), ("ETHUSDT", "9"), ("SOLUSDT", "8")])
+    assert parse_symbols(raw, n=0) == []
+    assert parse_symbols(raw, n=-1) == []
+
+
 def test_bad_volume_rows_skipped():
     raw = json.dumps(
         [
@@ -44,6 +50,19 @@ def test_bad_volume_rows_skipped():
         ]
     )
     assert parse_symbols(raw) == ["BTCUSDT"]
+
+
+def test_malformed_ticker_records_are_skipped():
+    raw = json.dumps([
+        None,
+        [],
+        {"symbol": 123, "quoteVolume": "9e9"},
+        {"symbol": "NEGUSDT", "quoteVolume": -1},
+        {"symbol": "TYPEUSDT", "quoteVolume": {}},
+        {"symbol": "NANUSDT", "quoteVolume": "nan"},
+        {"symbol": "ETHUSDT", "quoteVolume": "2e9"},
+    ])
+    assert parse_symbols(raw) == ["ETHUSDT"]
 
 
 def test_dedupes_when_n_exceeds_rows():

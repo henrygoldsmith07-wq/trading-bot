@@ -45,6 +45,34 @@ def test_build_summary_shape(monkeypatch, api, tmp_path):
     assert ts == sorted(ts)
 
 
+def test_build_summary_rejects_empty_market_history(monkeypatch, api):
+    monkeypatch.setattr(api, "fetch_daily_history", lambda symbol: [])
+
+    with pytest.raises(api.ResearchDataUnavailable, match="no market data") as excinfo:
+        api.build_summary("BTCUSDT")
+
+    assert excinfo.value.minimum_candles == 1460
+
+
+def test_asgi_app_labels_empty_market_history(monkeypatch, api):
+    monkeypatch.setattr(api, "fetch_daily_history", lambda symbol: [])
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(api.app({"type": "http", "method": "GET", "path": "/api/summary"}, receive, send))
+    payload = json.loads([m for m in sent if m["type"] == "http.response.body"][0]["body"])
+    research = payload["research"]
+    assert research["kind"] == "insufficient_market_data"
+    assert research["minimum_candles"] == 1460
+    assert research["retryable"] is True
+    assert "no market data" in research["error"]
+
+
 def test_payload_never_uses_the_word_live(monkeypatch, api):
     """The UI taxonomy is research / out-of-sample / forward. A key or label
     called 'live' would leak a fourth, unearned evidence class."""

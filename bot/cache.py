@@ -40,12 +40,20 @@ def load_or_fetch_meta(
     if path.exists():
         try:
             blob = json.loads(path.read_text())
-            if blob.get("candles") and (
-                not cache_only and now - blob.get("fetched_at", 0) < ttl_hours * 3600
-                or cache_only
+            # Only a well-formed object with a non-empty candle list is usable;
+            # valid JSON of any other shape (e.g. a bare list) must fall through
+            # to a refetch, not crash the run.
+            if (
+                isinstance(blob, dict)
+                and isinstance(blob.get("candles"), list)
+                and blob["candles"]
+                and (
+                    not cache_only and now - blob.get("fetched_at", 0) < ttl_hours * 3600
+                    or cache_only
+                )
             ):
                 return blob["candles"], True, blob.get("fetched_at")
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             pass
     if cache_only:
         raise FileNotFoundError(f"frozen source data for {symbol!r} not available in cache ({path})")
