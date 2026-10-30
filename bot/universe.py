@@ -63,6 +63,8 @@ ETF_UNIVERSE: list[EtfSpec] = [
 
 
 def parse_symbols(ticker_json: str, quote: str = "USDT", n: int = 10) -> list[str]:
+    if n <= 0:
+        return []
     rows = json.loads(ticker_json)
     out = []
     for t in rows:

@@ -35,6 +35,12 @@ def test_limits_to_n():
     assert len(parse_symbols(raw, n=3)) == 3
 
 
+def test_non_positive_limit_returns_no_symbols():
+    raw = _ticker([("BTCUSDT", "10"), ("ETHUSDT", "9"), ("SOLUSDT", "8")])
+    assert parse_symbols(raw, n=0) == []
+    assert parse_symbols(raw, n=-1) == []
+
+
 def test_bad_volume_rows_skipped():
     raw = json.dumps(
         [
